@@ -24,11 +24,13 @@ The library builds on [Radius](https://docs.radapp.io/), the open-source applica
 
 | Block | What it is | Example |
 |---|---|---|
-| **Resource guide** | One page per Azure resource: what works, what changes, alternatives. | `resources/service-bus/` |
 | **Resource Type** | What the app needs, independent of any product. | `objectStorage` |
 | **Recipe** | How one platform provides it. | Azurite; RabbitMQ |
 | **Recipe Pack** | All recipes for one environment. | `azure-local-disconnected` |
 | **Sample** | An app that combines several resources. | Order Management System |
+| **Resource guide** | One page per Azure resource: what works, what changes, alternatives. | `resources/service-bus/` |
+
+In this document, a **resource** means an Azure resource, because the Azure portal shows business continuity per resource. It is not a Radius Resource Type, which describes what an app needs.
 
 The application asks for a Resource Type; the environment's Recipe Pack picks the Recipe that provides it.
 
@@ -76,7 +78,7 @@ portable-apps-library/
 
 ## 5. Resource guide
 
-Every resource has one guide, `resources/<slug>/README.md`, at a stable URL. It summarizes the resource across all targets and alternatives, and links to `alternatives/` and `examples/` for detail.
+Every Azure resource has one guide, `resources/<slug>/README.md`, at a stable URL. The Azure portal shows business continuity per resource, so the guides follow the same unit: one guide for Service Bus, one for Blob Storage, and so on, not one per Radius Resource Type. A guide summarizes the resource across all targets and alternatives, and links to `alternatives/` and `examples/` for detail.
 
 An **alternative** is how you get the capability on a target. It can be a different product (Service Bus on RabbitMQ), the same engine hosted by you (SQL Server in a container), or the Azure service itself where it is still reachable.
 
