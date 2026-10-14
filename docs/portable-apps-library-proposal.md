@@ -105,7 +105,7 @@ Illustrative example (not final content):
 
 **Patterns:** a resource often touches several patterns (SQL: database and identity). The guide lists each affected pattern with this resource's limitation and a link to the pattern on Microsoft Learn, without restating it.
 
-`facts.yaml` holds the same facts in machine-readable form. It is the single source for the guide's table and, later, the Azure portal, which shows the first alternative for the customer's chosen target:
+`facts.yaml` holds the same facts in machine-readable form. It is the single source for the guide's table and, later, the Azure portal, which shows the alternatives for the customer's chosen target:
 
 ```yaml
 azureResourceType: Microsoft.ServiceBus/namespaces
@@ -114,7 +114,7 @@ lastReviewed: 2026-10-14
 owner: <team-alias>
 targets:
   azure-local-disconnected:
-    alternatives:                     # first is recommended
+    alternatives:
       - id: rabbitmq                  # matches alternatives/rabbitmq.md
         status: requires-changes
         portabilityClass: adapter-required
@@ -141,7 +141,6 @@ The same shape covers a resource that needs no different product. For SQL the al
 ```
 
 Conventions:
-- **Order:** the first alternative is the recommended one, and the portal shows it.
 - **No workable option:** a single entry with `id: none` and `status: no-viable-path`, with the reason in `summary`.
 - **`validatedWith`** records the recipe pack version, the platform build and the `software` version that was run. The software version matters when a pack does not pin it.
 
