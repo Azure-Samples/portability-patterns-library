@@ -177,7 +177,7 @@ The values above. Status, class, summary and maturity are set per alternative on
 
 **Recommendation: A.** The portal stores the slug or URL. The top-level page is for browsing, not routing. A renamed slug keeps a redirect.
 
-**Future:** CI generates `catalog/resources.json` from the `facts.yaml` files and the portal consumes the released file for its messages. This needs an agreed schema version, release cadence and wording owner first.
+**Future:** CI generates `catalog/resources.json` from the `facts.yaml` files and the portal consumes the released file for its messages. This needs an agreed schema version and release cadence first.
 
 ## 7. Testing and release
 
@@ -188,18 +188,8 @@ The values above. Status, class, summary and maturity are set per alternative on
   - Anything not run on that target is labelled `documented` instead. A `validated` label is re-checked when the pack, platform or software version changes, or when `lastReviewed` lapses.
 - **Releases:** independent semantic-version tags per recipe and per pack. Recipes are published as OCI artifacts; disconnected users mirror them to a local registry.
 
-## 8. First increment
-
-1. Guides and `facts.yaml` for the eight assessed resources: PostgreSQL, SQL, Blob Storage, Azure Files, Service Bus, Key Vault, Log Analytics, Virtual Network.
-2. Promote the Order Management sample (branch `azure-local-hybrid-demo`) to `samples/order-management`.
-3. Recipes (queue, object storage, SQL) and packs for Azure, Azure Local connected and ALDO, with matching `targets/` pages.
-4. Defer portal ingestion until schema and ownership are agreed.
-
-## 9. Open questions
+## 8. Open questions
 
 1. Is **Portable Apps Library** the right name, and which organization hosts it?
 2. Do recipes live here, or in the Radius community repository (`resource-types-contrib`) wherever a Resource Type already exists?
-3. Which queue abstraction do we standardize on: the custom type used in the sample (`BusinessContinuity.Messaging/messageQueues`), or an existing Radius type?
-4. Section 3 assumes recipe packs are reference baselines. Do we confirm that, or position them as a supported product?
-5. Who owns the `facts.yaml` wording shown in the Azure portal, and what is the review SLA?
-6. The Radius recipe-pack model is preview. Do we pin a Radius version and accept churn?
+3. Section 3 assumes recipe packs are reference baselines. Do we confirm that, or position them as a supported product?
