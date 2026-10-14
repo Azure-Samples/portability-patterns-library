@@ -1,6 +1,6 @@
 # Portable Apps Library — Proposal
 
-> **Status:** Draft for review. Optional background: [portable-apps-library-validation.md](./portable-apps-library-validation.md).
+> **Status:** Draft for review.
 
 ## 1. Purpose
 
@@ -52,20 +52,20 @@ A Recipe Pack creates no infrastructure itself; it only lists which Recipes an e
 
 ```text
 portable-apps-library/
-├── README.md                          # Catalog of all resources + getting started
+├── README.md                                 # Catalog of all resources + getting started
 ├── CONTRIBUTING.md
-├── catalog/                           # schema.json + generated resources.json
-├── resources/<azure-resource-slug>/   # service-bus, blob-storage, postgresql, ...
-│   ├── README.md                      # Guide (stable URL)
-│   ├── facts.yaml                     # Machine-readable facts
-│   ├── alternatives/                  # One page per alternative
-│   └── examples/                      # Smallest single-resource deployment per target
-├── targets/                           # One page per target environment
-├── recipes/<capability>/<platform>/<implementation>/   # e.g. object-storage/azure-local/azurite:
-│                                      #   recipe .bicep, README.md, test/app.bicep
-├── recipe-packs/                      # azure, azure-local-connected,
-│                                      #   azure-local-disconnected, kubernetes
-└── samples/order-management/          # Promoted from BusinessContinuityDemoApp
+├── catalog/                                  # schema.json + generated resources.json
+├── resources/                                # One folder per Azure resource
+│   └── <slug>/                               # e.g. service-bus, blob-storage, postgresql
+│       ├── README.md                         # Guide (stable URL)
+│       ├── facts.yaml                        # Machine-readable facts
+│       ├── alternatives/                     # One page per alternative
+│       └── examples/                         # Smallest single-resource deployment per target
+├── targets/                                  # One page per target environment
+├── recipes/                                  # <capability>/<platform>/<implementation>
+│   └── object-storage/azure-local/azurite/   # recipe .bicep, README.md, test/app.bicep
+├── recipe-packs/                             # One pack per environment, e.g. azure-local-disconnected
+└── samples/                                  # End-to-end apps, e.g. order-management
 ```
 
 | Folder | Purpose |
