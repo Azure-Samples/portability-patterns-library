@@ -1,0 +1,20 @@
+azureResourceType: Microsoft.ServiceBus/namespaces
+slug: service-bus
+lastReviewed: 2026-10-14
+targets:
+  azure-local-connected:
+    alternatives:
+      - id: rabbitmq                  # matches alternatives/rabbitmq.md
+        status: requires-changes
+        portabilityClass: adapter-required
+        summary: Self-hosted broker with its own addressing, authentication and failure handling; the application needs a RabbitMQ client behind its queue interface.
+        maturity: validated
+        validatedWith: { pack: <pack version>, platform: <Azure Local build>, software: RabbitMQ 4 }
+  azure-local-disconnected:
+    alternatives:
+      - id: rabbitmq
+        status: requires-changes
+        portabilityClass: adapter-required
+        summary: Same as connected, with the image and recipe served from your local registry.
+        maturity: validated
+        validatedWith: { pack: <pack version>, platform: <ALDO build>, software: RabbitMQ 4 }

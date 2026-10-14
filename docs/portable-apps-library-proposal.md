@@ -98,8 +98,8 @@ Illustrative example (not final content):
 >
 > | Pattern (Microsoft Learn) | Limitation for this resource |
 > |---|---|
-> | Messaging | AMQP 1.0 becomes AMQP 0-9-1 (RabbitMQ); you host and operate the broker. |
-> | Identity | Entra workload identity is unavailable; use broker credentials or OAuth through Keycloak. |
+> | Messaging | RabbitMQ 4.0+ also speaks AMQP 1.0, but addressing, authentication and management are broker-specific, so the Service Bus SDK is not a drop-in client; you host and operate the broker. |
+> | Identity | Entra workload identity is unavailable; the same federated token flow works against your own identity provider (Keycloak in the sample), or use broker credentials. |
 >
 > **Code impact:** a small messaging adapter.
 > **Data:** queued messages are not carried over; data migration is separate guidance.
@@ -156,7 +156,7 @@ The values above. Status, class, summary and maturity are set per alternative on
 | Value | Meaning | Example |
 |---|---|---|
 | `protocol-compatible` | Same protocol or API on the target; endpoint, identity and operations change. | PostgreSQL; SQL Server |
-| `adapter-required` | Protocols or features differ; small app change needed. | Service Bus (AMQP 1.0) → RabbitMQ |
+| `adapter-required` | Protocols or features differ; small app change needed. | Service Bus → RabbitMQ |
 | `no-equivalent` | Nothing comparable on the target; redesign or customer-operated alternative. | Object storage in ALDO (no local service); virtual networks |
 
 **Maturity**: how much have we verified it on this target? A lab deployment never implies production support.
