@@ -76,16 +76,19 @@ portable-apps-library/
 
 ## 5. Resource guide
 
-Every resource has one guide, `resources/<slug>/README.md`, at a stable URL. It summarizes the resource across all targets, with one status row per target, and links to `alternatives/` and `examples/` for detail.
+Every resource has one guide, `resources/<slug>/README.md`, at a stable URL. It summarizes the resource across all targets and alternatives, and links to `alternatives/` and `examples/` for detail.
+
+An **alternative** is how you get the capability on a target. It can be a different product (Service Bus on RabbitMQ), the same engine hosted by you (SQL Server in a container), or the Azure service itself where it is still reachable.
 
 Illustrative example (not final content):
 
 > ### Azure Service Bus → Azure Local
 >
-> | Target | Status | Class | Maturity | Summary |
-> |---|---|---|---|---|
-> | Azure Local (connected) | Requires changes | `adapter-required` | Tested | No Service Bus equivalent; use a self-hosted broker and review protocol, identity and feature differences. |
-> | Azure Local (disconnected, ALDO) | Requires changes | `adapter-required` | Tested | No Service Bus equivalent; use a self-hosted broker from your local registry and review protocol, identity and feature differences. |
+> | Target | Alternative | Status | Class | Maturity | Summary |
+> |---|---|---|---|---|---|
+> | Azure Local (connected) | RabbitMQ | Requires changes | `adapter-required` | Validated | Self-hosted broker; review protocol, identity and feature differences. |
+> | Azure Local (connected) | Kafka | Requires changes | `adapter-required` | Documented | Self-hosted Kafka; topic model differs from queues and needs more application change. |
+> | Azure Local (disconnected, ALDO) | RabbitMQ | Requires changes | `adapter-required` | Validated | Self-hosted broker from your local registry; review protocol, identity and feature differences. |
 >
 > **What carries over:** queue semantics, message payloads, application logic.
 >
@@ -98,42 +101,53 @@ Illustrative example (not final content):
 >
 > **Code impact:** a small messaging adapter.
 > **Data:** queued messages are not carried over; data migration is separate guidance.
-> **Alternatives:** RabbitMQ (tested), Kafka (documented).
 > **Examples tried:** `examples/rabbitmq/`, `samples/order-management`.
 
 **Patterns:** a resource often touches several patterns (SQL: database and identity). The guide lists each affected pattern with this resource's limitation and a link to the pattern on Microsoft Learn, without restating it.
 
-`facts.yaml` holds the same facts in machine-readable form. It is the single source for the guide's table and, later, the Azure portal, which shows the entry for the customer's chosen target:
+`facts.yaml` holds the same facts in machine-readable form. It is the single source for the guide's table and, later, the Azure portal, which shows the first alternative for the customer's chosen target:
 
 ```yaml
 azureResourceType: Microsoft.ServiceBus/namespaces
 slug: service-bus
-targets:
-  azure-local-connected:
-    status: requires-changes
-    portabilityClass: adapter-required
-    summary: >-
-      No Service Bus equivalent; use a self-hosted broker and review protocol,
-      identity and feature differences.
-    alternatives: [rabbitmq, kafka]
-    maturity: tested
-    testedWith: { pack: 0.1.0, platform: <Azure Local build> }
-  azure-local-disconnected:
-    status: requires-changes
-    portabilityClass: adapter-required
-    summary: >-
-      No Service Bus equivalent; use a self-hosted broker from your local registry and
-      review protocol, identity and feature differences.
-    alternatives: [rabbitmq, kafka]
-    maturity: tested
-    testedWith: { pack: 0.1.0, platform: <ALDO build> }
 lastReviewed: 2026-10-14
 owner: <team-alias>
+targets:
+  azure-local-disconnected:
+    alternatives:                     # first is recommended
+      - id: rabbitmq                  # matches alternatives/rabbitmq.md
+        status: requires-changes
+        portabilityClass: adapter-required
+        summary: Self-hosted broker from your local registry; review protocol, identity and feature differences.
+        maturity: validated
+        validatedWith: { pack: 0.1.0, platform: <ALDO build>, software: RabbitMQ 4 }
+      - id: kafka
+        status: requires-changes
+        portabilityClass: adapter-required
+        summary: Self-hosted Kafka; topic model differs from queues and needs more application change.
+        maturity: documented
+  # azure-local-connected: same shape
 ```
+
+The same shape covers a resource that needs no different product. For SQL the alternative is the same engine, hosted by you:
+
+```yaml
+      - id: sql-server-container
+        status: requires-changes
+        portabilityClass: protocol-compatible
+        summary: Same engine (TDS), self-hosted; you operate it and use SQL authentication.
+        maturity: validated
+        validatedWith: { pack: 0.1.0, platform: <ALDO build>, software: SQL Server 2022 }
+```
+
+Conventions:
+- **Order:** the first alternative is the recommended one, and the portal shows it.
+- **No workable option:** a single entry with `id: none` and `status: no-viable-path`, with the reason in `summary`.
+- **`validatedWith`** records the recipe pack version, the platform build and the `software` version that was run. The software version matters when a pack does not pin it.
 
 ### Labels used in a guide
 
-The values above. Everything under a target (status, class, summary, alternatives, maturity) is set per target; only the resource identity, review date and owner are shared.
+The values above. Status, class, summary and maturity are set per alternative on each target; the resource identity, review date and owner are shared.
 
 **Status** (can it move to this target?): `portable` moves with configuration changes only; `requires-changes` can move but needs application, identity or operations changes; `no-viable-path` has no workable option.
 
@@ -149,11 +163,10 @@ The values above. Everything under a target (status, class, summary, alternative
 
 | Value | Meaning |
 |---|---|
-| `tested` | The scripted example or sample was deployed on that target and worked. `testedWith` records the recipe pack version and platform build it worked on. |
+| `validated` | The scripted example or sample was deployed on that target and worked. `validatedWith` records what it ran on. |
 | `documented` | Based on product documentation or analysis; not run on that target. |
-| `preview` | Depends on a target feature that is itself in preview, so it may change. |
-| `community` | Contributed from outside the team; not verified by us. |
 
+**Origin** (optional): `community` marks an alternative contributed from outside the team. It is separate from maturity, because community content can be validated or only documented.
 ## 6. Portal routing
 
 | Option | Pros | Cons |
@@ -170,8 +183,8 @@ The values above. Everything under a target (status, class, summary, alternative
 - **Done means:** guide + `facts.yaml` + owner + references + documented compromises + a runnable example. Without a run on that target, the maturity is `documented`.
 - **Testing:**
   - Public CI deploys each recipe's `test/app.bicep` and each pack on Kubernetes.
-  - Azure Local and ALDO cannot run in public CI. A `tested` label there means the scripted example or sample was deployed on that target, with the recipe pack version and platform build recorded in `facts.yaml` (`testedWith`). No logs are stored; the deployment is scripted, so anyone can re-run it.
-  - Anything not run on that target is labelled `documented` instead. A `tested` label is re-checked when the pack or platform version changes, or when `lastReviewed` lapses.
+  - Azure Local and ALDO cannot run in public CI. A `validated` label there means the scripted example or sample was deployed on that target, with the recipe pack version, platform build and software version recorded in `facts.yaml` (`validatedWith`). No logs are stored; the deployment is scripted, so anyone can re-run it.
+  - Anything not run on that target is labelled `documented` instead. A `validated` label is re-checked when the pack, platform or software version changes, or when `lastReviewed` lapses.
 - **Releases:** independent semantic-version tags per recipe and per pack. Recipes are published as OCI artifacts; disconnected users mirror them to a local registry.
 
 ## 8. First increment
