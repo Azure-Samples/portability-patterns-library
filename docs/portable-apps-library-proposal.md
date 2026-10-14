@@ -61,8 +61,8 @@ portable-apps-library/
 │   ├── alternatives/                  # One page per alternative
 │   └── examples/                      # Smallest single-resource deployment per target
 ├── targets/                           # One page per target environment
-├── types/<Category>/<typeName>/       # Only when no existing Resource Type fits:
-│                                      #   <typeName>.yaml, README.md, recipes/<platform>/, test/app.bicep
+├── recipes/<capability>/<platform>/<implementation>/   # e.g. object-storage/azure-local/azurite:
+│                                      #   recipe .bicep, README.md, test/app.bicep
 ├── recipe-packs/                      # azure, azure-local-connected,
 │                                      #   azure-local-disconnected, kubernetes
 └── samples/order-management/          # Promoted from BusinessContinuityDemoApp
@@ -70,7 +70,7 @@ portable-apps-library/
 
 | Folder | Purpose |
 |---|---|
-| `resources/<slug>/examples/` | The **smallest** deployment of that one resource on each target. For SQL: a tiny app that writes and reads one row, with no queue or backend. Where a Resource Type exists this is its `test/app.bicep`; link to it, do not copy it. |
+| `resources/<slug>/examples/` | The **smallest** deployment of that one resource on each target. For SQL: a tiny app that writes and reads one row, with no queue or backend. Where a recipe exists this is the recipe's `test/app.bicep`; link to it, do not copy it. |
 | `samples/` | Complete multi-resource apps that prove identity, messaging, storage and SQL work **together** across targets. The business-continuity demo runs from here. |
 | `targets/` | One page per environment (Azure Local connected, ALDO, Kubernetes): **what the customer must already have** (cluster, local registry, identity provider, ingress, observability, capacity); **how it differs from Azure** (connectivity, identity model, what works offline); which recipe pack to use and the setup order; a status table of every resource on that target. |
 
@@ -169,10 +169,10 @@ The values above. Everything under a target (status, class, summary, alternative
 
 - **Done means:** guide + `facts.yaml` + owner + references + documented compromises + a runnable example. Without a run on that target, the maturity is `documented`.
 - **Testing:**
-  - Public CI deploys each type's `test/app.bicep` and each pack on Kubernetes.
+  - Public CI deploys each recipe's `test/app.bicep` and each pack on Kubernetes.
   - Azure Local and ALDO cannot run in public CI. A `tested` label there means the scripted example or sample was deployed on that target, with the recipe pack version and platform build recorded in `facts.yaml` (`testedWith`). No logs are stored; the deployment is scripted, so anyone can re-run it.
   - Anything not run on that target is labelled `documented` instead. A `tested` label is re-checked when the pack or platform version changes, or when `lastReviewed` lapses.
-- **Releases:** independent semantic-version tags per type and per pack. Recipes are published as OCI artifacts; disconnected users mirror them to a local registry.
+- **Releases:** independent semantic-version tags per recipe and per pack. Recipes are published as OCI artifacts; disconnected users mirror them to a local registry.
 
 ## 8. First increment
 
