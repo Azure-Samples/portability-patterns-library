@@ -10,17 +10,17 @@ It supports the scenario *Redeploy from Sovereign Public Cloud to Sovereign Priv
 
 ## 2. Name
 
-**Recommendation: `portable-apps-library`.** The name should cover guidance, reusable recipes and runnable samples, not one target or one scenario.
+**Recommendation: `portable-apps-library`.** This repository is currently named `portability-patterns-library`. The name should cover guidance, reusable recipes and runnable samples, not one target or one scenario.
 
 | Candidate | Assessment |
 |---|---|
 | `portable-apps-library` | **Recommended.** Describes the outcome and fits guides, recipes and samples. |
-| `portability-patterns-library` | Reads as documentation only; understates recipes and samples. |
+| `portability-patterns-library` | Current name. Reads as documentation only; understates recipes and samples. |
 | `business-continuity-library` | Ties the repository to one scenario; portability also serves sovereignty and edge. |
 
 ## 3. Building blocks
 
-The library builds on [Radius](https://docs.radapp.io/), the open-source application platform the sample uses to switch environments without changing the app. Resource Type, Recipe and Recipe Pack are Radius terms.
+The library builds on [Radius](https://docs.radapp.io/), the open-source application platform the Order Management sample uses to switch environments without changing the app. Resource Type, Recipe and Recipe Pack are Radius terms.
 
 | Block | What it is | Example |
 |---|---|---|
@@ -128,7 +128,7 @@ targets:
   # azure-local-connected: same shape
 ```
 
-The same shape covers a resource that needs no different product. For SQL the alternative is the same engine, hosted by you:
+The same shape covers a resource that needs no different product. For SQL the alternative is the same engine, hosted by you (another entry under `alternatives:`):
 
 ```yaml
       - id: sql-server-container
@@ -165,6 +165,7 @@ The values above. Status, class, summary and maturity are set per alternative on
 | `documented` | Based on product documentation or analysis; not run on that target. |
 
 **Origin** (optional): `community` marks an alternative contributed from outside the team. It is separate from maturity, because community content can be validated or only documented.
+
 ## 6. Portal routing
 
 | Option | Pros | Cons |
@@ -189,14 +190,14 @@ The values above. Status, class, summary and maturity are set per alternative on
 
 1. Guides and `facts.yaml` for the eight assessed resources: PostgreSQL, SQL, Blob Storage, Azure Files, Service Bus, Key Vault, Log Analytics, Virtual Network.
 2. Promote the Order Management sample (branch `azure-local-hybrid-demo`) to `samples/order-management`.
-3. Packs for Azure, Azure Local connected and ALDO, with matching `targets/` pages.
+3. Recipes (queue, object storage, SQL) and packs for Azure, Azure Local connected and ALDO, with matching `targets/` pages.
 4. Defer portal ingestion until schema and ownership are agreed.
 
 ## 9. Open questions
 
 1. Is **Portable Apps Library** the right name, and which organization hosts it?
 2. Do recipes live here, or in the Radius community repository (`resource-types-contrib`) wherever a Resource Type already exists?
-3. Which queue abstraction do we standardize on: the custom type used in the sample, or an existing Radius type?
+3. Which queue abstraction do we standardize on: the custom type used in the sample (`BusinessContinuity.Messaging/messageQueues`), or an existing Radius type?
 4. Section 3 assumes recipe packs are reference baselines. Do we confirm that, or position them as a supported product?
 5. Who owns the `facts.yaml` wording shown in the Azure portal, and what is the review SLA?
 6. The Radius recipe-pack model is preview. Do we pin a Radius version and accept churn?
