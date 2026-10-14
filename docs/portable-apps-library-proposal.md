@@ -30,9 +30,9 @@ The library builds on [Radius](https://docs.radapp.io/), the open-source applica
 | **Sample** | An app that combines several resources. | Order Management System |
 | **Resource guide** | One page per Azure resource: what works, what changes, alternatives. | `resources/service-bus/` |
 
-In this document, a **resource** means an Azure resource, because the Azure portal shows business continuity per resource. It is not a Radius Resource Type, which describes what an app needs.
-
 The application asks for a Resource Type; the environment's Recipe Pack picks the Recipe that provides it.
+
+In this document, a **resource** means an Azure resource, because the Azure portal shows business continuity per resource. It is not a Radius Resource Type, which describes what an app needs.
 
 Principles:
 
