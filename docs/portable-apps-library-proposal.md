@@ -111,7 +111,6 @@ Illustrative example (not final content):
 azureResourceType: Microsoft.ServiceBus/namespaces
 slug: service-bus
 lastReviewed: 2026-10-14
-owner: <team-alias>
 targets:
   azure-local-disconnected:
     alternatives:
@@ -146,7 +145,7 @@ Conventions:
 
 ### Labels used in a guide
 
-The values above. Status, class, summary and maturity are set per alternative on each target; the resource identity, review date and owner are shared.
+The values above. Status, class, summary and maturity are set per alternative on each target; the resource identity and review date are shared.
 
 **Status** (can it move to this target?): `portable` moves with configuration changes only; `requires-changes` can move but needs application, identity or operations changes; `no-viable-path` has no workable option.
 
@@ -179,7 +178,7 @@ The values above. Status, class, summary and maturity are set per alternative on
 
 ## 7. Testing and release
 
-- **Done means:** guide + `facts.yaml` + owner + references + documented compromises + a runnable example. Without a run on that target, the maturity is `documented`.
+- **Done means:** guide + `facts.yaml` + references + documented compromises + a runnable example. Without a run on that target, the maturity is `documented`.
 - **Testing:**
   - Public CI deploys each recipe's `test/app.bicep` and each pack on Kubernetes.
   - Azure Local and ALDO cannot run in public CI. A `validated` label there means the scripted example or sample was deployed on that target, with the recipe pack version, platform build and software version recorded in `facts.yaml` (`validatedWith`). No logs are stored; the deployment is scripted, so anyone can re-run it.
