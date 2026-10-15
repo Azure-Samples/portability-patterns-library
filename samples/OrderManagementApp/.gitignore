@@ -1,0 +1,29 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+
+## Radius / Bicep
+deploy/types/*.tgz
+*.bicepparam.local
+
+## Local settings that may contain secrets
+**/appsettings.Local.json
+*.env
+.env
+
+## IDE
+.vs/
+.idea/
+
+## Site CA written by scripts/azurelocal/provision-ingress.ps1 for trusting on demo machines
+bcd-site-ca.crt
+bcd-azure-ca.crt
+bcd-identity-ca.crt
+
+## Site-specific values for scripts/setup-platform.ps1 and deploy.ps1 (template: settings.example.json)
+scripts/settings.json
+
+# Machine-local package source, used where nuget.org is unreachable
+NuGet.Config

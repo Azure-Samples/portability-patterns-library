@@ -1,0 +1,30 @@
+# Build both workers from the repository root:
+#   docker build -f docker/Dockerfile.consumer -t bcd-consumer:latest .
+#
+# In air-gapped environments such as Azure Local disconnected operations, mcr.microsoft.com is
+# unreachable. Import the .NET base images into the local registry and point the build at it:
+#   docker build --build-arg BASE_REGISTRY=myacr.azurecr.io -f docker/Dockerfile.consumer .
+
+ARG BASE_REGISTRY=mcr.microsoft.com
+
+FROM ${BASE_REGISTRY}/dotnet/sdk:9.0 AS build
+WORKDIR /src
+
+# NuGet.Config is optional (redirects restore where nuget.org is unreachable). Paired with a file
+# that always exists, the glob may match nothing under both Docker and podman/buildah.
+COPY Directory.Build.props NuGet.Confi[g] ./
+COPY src/Bcd.Shared/Bcd.Shared.csproj src/Bcd.Shared/
+COPY src/Bcd.Consumer/Bcd.Consumer.csproj src/Bcd.Consumer/
+RUN dotnet restore src/Bcd.Consumer/Bcd.Consumer.csproj
+
+COPY src/ src/
+RUN dotnet publish src/Bcd.Consumer/Bcd.Consumer.csproj -c Release -o /app --no-restore
+
+FROM ${BASE_REGISTRY}/dotnet/runtime:9.0 AS runtime
+WORKDIR /app
+COPY --from=build /app ./
+
+# Run as a non-root user; required by most cluster admission policies.
+USER $APP_UID
+
+ENTRYPOINT ["dotnet", "Bcd.Consumer.dll"]
