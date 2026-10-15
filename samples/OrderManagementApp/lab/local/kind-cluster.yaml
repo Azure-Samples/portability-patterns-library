@@ -1,0 +1,20 @@
+# kind cluster for the Business Continuity Demo App.
+#
+# Port 30500 (the in-cluster OCI registry NodePort) is mapped to localhost:5000 so images and
+# Recipes can be pushed from the workstation to the same registry the cluster reads from.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: bcd
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30500
+        hostPort: 5000
+        protocol: TCP
+containerdConfigPatches:
+  # Lets the kubelet pull application images over plain HTTP from the in-cluster registry.
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."registry.bcd-registry.svc.cluster.local:5000"]
+      endpoint = ["http://registry.bcd-registry.svc.cluster.local:5000"]
+    [plugins."io.containerd.grpc.v1.cri".registry.configs."registry.bcd-registry.svc.cluster.local:5000".tls]
+      insecure_skip_verify = true

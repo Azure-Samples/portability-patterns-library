@@ -1,0 +1,105 @@
+# Local development without Kubernetes or Radius.
+#
+# Brings up RabbitMQ, Azurite and SQL Server, then runs both workers against them using the same
+# CONNECTION_* environment variables that Radius injects in a cluster. Useful for debugging the
+# application logic before involving Radius at all.
+#
+#   Copy .env.example to .env and set the two passwords, then:
+#   docker compose up --build
+
+name: bcd
+
+services:
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: bcd
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD, see .env.example}"
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:3.35.0
+    command: azurite-blob --blobHost 0.0.0.0 --blobPort 10000 --skipApiVersionCheck
+    ports:
+      - "10000:10000"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "10000"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  sql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "${MSSQL_SA_PASSWORD:?Set MSSQL_SA_PASSWORD, see .env.example}"
+      MSSQL_PID: Developer
+    ports:
+      - "1433:1433"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -Q 'SELECT 1' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  publisher:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.publisher
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      sql:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      DOTNET_ENVIRONMENT: Production
+      Bcd__Publisher__IntervalSeconds: "3"
+      CONNECTION_QUEUE_PROVIDER: rabbitmq
+      CONNECTION_QUEUE_QUEUENAME: business-events
+      CONNECTION_QUEUE_HOST: rabbitmq
+      CONNECTION_QUEUE_PORT: "5672"
+      CONNECTION_QUEUE_USERNAME: bcd
+      CONNECTION_QUEUE_PASSWORD: "${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD, see .env.example}"
+      CONNECTION_SQL_HOST: sql
+      CONNECTION_SQL_PORT: "1433"
+      CONNECTION_SQL_DATABASE: bcddb
+      CONNECTION_SQL_USERNAME: sa
+      CONNECTION_SQL_PASSWORD: "${MSSQL_SA_PASSWORD:?Set MSSQL_SA_PASSWORD, see .env.example}"
+      # Sign-in for the orders API and browser app needs an identity provider: set AzureAd__* and
+      # Spa__* (see deploy/app.bicep) to an Entra app registration or a Keycloak realm.
+
+  consumer:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.consumer
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      azurite:
+        condition: service_started
+      sql:
+        condition: service_healthy
+    environment:
+      DOTNET_ENVIRONMENT: Production
+      CONNECTION_QUEUE_PROVIDER: rabbitmq
+      CONNECTION_QUEUE_QUEUENAME: business-events
+      CONNECTION_QUEUE_HOST: rabbitmq
+      CONNECTION_QUEUE_PORT: "5672"
+      CONNECTION_QUEUE_USERNAME: bcd
+      CONNECTION_QUEUE_PASSWORD: "${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD, see .env.example}"
+      CONNECTION_ARCHIVE_CONTAINERNAME: business-events
+      CONNECTION_ARCHIVE_CONNECTIONSTRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;"
+      CONNECTION_SQL_HOST: sql
+      CONNECTION_SQL_PORT: "1433"
+      CONNECTION_SQL_DATABASE: bcddb
+      CONNECTION_SQL_USERNAME: sa
+      CONNECTION_SQL_PASSWORD: "${MSSQL_SA_PASSWORD:?Set MSSQL_SA_PASSWORD, see .env.example}"

@@ -1,0 +1,154 @@
+namespace: BusinessContinuity.Messaging
+types:
+  messageQueues:
+    description: |
+      The `BusinessContinuity.Messaging/messageQueues` Resource Type represents a durable
+      point-to-point message queue, independent of the broker that backs it.
+
+      This type exists because Radius ships no portable queue abstraction that spans both a
+      self-hosted broker and Azure Service Bus. A developer declares the intent to have a queue; the
+      platform engineer decides through Recipes whether that is a RabbitMQ container in the cluster
+      (local / kind / Azure Local) or an Azure Service Bus queue reached with a federated managed
+      identity (AKS).
+
+      ```bicep
+      extension radius
+      extension businessContinuity
+
+      param environment string
+
+      resource queue 'BusinessContinuity.Messaging/messageQueues@2025-08-01-preview' = {
+        name: 'events'
+        properties: {
+          environment: environment
+          application: app.id
+          queueName: 'business-events'
+        }
+      }
+      ```
+
+      Connect a container to the queue to receive the connection values as environment variables
+      named `CONNECTION_<CONNECTION-NAME>_<PROPERTY-NAME>`:
+
+      ```bicep
+      connections: {
+        queue: {
+          source: queue.id
+        }
+      }
+      ```
+
+      For a connection named `queue` the worker receives:
+
+      - CONNECTION_QUEUE_PROVIDER            - `rabbitmq` or `servicebus`
+      - CONNECTION_QUEUE_QUEUENAME           - the queue/entity name
+      - CONNECTION_QUEUE_HOST                - broker host (RabbitMQ only)
+      - CONNECTION_QUEUE_PORT                - broker port (RabbitMQ only)
+      - CONNECTION_QUEUE_NAMESPACEFQDN       - namespace FQDN (Azure Service Bus only)
+      - CONNECTION_QUEUE_WORKLOADIDENTITYCLIENTID - client ID of the federated managed identity
+      - CONNECTION_QUEUE_OAUTHTOKENENDPOINT  - token endpoint, when the broker accepts OAuth 2.0
+      - CONNECTION_QUEUE_OAUTHCLIENTID       - client the workload authenticates as
+      - CONNECTION_QUEUE_OAUTHASSERTIONFILE  - projected ServiceAccount token used as the assertion
+      - CONNECTION_QUEUE_OAUTHCAFILE         - certificate authority of the token issuer
+
+      Credentials are never injected as plain environment variables. When a Recipe returns them
+      (RabbitMQ does; Azure Service Bus does not, because it uses managed identity), Radius writes
+      them into a managed Kubernetes Secret and publishes only its name on
+      `properties.secrets.name`. Bind them explicitly in the container definition:
+
+      ```bicep
+      env: {
+        CONNECTION_QUEUE_USERNAME: {
+          valueFrom: {
+            secretKeyRef: {
+              secretName: queue.properties.secrets.name
+              key: 'username'
+            }
+          }
+        }
+        CONNECTION_QUEUE_PASSWORD: {
+          valueFrom: {
+            secretKeyRef: {
+              secretName: queue.properties.secrets.name
+              key: 'password'
+            }
+          }
+        }
+      }
+      ```
+
+      The application reads `provider` and selects the matching client library at startup. When the
+      provider is `servicebus` no credentials are supplied: the worker authenticates with the
+      workload identity whose client ID is published in `workloadIdentityClientId`. Where
+      `oauthTokenEndpoint` is set the worker likewise receives no credentials: it exchanges its
+      projected ServiceAccount token for an access token and presents that to the broker.
+    apiVersions:
+      '2025-08-01-preview':
+        schema:
+          type: object
+          properties:
+            environment:
+              type: string
+              description: "(Required) The Radius Environment ID. Typically set by the rad CLI. Typically value should be `environment`."
+            application:
+              type: string
+              description: "(Optional) The Radius Application ID. `myApplication.id` for example."
+            queueName:
+              type: string
+              description: "(Optional) Name of the queue to create. Defaults to the name of the Radius resource."
+            maxDeliveryCount:
+              type: integer
+              description: "(Optional) How many times a message is redelivered before it is dead-lettered. Defaults to 10."
+            provider:
+              type: string
+              description: "(Read Only) The broker backing this queue. Either `rabbitmq` or `servicebus`. Set by the Recipe."
+              readOnly: true
+            host:
+              type: string
+              description: "(Read Only) Hostname of the broker. Set by RabbitMQ Recipes."
+              readOnly: true
+            port:
+              type: string
+              description: "(Read Only) Port of the broker. Set by RabbitMQ Recipes."
+              readOnly: true
+            namespaceFqdn:
+              type: string
+              description: "(Read Only) Fully qualified domain name of the Azure Service Bus namespace. Set by Azure Recipes."
+              readOnly: true
+            workloadIdentityClientId:
+              type: string
+              description: "(Read Only) Client ID of the user-assigned managed identity federated with the cluster. Set by Azure Recipes."
+              readOnly: true
+            oauthTokenEndpoint:
+              type: string
+              description: "(Read Only) Token endpoint of the identity provider the broker trusts. Set by Recipes that enable OAuth 2.0 on the broker; empty otherwise."
+              readOnly: true
+            oauthClientId:
+              type: string
+              description: "(Read Only) Client the workload authenticates as at the token endpoint."
+              readOnly: true
+            oauthAssertionFile:
+              type: string
+              description: "(Read Only) Path to the projected ServiceAccount token the workload presents as its client assertion."
+              readOnly: true
+            oauthCaFile:
+              type: string
+              description: "(Read Only) Path to the certificate authority that signs the token endpoint's certificate."
+              readOnly: true
+            secrets:
+              type: object
+              description: "(Read Only) Recipe secrets. The reserved `name` sub-property references the managed Radius.Security/secrets resource that Radius materializes from the Recipe's `result.secrets`. Bind a key into a container environment variable with `secretKeyRef`, using `<resource>.properties.secrets.name` as `secretName`."
+              properties:
+                name:
+                  type: string
+                  description: "(Reserved) Name of the managed Radius.Security/secrets resource. Use as `secretName` in a container `secretKeyRef`."
+                  readOnly: true
+                username:
+                  type: string
+                  description: "Username used to authenticate to the broker. Set by RabbitMQ Recipes; delivered via the managed secret."
+                  readOnly: true
+                password:
+                  type: string
+                  description: "Password used to authenticate to the broker. Set by RabbitMQ Recipes; delivered via the managed secret."
+                  readOnly: true
+          required: [environment]

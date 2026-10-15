@@ -1,0 +1,68 @@
+{
+  "Azure": {
+    "Common": {
+      "SubscriptionId": "<subscription-id>",
+      "Location": "eastus2",
+      "ClusterName": "bcd-aks",
+      "WorkspaceName": "bcd-azure"
+    },
+    "Cluster": {
+      "ResourceGroup": "bcd-infra",
+      "RegistryName": "<globally-unique-acr-name>"
+    },
+    "Ingress": {
+      "KubeContext": "bcd-aks",
+      "DnsLabel": "<dns-label>",
+      "PrivateCa": false
+    },
+    "Identity": {
+      "SpaOrigins": [ "https://<dns-label>.eastus2.cloudapp.azure.com" ]
+    },
+    "Deploy": {
+      "Registry": "<globally-unique-acr-name>.azurecr.io",
+      "AppInfraResourceGroup": "bcd-infra",
+      "WorkloadIdentityClientId": "<printed by setup-platform: Cluster>",
+      "WorkloadIdentityPrincipalId": "<printed by setup-platform: Cluster>",
+      "ResourceGroup": "bcd",
+      "IngressCertIssuer": "letsencrypt"
+    }
+  },
+  "AzureLocal": {
+    "Common": {
+      "KubeContext": "bcd-aksarc",
+      "SubscriptionId": "<subscription-id>",
+      "RegistryName": "<acr-name>"
+    },
+    "Cluster": {
+      "CustomLocationName": "<azure-local-custom-location>",
+      "AddressPrefix": "192.168.44.0/24",
+      "Gateway": "192.168.44.1",
+      "DnsServers": [ "192.168.44.10" ],
+      "IpPoolStart": "192.168.44.121",
+      "IpPoolEnd": "192.168.44.180",
+      "ControlPlaneIp": "192.168.44.120"
+    },
+    "Images": {
+      "Mode": "Mirror",
+      "Registry": "<acr-name>.azurecr.io"
+    },
+    "Registry": {},
+    "Keycloak": {
+      "AdServer": "<domain-controller-fqdn>",
+      "AdDomain": "<ad-domain>",
+      "Registry": "10.96.0.50",
+      "ImagePullSecretName": "azurelocal-registry",
+      "ImagePullSecretSourceNamespace": "bcd-azurelocal",
+      "WorkloadNamespace": "bcd-azurelocal",
+      "AllowInClusterIssuer": true
+    },
+    "Ingress": {
+      "Addresses": "192.168.44.200-192.168.44.210",
+      "IngressIp": "192.168.44.200"
+    },
+    "Identity": {
+      "SpaOrigins": [ "https://192.168.44.200" ]
+    },
+    "Deploy": {}
+  }
+}
