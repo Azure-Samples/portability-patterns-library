@@ -197,7 +197,7 @@ Recipes and recipe packs are distributed differently, following the Radius commu
 | **Recipe pack** | GitHub release bundle (`.tar.gz` and checksums) | Git tag per pack, for example `recipe-pack/azure-local-disconnected/v0.1.0` | The customer downloads the Bicep file and deploys it with `rad deploy` |
 
 - **Recipes are pulled by Radius, so they live in a registry.** `rad deploy` accepts only a local file or an http(s) URL, not an OCI reference, which is why packs are released as files.
-- **Packs pin every recipe.** A pack references each recipe by version tag, never `latest`, so a released pack version identifies one tested set.
+- **Pinning is optional, but it is what makes a pack reproducible.** A pack that references each recipe by version tag identifies one tested set. A pack may use a floating tag such as `latest`, but then it cannot claim a validated set, because the recipe can change underneath it.
 - **Public registry.** Recipes are published where they can be pulled anonymously, and the release checks this.
 - **Disconnected sites** mirror the recipes into their local registry before a disruption and point the pack's sources at it. The pack itself is only a file to carry in.
 
