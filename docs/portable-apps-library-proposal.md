@@ -179,16 +179,29 @@ The values above. Status, class, summary and maturity are set per alternative on
 
 **Future:** CI generates `catalog/resources.json` from the `facts.yaml` files and the portal consumes the released file for its messages. This needs an agreed schema version and release cadence first.
 
-## 7. Testing and release
+## 7. Testing
 
 - **Done means:** guide + `facts.yaml` + references + documented compromises + a runnable example. Without a run on that target, the maturity is `documented`.
 - **Testing:**
   - Public CI deploys each recipe's `test/app.bicep` and each pack on Kubernetes.
   - Azure Local and ALDO cannot run in public CI. A `validated` label there means the scripted example or sample was deployed on that target, with the recipe pack version, platform build and software version recorded in `facts.yaml` (`validatedWith`). No logs are stored; the deployment is scripted, so anyone can re-run it.
   - Anything not run on that target is labelled `documented` instead. A `validated` label is re-checked when the pack, platform or software version changes, or when `lastReviewed` lapses.
-- **Releases:** independent semantic-version tags per recipe and per pack. Recipes are published as OCI artifacts; disconnected users mirror them to a local registry.
 
-## 8. Open questions
+## 8. Distribution
+
+Recipes and recipe packs are distributed differently, following the Radius community convention.
+
+| Artifact | Published as | Versioned by | How a customer uses it |
+|---|---|---|---|
+| **Recipe** | OCI artifact in a public registry, pushed with `rad bicep publish` | Semantic-version tag per recipe, plus an immutable commit SHA tag | A pack lists it as a `source`; Radius pulls it at deploy time |
+| **Recipe pack** | GitHub release bundle (`.tar.gz` and checksums) | Git tag per pack, for example `recipe-pack/azure-local-disconnected/v0.1.0` | The customer downloads the Bicep file and deploys it with `rad deploy` |
+
+- **Recipes are pulled by Radius, so they live in a registry.** `rad deploy` accepts only a local file or an http(s) URL, not an OCI reference, which is why packs are released as files.
+- **Packs pin every recipe.** A pack references each recipe by version tag, never `latest`, so a released pack version identifies one tested set.
+- **Public registry.** Recipes are published where they can be pulled anonymously, and the release checks this.
+- **Disconnected sites** mirror the recipes into their local registry before a disruption and point the pack's sources at it. The pack itself is only a file to carry in.
+
+## 9. Open questions
 
 1. Is **Portable Apps Library** the right name, and which organization hosts it?
 2. Do recipes live here, or in the Radius community repository (`resource-types-contrib`) wherever a Resource Type already exists?
