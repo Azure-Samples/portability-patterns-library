@@ -157,6 +157,81 @@ the cluster and Entra sign-in to the cluster do not.
 [docs/workload-identity.md](./docs/workload-identity.md) explains how the app authenticates without
 secrets on each platform.
 
+## Connect your Active Directory
+
+On Azure, app roles are assigned to Entra groups. On Azure Local the same roles come from **Active
+Directory groups**, read by Keycloak. Your directory needs a few objects, and Keycloak needs to
+know where to find them.
+
+### 1. Create the objects in AD
+
+Run this as a domain administrator on any machine with the Active Directory PowerShell module
+(RSAT), for example the domain controller:
+
+```powershell
+$domain = Get-ADDomain
+$ou     = "OU=OMS,$($domain.DistinguishedName)"
+
+# An OU for the app's users and groups. Keycloak reads only this OU and below.
+New-ADOrganizationalUnit -Name OMS -Path $domain.DistinguishedName
+
+# One group per app role
+New-ADGroup -Name oms-app-readers -GroupScope Global -GroupCategory Security -Path $ou   # Orders.Read
+New-ADGroup -Name oms-app-writers -GroupScope Global -GroupCategory Security -Path $ou   # Orders.Create
+
+# A read-only bind account for Keycloak. Every authenticated account can read the directory,
+# so it needs no privileged group.
+New-ADUser -Name svc-keycloak -SamAccountName svc-keycloak -Path $ou `
+    -UserPrincipalName "svc-keycloak@$($domain.DNSRoot)" `
+    -AccountPassword (Read-Host -AsSecureString 'Bind password') -PasswordNeverExpires $true -Enabled $true
+
+# Give people access by adding them to the groups
+Add-ADGroupMember -Identity oms-app-readers -Members <user>
+Add-ADGroupMember -Identity oms-app-writers -Members <user>
+```
+
+Users who sign in to the app must sit in the OU (or below it). To use an existing OU instead, pass
+its name to `keycloak.ps1 -AdOuName`.
+
+Keycloak should reach the directory over **LDAPS (port 636)**, which needs the domain controller to
+have a server certificate from a certificate authority, for example AD Certificate Services. Export
+that CA's root certificate as `ca.crt` (Base-64 encoded).
+
+### 2. Give Keycloak the bind account and the CA
+
+```powershell
+kubectl create namespace identity
+kubectl -n identity create secret generic oms-ad-bind `
+    --from-literal=bind-upn=svc-keycloak@<domain> --from-literal=bind-password=<password>
+kubectl -n identity create secret generic oms-ad-ca --from-file=ca.crt=<path to ca.crt>
+```
+
+### 3. How Keycloak uses the directory
+
+[keycloak.ps1](./scripts/azurelocal/keycloak.ps1) and
+[configure-app-identity.ps1](./scripts/azurelocal/configure-app-identity.ps1) set this up:
+
+| Keycloak setting | Value | Effect |
+|---|---|---|
+| User federation | LDAP, vendor Active Directory, `ldaps://<dc>:636`, users DN = the OU | users sign in with their AD user name (`sAMAccountName`) and password; Keycloak checks the password against AD |
+| Edit mode | read only | AD stays the source of truth; Keycloak never writes to it |
+| Import | on sign-in | a user appears in Keycloak the first time they sign in; there is no scheduled sync |
+| Account controls mapper | on | disabled or locked AD accounts cannot sign in |
+| Group mapper | groups DN = the OU, membership from the `member` attribute | AD groups appear as Keycloak groups; membership is read from AD, so changes apply at the user's next sign-in |
+| Group → role mapping | `oms-app-readers` → `Orders.Read`, `oms-app-writers` → `Orders.Create` | the roles land in the token's `roles` claim, the same claim Entra uses, so the API's checks are unchanged |
+
+Day to day, granting or removing access is only AD group membership. Nothing changes in Keycloak.
+
+To add a role, create the AD group in the OU, add the role to the API, and map the group to the
+role in Keycloak (*Groups* → the group → *Role mapping*). A new group shows up in Keycloak once a
+member signs in, or straight away with *User federation* → *active-directory* → *Mappers* →
+*group-mapper* → *Sync LDAP groups to Keycloak*. On Azure, the matching step is assigning the app
+role to an Entra group.
+
+[ad-setup.ps1](./scripts/azurelocal/ad-setup.ps1) does steps 1 and 2 in one go, plus a test user,
+when the domain controller is a Hyper-V VM on the machine you run it from (it uses PowerShell
+Direct).
+
 ## Deploy it by hand
 
 With the prerequisites in place, deploying is only Radius commands. For Azure Local:
@@ -197,11 +272,6 @@ Both read site values from `scripts/settings.json`; copy it from
 `Get-Help ./scripts/<path>.ps1 -Full`. `./scripts/azurelocal/diagnose.ps1` checks an Azure Local
 deployment layer by layer.
 
-[lab/azurelocal/ad-setup.ps1](./lab/azurelocal/ad-setup.ps1) prepares a lab domain controller
-(demo OU, groups, bind account and demo user). A real site already has these; Keycloak only needs a
-bind account in the Secret `oms-ad-bind` (`bind-upn`, `bind-password`) and the directory's CA in
-`oms-ad-ca` (`ca.crt`).
-
 ## Repository layout
 
 ```
@@ -219,8 +289,7 @@ bind account in the Secret `oms-ad-bind` (`bind-upn`, `bind-password`) and the d
 │   └── infra/                      Azure platform (AKS, ACR, identities)
 ├── docker/                      Dockerfiles for the API and processor
 ├── docs/                        workload identity explained
-├── scripts/                     optional automation (see above)
-└── lab/                         lab-only domain controller setup
+└── scripts/                     optional automation (see above)
 ```
 
 ## Configuration reference

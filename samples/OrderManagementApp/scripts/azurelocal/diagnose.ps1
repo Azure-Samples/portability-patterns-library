@@ -290,7 +290,7 @@ try {
 
     foreach ($secret in 'oms-ad-bind', 'oms-ad-ca') {
         if (Invoke-Probe { kubectl get secret $secret -n $IdentityNamespace --context $KubeContext -o name }) { Write-Check PASS "secret $IdentityNamespace/$secret" }
-        else { Write-Check FAIL "secret $IdentityNamespace/$secret" 'missing; run lab/azurelocal/ad-setup.ps1 (lab) or create it for your directory' }
+        else { Write-Check FAIL "secret $IdentityNamespace/$secret" 'missing; create it for your directory or run scripts/azurelocal/ad-setup.ps1' }
     }
 
     # ------------------------------------------------------------------------------------------

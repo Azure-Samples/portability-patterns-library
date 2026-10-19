@@ -26,7 +26,8 @@
     step only. Keep secrets out of it; the scripts read those from Kubernetes Secrets.
 
     Azure Local expects a Keycloak bind account for the site's Active Directory in the Secret
-    identity/oms-ad-bind. In the lab, lab/azurelocal/ad-setup.ps1 creates it.
+    identity/oms-ad-bind and the directory's CA in identity/oms-ad-ca. Create them by hand (see
+    the sample README) or with azurelocal/ad-setup.ps1.
 
 .EXAMPLE
     ./scripts/setup-platform.ps1 -Target AzureLocal

@@ -23,7 +23,7 @@
     -AllowInClusterIssuer. A cluster configured with an externally reachable issuer needs no switch.
 
 .PARAMETER AdServer
-    Host name of the site's domain controller (prepared in the lab by lab/azurelocal/ad-setup.ps1). Under LDAPS this must
+    Host name of the site's domain controller. Under LDAPS this must
     be the name in the controller's certificate, not its address, or the handshake fails.
 
 .PARAMETER Registry
@@ -265,8 +265,8 @@ externally reachable service-account issuer.
     if (-not $bindDn -or -not $bindPassword) {
         throw @"
 No usable '$BindSecretName' Secret in namespace '$Namespace'.
-Create it with the directory bind account (keys bind-upn, bind-password); in the lab,
-lab/azurelocal/ad-setup.ps1 does this.
+Create it with the directory bind account (keys bind-upn, bind-password), or run
+scripts/azurelocal/ad-setup.ps1.
 "@
     }
 
@@ -308,7 +308,7 @@ lab/azurelocal/ad-setup.ps1 does this.
 
         $adCaPem = Get-SecretValue -Name $CaSecretName -Key 'ca.crt'
         if (-not $adCaPem) {
-            throw "Secret '$CaSecretName' is missing from namespace '$Namespace', so the directory's certificate cannot be trusted. Create it with the directory's CA certificate (key ca.crt; lab/azurelocal/ad-setup.ps1 does this in the lab), or pass -UseLdaps:`$false."
+            throw "Secret '$CaSecretName' is missing from namespace '$Namespace', so the directory's certificate cannot be trusted. Create it with the directory's CA certificate (key ca.crt; scripts/azurelocal/ad-setup.ps1 does this), or pass -UseLdaps:`$false."
         }
     }
     else {

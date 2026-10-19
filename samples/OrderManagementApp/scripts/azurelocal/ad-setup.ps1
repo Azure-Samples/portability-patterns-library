@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Prepares the Azure Local site's existing Active Directory domain controller as the identity
-    source for Keycloak (lab only).
+    source for Keycloak.
 
 .DESCRIPTION
     On AKS a workload proves who it is with a federated managed identity, which only works while
@@ -10,11 +10,10 @@
     instance is already joined to fills that role: it keeps serving its own tickets and LDAP binds
     with no connectivity to anything outside.
 
-    The script targets that existing domain controller (DC01 in the lab) and adds only what the
-    sample needs:
+    The script targets that existing domain controller and adds only what the sample needs:
       * AD Certificate Services, if no certificate authority is installed yet, so the controller
         enrols a server certificate and LDAPS works on 636. An existing CA is reused.
-      * The demo OU, the oms-app-readers / oms-app-writers groups, the Keycloak bind account and a
+      * The OMS OU, the oms-app-readers / oms-app-writers groups, the Keycloak bind account and a
         sample user in both groups.
       * Two Kubernetes Secrets in the cluster: the bind and sample-user credentials, and the CA
         root certificate for Keycloak to trust LDAPS.
@@ -22,9 +21,9 @@
     The controller's network settings and DNS forwarders are left untouched and the directory
     service is not restarted: LDAP is told to reload its certificate instead.
 
-    Everything runs over PowerShell Direct from the Hyper-V host, which reaches the guest through
-    the hypervisor rather than the network. A customer site already has users and groups and only
-    needs a read-only bind account; this script exists to stand up the lab.
+    Everything runs over PowerShell Direct, so run it on the Hyper-V host that runs the domain
+    controller VM. If your controller is elsewhere, make the same objects with the Active Directory
+    PowerShell module instead; the sample README lists them under "Connect your Active Directory".
 
     The script is safe to re-run. Re-running resets the bind and sample-user passwords and
     rewrites the Secrets.
@@ -39,7 +38,7 @@
 
 .EXAMPLE
     # Elevated, on the Hyper-V host that runs the domain controller VM.
-    ./lab/azurelocal/ad-setup.ps1 -VmName DC01 -DomainName azurelocal.lab -NetbiosName AZURELOCAL `
+    ./scripts/azurelocal/ad-setup.ps1 -VmName DC01 -DomainName azurelocal.lab -NetbiosName AZURELOCAL `
         -KubeContext bcd-aksarc
 #>
 [CmdletBinding()]
