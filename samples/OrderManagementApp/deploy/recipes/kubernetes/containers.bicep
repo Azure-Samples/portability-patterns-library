@@ -509,8 +509,8 @@ resource deployment 'apps/Deployment@v1' = {
         // Binds the pod to the annotated ServiceAccount so Kubernetes mints a token whose `sub`
         // claim matches the federated identity credential.
         empty(platformServiceAccountName) ? {} : { serviceAccountName: platformServiceAccountName },
-        // Lets the kubelet authenticate to a private registry, as required in air-gapped
-        // environments where images cannot come from a public registry.
+        // Lets the kubelet authenticate to a private registry, such as the in-cluster connected
+        // registry on Azure Local.
         empty(platformImagePullSecrets) ? {} : { imagePullSecrets: platformImagePullSecrets }
       )
     }

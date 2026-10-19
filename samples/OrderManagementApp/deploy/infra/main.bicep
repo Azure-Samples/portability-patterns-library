@@ -2,13 +2,13 @@
 //
 // Creates everything the application deployment assumes already exists:
 //
-//   * Azure Container Registry, holding both the worker images and the Bicep Recipes.
+//   * Azure Container Registry, holding both the application images and the Bicep Recipes.
 //   * AKS cluster with the OIDC issuer and workload identity both enabled.
 //   * AcrPull for the cluster's kubelet identity, the declarative equivalent of
-//     `az aks update --attach-acr`, so the kubelet can pull the worker images.
+//     `az aks update --attach-acr`, so the kubelet can pull the application images.
 //   * A user-assigned managed identity plus a federated identity credential (FIC) trusting the
 //     cluster's OIDC issuer for one specific Kubernetes service account. This is what lets the
-//     workers reach Service Bus, Blob Storage and Azure SQL without any secret.
+//     API and processor reach Service Bus, Blob Storage and Azure SQL without any secret.
 //
 // This is deliberately separate from the application deployment: it changes rarely, and it needs
 // far higher privileges (role assignments require Owner or User Access Administrator).
@@ -34,12 +34,12 @@ param clusterName string = 'bcd-aks'
 @maxLength(50)
 param registryName string
 
-@description('Name of the user-assigned managed identity the workers federate with.')
+@description('Name of the user-assigned managed identity the application pods federate with.')
 param identityName string = 'bcd-workload-identity'
 
 @description('''
 Name of the user-assigned managed identity the Radius control plane federates with. This is a
-different identity from the one the workers use: it lets Radius provision Azure resources without a
+different identity from the one the application uses: it lets Radius provision Azure resources without a
 client secret, replacing `rad credential register azure sp`.
 ''')
 param radiusIdentityName string = 'bcd-radius-identity'
@@ -47,7 +47,7 @@ param radiusIdentityName string = 'bcd-radius-identity'
 @description('Kubernetes namespace the application is deployed into. Must match the Radius Environment namespace.')
 param appNamespace string = 'oms-azure'
 
-@description('Kubernetes service account the workers run as. Must match what the Radius Environment injects.')
+@description('Kubernetes service account the application pods run as. Must match what the Azure Recipe Pack sets.')
 param serviceAccountName string = 'oms-workload-identity'
 
 @description('Number of nodes in the system pool.')

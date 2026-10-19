@@ -3,10 +3,10 @@
 // VENDORED, UNMODIFIED, from radius-project/resource-types-contrib:
 //   Security/secrets/recipes/kubernetes/bicep/kubernetes-secrets.bicep
 //
-// The connected environments pull this Recipe straight from ghcr.io. Azure Local with disconnected
-// operations cannot reach ghcr.io, and mirroring an OCI artifact needs extra tooling (oras) and an
-// extra air-gap transfer step. Keeping the source here means every Recipe is published from this
-// repository with `rad bicep publish`, so the air gap only ever has to carry container images.
+// The Azure Recipe Pack pulls the stock Recipe from ghcr.io. On Azure Local every Recipe is pulled from
+// the ACR connected registry inside the cluster, so Radius never needs the internet and keeps working
+// when the site loses its link to Azure. Keeping the source here lets it be published with
+// `rad bicep publish` like the other Recipes, instead of mirroring an OCI artifact from ghcr.io.
 //
 // Radius materializes Recipe secret outputs through this type, so the queue and object storage
 // Recipes depend on it. Re-sync it from upstream when updating Radius.

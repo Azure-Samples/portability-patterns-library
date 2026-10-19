@@ -1,9 +1,8 @@
 // Recipe: Radius.Data/sqlServerDatabases -> Azure SQL Database (managed PaaS).
 //
-// This is the production binding for the same Resource Type that the local environment backs with a
-// SQL Server container. Switching environments changes the Recipe, never the application.
+// The same Resource Type is backed by a SQL Server container on Azure Local. Switching environments changes the Recipe, never the application.
 //
-// The Entra ID admin is set to the application's managed identity, so the worker can obtain an
+// The Entra ID admin is set to the application's managed identity, so the API and processor obtain an
 // access token through Workload Identity and connect without a password. The SQL administrator
 // login is still created because the Resource Type requires it and it provides a break-glass path.
 

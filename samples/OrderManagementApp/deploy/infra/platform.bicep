@@ -9,7 +9,7 @@ param clusterName string
 @description('Globally unique container registry name.')
 param registryName string
 
-@description('Name of the user-assigned managed identity the workers federate with.')
+@description('Name of the user-assigned managed identity the application pods federate with.')
 param identityName string
 
 @description('Name of the user-assigned managed identity the Radius control plane federates with.')
@@ -18,7 +18,7 @@ param radiusIdentityName string
 @description('Kubernetes namespace the application is deployed into.')
 param appNamespace string
 
-@description('Kubernetes service account the workers run as.')
+@description('Kubernetes service account the application pods run as.')
 param serviceAccountName string
 
 @description('Number of nodes in the system pool.')
@@ -154,7 +154,7 @@ resource federatedCredential 'Microsoft.ManagedIdentity/userAssignedIdentities/f
   }
 }
 
-// Declarative equivalent of `az aks update --attach-acr`: lets the kubelet pull worker images.
+// Declarative equivalent of `az aks update --attach-acr`: lets the kubelet pull application images.
 // This covers image pulls only. Recipe pulls are performed by the Radius control plane and are
 // configured separately through deploy/registry-auth.bicep.
 resource acrPullAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
