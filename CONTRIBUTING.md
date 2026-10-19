@@ -1,7 +1,9 @@
 # Contributing
 
-This project welcomes contributions and suggestions, including improvements to
-portability patterns, sample applications, deployment recipes, and documentation.
+This repository is maintained by Microsoft and is not currently accepting unsolicited
+external pull requests. Bug reports and questions are welcome through GitHub Issues.
+Any contributions accepted by the maintainers remain subject to Microsoft's
+Contributor License Agreement requirements.
 
 ## Contributor License Agreement
 
@@ -28,12 +30,16 @@ unmet.
 - For bugs, include the sample, environment, tool versions, reproduction steps,
   expected behavior, and actual behavior. Remove credentials, tokens, personal
   data, and other sensitive information from logs and configuration.
-- For substantial changes or new patterns, open an issue to discuss the proposed
-  approach before implementing it.
+- For proposed changes or new patterns, open an issue to discuss the approach.
+  Obtain maintainer approval before implementing a change or submitting an external
+  pull request.
 - Report security vulnerabilities privately following [SECURITY.md](./SECURITY.md).
   Do not report them in public issues or pull requests.
 
 ## Development workflow
+
+The following workflow applies to maintainers and contributors whose changes have
+been approved by the maintainers.
 
 1. Fork the repository and create a branch for your change.
 2. Read the [project overview](./README.md) and the relevant sample documentation.
