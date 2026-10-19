@@ -10,7 +10,7 @@
 
     This rebuilds the same shape with nothing outside the site in the path:
 
-      k3s issues a ServiceAccount token  ->  Keycloak verifies it against the cluster JWKS and
+      the cluster issues a ServiceAccount token  ->  Keycloak verifies it against the cluster JWKS and
       exchanges it for an access token   ->  the workload presents that token to a backing service
 
     Keycloak gets its users and groups from the domain controller over LDAP, so the directory
@@ -18,51 +18,52 @@
     The 'kubernetes' identity provider below is the trust statement that corresponds to a
     federated identity credential on a managed identity.
 
-    lab/aldo/arc-k3s.ps1 must have run first, because the exchange depends on the external
-    token issuer and the anonymous discovery endpoints it configures.
+    Keycloak trusts the cluster's ServiceAccount token issuer. On AKS enabled by Arc that is the
+    default in-cluster issuer, which Keycloak can resolve because it runs in the same cluster: pass
+    -AllowInClusterIssuer. A cluster configured with an externally reachable issuer needs no switch.
 
 .PARAMETER AdServer
-    Host name of the domain controller created by lab/aldo/addc-vm.ps1. Under LDAPS this must
+    Host name of the site's domain controller (prepared in the lab by lab/azurelocal/ad-setup.ps1). Under LDAPS this must
     be the name in the controller's certificate, not its address, or the handshake fails.
 
 .PARAMETER Registry
-    Login server of the appliance registry holding the mirrored Keycloak and PostgreSQL images.
+    Registry holding the mirrored Keycloak and PostgreSQL images, normally the in-cluster connected registry.
     Omit to pull from the public registries, which only works where the cluster has internet.
 
 .PARAMETER UseLdaps
     Bind to the directory over LDAPS on 636, which is the default. The certificate comes from the
-    enterprise CA that addc-vm.ps1 installs. Pass -UseLdaps:$false to fall back to plain LDAP on
+    directory's enterprise CA, handed over in the '' Secret. Pass -UseLdaps:$false to fall back to plain LDAP on
     389, which sends the bind password and every user password across the network in the clear.
 
 .EXAMPLE
-    ./scripts/azurelocal/keycloak.ps1 -AdServer dc01.bcd.lab -AdDomain bcd.lab `
-        -Registry bcdaldoacr.edgeacr.autonomous.cloud.private
+    ./scripts/azurelocal/keycloak.ps1 -AdServer dc01.azurelocal.lab -AdDomain azurelocal.lab `
+        -Registry 10.96.0.50 -AllowInClusterIssuer
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$AdServer,
-    [string]$AdDomain = 'bcd.lab',
-    [string]$AdOuName = 'BCD',
+    [string]$AdDomain = 'azurelocal.lab',
+    [string]$AdOuName = 'OMS',
     [switch]$UseLdaps = $true,
 
-    [string]$KubeContext = 'bcd-arc-k3s',
+    [string]$KubeContext = 'bcd-aksarc',
     [string]$Namespace = 'identity',
     [string]$ReleaseName = 'keycloak',
 
     [string]$Registry,
-    [string]$ImagePullSecretName = 'aldo-registry',
-    [string]$ImagePullSecretSourceNamespace = 'bcd-aldo',
+    [string]$ImagePullSecretName = 'azurelocal-registry',
+    [string]$ImagePullSecretSourceNamespace = 'oms-azurelocal',
     [string]$KeycloakImage = 'keycloak/keycloak:26.8',
     [string]$PostgresImage = 'postgres:17-alpine',
 
-    [string]$RealmName = 'bcd',
-    [string]$WorkloadClientId = 'bcd-workloads',
+    [string]$RealmName = 'oms',
+    [string]$WorkloadClientId = 'oms-workloads',
 
-    [string]$BindSecretName = 'bcd-ad-bind',
-    [string]$CaSecretName = 'bcd-ad-ca',
-    [string]$WorkloadNamespace = 'bcd-aldo',
-    [string]$WorkloadServiceAccount = 'bcd-workload',
-    [string]$WorkloadCaSecretName = 'bcd-identity-ca',
+    [string]$BindSecretName = 'oms-ad-bind',
+    [string]$CaSecretName = 'oms-ad-ca',
+    [string]$WorkloadNamespace = 'oms-azurelocal',
+    [string]$WorkloadServiceAccount = 'oms-workload',
+    [string]$WorkloadCaSecretName = 'oms-identity-ca',
     [string]$IssuerCaSecretName = 'keycloak-ca',
     [string]$IssuerDiscoveryBinding = 'keycloak-issuer-discovery',
     [int]$NodePort = 30443,
@@ -72,7 +73,7 @@ param(
 
     # Accept the cluster's default issuer, https://kubernetes.default.svc.cluster.local. Keycloak
     # runs inside the same cluster, so that name resolves for it, and it fetches the signing keys
-    # with its own ServiceAccount token. Used on AKS Arc, which has no external issuer configured.
+    # with its own ServiceAccount token. Used on AKS enabled by Arc, which has no external issuer.
     [switch]$AllowInClusterIssuer
 )
 
@@ -222,7 +223,7 @@ try {
     Write-Host "==> Reading the cluster token issuer" -ForegroundColor Cyan
     $discoveryRaw = kubectl --context $KubeContext get --raw /.well-known/openid-configuration 2>$null
     if ($LASTEXITCODE -ne 0) {
-        throw "The API server served no OIDC discovery document. Run lab/aldo/arc-k3s.ps1 first."
+        throw "The API server served no OIDC discovery document, so its token issuer cannot be trusted."
     }
 
     $discovery = $discoveryRaw | ConvertFrom-Json
@@ -231,8 +232,8 @@ try {
     if ($issuer -eq 'https://kubernetes.default.svc.cluster.local' -and -not $AllowInClusterIssuer) {
         throw @"
 The cluster still uses its default, internal-only token issuer, which Keycloak cannot resolve.
-Re-run lab/aldo/arc-k3s.ps1 without -SkipOidcIssuer to repoint it, or pass
--AllowInClusterIssuer when Keycloak runs in this same cluster.
+Pass -AllowInClusterIssuer when Keycloak runs in this same cluster, or configure the cluster with an
+externally reachable service-account issuer.
 "@
     }
     Write-Host "    issuer $issuer" -ForegroundColor DarkGray
@@ -264,7 +265,8 @@ Re-run lab/aldo/arc-k3s.ps1 without -SkipOidcIssuer to repoint it, or pass
     if (-not $bindDn -or -not $bindPassword) {
         throw @"
 No usable '$BindSecretName' Secret in namespace '$Namespace'.
-Run lab/aldo/addc-vm.ps1, which creates the bind account and writes it there.
+Create it with the directory bind account (keys bind-upn, bind-password); in the lab,
+lab/azurelocal/ad-setup.ps1 does this.
 "@
     }
 
@@ -306,11 +308,11 @@ Run lab/aldo/addc-vm.ps1, which creates the bind account and writes it there.
 
         $adCaPem = Get-SecretValue -Name $CaSecretName -Key 'ca.crt'
         if (-not $adCaPem) {
-            throw "Secret '$CaSecretName' is missing from namespace '$Namespace', so the directory's certificate cannot be trusted. Re-run addc-vm.ps1 to install the certificate authority, or pass -UseLdaps:`$false."
+            throw "Secret '$CaSecretName' is missing from namespace '$Namespace', so the directory's certificate cannot be trusted. Create it with the directory's CA certificate (key ca.crt; lab/azurelocal/ad-setup.ps1 does this in the lab), or pass -UseLdaps:`$false."
         }
     }
     else {
-        Write-Warning 'Binding over plain LDAP. The bind password and every user password cross the appliance network in the clear.'
+        Write-Warning 'Binding over plain LDAP. The bind password and every user password cross the site network in the clear.'
     }
 
     $realm = [ordered]@{
@@ -514,8 +516,8 @@ Run lab/aldo/addc-vm.ps1, which creates the bind account and writes it there.
         )
 
         groups                = @(
-            [ordered]@{ name = 'bcd-app-readers' }
-            [ordered]@{ name = 'bcd-app-writers' }
+            [ordered]@{ name = 'oms-app-readers' }
+            [ordered]@{ name = 'oms-app-writers' }
         )
     }
 
@@ -531,7 +533,7 @@ metadata:
   namespace: $Namespace
 type: Opaque
 stringData:
-  bcd-realm.json: |
+  oms-realm.json: |
 $(($realmJson -split "`n" | ForEach-Object { '    ' + $_ }) -join "`n")
 "@
     $realmSecretManifest | kubectl --context $KubeContext apply -f - | Out-Null
@@ -544,7 +546,7 @@ metadata:
   namespace: $Namespace
 type: Opaque
 stringData:
-  k3s-ca.pem: |
+  cluster-ca.pem: |
 $(($clusterCaPem -split "`n" | ForEach-Object { '    ' + $_.TrimEnd() }) -join "`n")
 "@
     $clusterCaManifest | kubectl --context $KubeContext apply -f - | Out-Null
@@ -737,7 +739,7 @@ $pullSecretBlock
             # external-to-internal token exchange is only authorised by v1.
             - name: KC_FEATURES
               value: kubernetes-service-accounts:v1
-            # Lets Keycloak open the API server's JWKS endpoint, which is signed by the k3s CA
+            # Lets Keycloak open the API server's JWKS endpoint, which is signed by the cluster CA
             # and would otherwise fail validation.
             - name: KC_TRUSTSTORE_PATHS
               value: /opt/keycloak/conf/truststores

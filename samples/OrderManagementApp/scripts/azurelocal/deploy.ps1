@@ -1,12 +1,12 @@
 <#
 .SYNOPSIS
-    Deploys the Business Continuity Demo App to AKS enabled by Arc on a connected Azure Local
+    Deploys the Order Management sample to AKS enabled by Arc on a connected Azure Local
     instance.
 
 .DESCRIPTION
     The Azure Local instance is connected, but the workload is built to keep running if that link
-    drops. So the backing services are the same in-cluster containers ALDO uses (RabbitMQ, SQL
-    Server, Azurite), identity is the in-cluster Keycloak bound to the site's Active Directory, and
+    drops. So the backing services are in-cluster containers (RabbitMQ, SQL Server, Azurite),
+    identity is the in-cluster Keycloak bound to the site's Active Directory, and
     every image and Recipe is pulled from the ACR connected registry inside the cluster.
 
     Two registries are involved:
@@ -28,7 +28,7 @@
     secret changes, since 'rad install kubernetes' otherwise leaves an existing installation alone.
 
 .PARAMETER RotateSqlPassword
-    Generate a new SQL administrator password instead of reusing the one in 'bcd-sql-admin'. The
+    Generate a new SQL administrator password instead of reusing the one in 'oms-sql-admin'. The
     SQL container keeps no volume, so rotating restarts it empty; use it when the password leaked.
 
 .EXAMPLE
@@ -52,10 +52,10 @@ param(
 
     [switch]$ReinstallRadius,
 
-    [string]$ResourceGroup = 'bcd',
-    [string]$WorkspaceName = 'bcd-azurelocal',
-    [string]$EnvironmentName = 'bcd-azurelocal',
-    [string]$Namespace = 'bcd-azurelocal',
+    [string]$ResourceGroup = 'oms',
+    [string]$WorkspaceName = 'oms-azurelocal',
+    [string]$EnvironmentName = 'oms-azurelocal',
+    [string]$Namespace = 'oms-azurelocal',
     [string]$RadiusVersion = '0.60',
     [string]$ImageTag = 'latest',
 
@@ -67,22 +67,22 @@ param(
 
     [string]$IdentityNamespace = 'identity',
     [string]$KeycloakRelease = 'keycloak',
-    [string]$KeycloakRealm = 'bcd',
+    [string]$KeycloakRealm = 'oms',
     [int]$KeycloakNodePort = 30443,
-    [string]$WorkloadServiceAccount = 'bcd-workload',
-    [string]$IdentityCaSecretName = 'bcd-identity-ca',
+    [string]$WorkloadServiceAccount = 'oms-workload',
+    [string]$IdentityCaSecretName = 'oms-identity-ca',
     [switch]$SkipOAuth,
 
     # Keycloak clients for user sign-in, as registered by scripts/azurelocal/configure-app-identity.ps1.
-    [string]$OrdersApiClientId = 'bcd-orders-api',
-    [string]$OrdersSpaClientId = 'bcd-orders-spa',
+    [string]$OrdersApiClientId = 'oms-api',
+    [string]$OrdersSpaClientId = 'oms-spa',
     [int]$UiLocalPort = 5090,
 
     # Ingress from scripts/azurelocal/provision-ingress.ps1. Used when present; otherwise the app
     # is only reachable through kubectl port-forward.
     [string]$IngressNamespace = 'ingress-nginx',
     [string]$IngressClassName = 'nginx',
-    [string]$IngressTlsSecretName = 'bcd-app-tls',
+    [string]$IngressTlsSecretName = 'oms-app-tls',
 
     [switch]$SkipImageBuild,
     [switch]$SkipRadiusInstall
@@ -122,7 +122,7 @@ function New-ParameterFile {
         parameters     = $parameters
     }
 
-    $path = Join-Path ([System.IO.Path]::GetTempPath()) "bcd-azurelocal-params-$([guid]::NewGuid().ToString('N')).json"
+    $path = Join-Path ([System.IO.Path]::GetTempPath()) "oms-azurelocal-params-$([guid]::NewGuid().ToString('N')).json"
     # The rad CLI rejects a UTF-8 BOM.
     [System.IO.File]::WriteAllText($path, ($document | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
     return $path
@@ -156,7 +156,7 @@ try {
     if ([string]::IsNullOrWhiteSpace($registryCaPem)) {
         throw "ConfigMap '$RegistryCaConfigMapName' is missing from '$Namespace'. Run scripts/azurelocal/connected-registry.ps1 first."
     }
-    $registryCaFile = Join-Path ([System.IO.Path]::GetTempPath()) "bcd-azurelocal-ca-$([guid]::NewGuid().ToString('N')).crt"
+    $registryCaFile = Join-Path ([System.IO.Path]::GetTempPath()) "oms-azurelocal-ca-$([guid]::NewGuid().ToString('N')).crt"
     $temporaryFiles += $registryCaFile
     [System.IO.File]::WriteAllText($registryCaFile, $registryCaPem, [System.Text.UTF8Encoding]::new($false))
 
@@ -167,7 +167,7 @@ try {
     # Build, push and publish to the cloud registry.
     # ------------------------------------------------------------------------------------------
     Invoke-Checked 'rad bicep publish-extension' {
-        rad bicep publish-extension -f deploy/types/messageQueues.yaml --target deploy/types/businessContinuity.tgz
+        rad bicep publish-extension -f deploy/types/messageQueues.yaml --target deploy/types/orderManagement.tgz
     }
 
     # An ACR access token lasts three hours, plenty for one run. It is written to the Docker-
@@ -200,8 +200,8 @@ try {
 
     if (-not $SkipImageBuild) {
         Write-Host "==> Building worker images with $containerTool against base images in $pushRegistry" -ForegroundColor Cyan
-        foreach ($worker in @('publisher', 'consumer')) {
-            $image = "$pushRegistry/bcd/${worker}:$ImageTag"
+        foreach ($worker in @('api', 'processor')) {
+            $image = "$pushRegistry/oms/${worker}:$ImageTag"
             Invoke-Checked "$containerTool build $worker" {
                 & $containerTool build --build-arg "BASE_REGISTRY=$pushRegistry" -f "docker/Dockerfile.$worker" -t $image .
             }
@@ -231,9 +231,9 @@ try {
     $artifacts = @(
         "ucpd:$RadiusVersion", "controller:$RadiusVersion", "applications-rp:$RadiusVersion",
         "dynamic-rp:$RadiusVersion", "deployment-engine:$RadiusVersion", "bicep:$RadiusVersion",
-        "bcd/publisher:$ImageTag", "bcd/consumer:$ImageTag"
-    ) + (Get-ChildItem deploy/recipes/local, deploy/recipes/kubernetes -Filter *.bicep |
-            ForEach-Object { "bcd/recipes/$($_.BaseName):$ImageTag" })
+        "oms/api:$ImageTag", "oms/processor:$ImageTag"
+    ) + (Get-ChildItem deploy/recipes/azurelocal, deploy/recipes/kubernetes -Filter *.bicep |
+            ForEach-Object { "oms/recipes/$($_.BaseName):$ImageTag" })
 
     $basicAuth = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes("$($pullAuth.username):$($pullAuth.password)"))
     $accept = 'application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json'
@@ -254,9 +254,9 @@ try {
     # The cluster pulls latest-tagged images by tag, so a stale digest would still answer 200. The
     # digest in the cloud registry is compared for the images rebuilt by this run.
     $expectedDigests = @{}
-    foreach ($worker in @('publisher', 'consumer')) {
-        $expectedDigests["bcd/${worker}:$ImageTag"] = az acr manifest show-metadata "$pushRegistry/bcd/${worker}:$ImageTag" --query digest --output tsv 2>$null
-        if (-not $expectedDigests["bcd/${worker}:$ImageTag"]) { throw "Could not read the digest of bcd/${worker}:$ImageTag in $pushRegistry." }
+    foreach ($worker in @('api', 'processor')) {
+        $expectedDigests["oms/${worker}:$ImageTag"] = az acr manifest show-metadata "$pushRegistry/oms/${worker}:$ImageTag" --query digest --output tsv 2>$null
+        if (-not $expectedDigests["oms/${worker}:$ImageTag"]) { throw "Could not read the digest of oms/${worker}:$ImageTag in $pushRegistry." }
     }
 
     $deadline = (Get-Date).AddMinutes($SyncTimeoutMinutes)
@@ -334,7 +334,7 @@ try {
         rad env create bootstrap --group $ResourceGroup --workspace $WorkspaceName
     }
 
-    # Same derivation as ALDO: Keycloak is reached on the first node's address and NodePort.
+    # Keycloak is reached on the first node's address and NodePort.
     $oauthIssuer = ''
     if (-not $SkipOAuth) {
         $keycloakReady = kubectl --context $KubeContext -n $IdentityNamespace get deployment $KeycloakRelease `
@@ -382,7 +382,7 @@ try {
     Write-Host "==> Creating the Environment (first pass, no registry credentials)" -ForegroundColor Cyan
     # 'rad resource show' prints a plain-text error to stdout when the resource does not exist yet.
     $existingSettings = $null
-    $settingsJson = rad resource show Radius.Core/bicepSettings bcd-registry-auth `
+    $settingsJson = rad resource show Radius.Core/bicepSettings oms-registry-auth `
         --workspace $WorkspaceName --group $ResourceGroup --output json 2>$null
     if ($LASTEXITCODE -eq 0 -and $settingsJson) {
         $existingSettings = ($settingsJson | Out-String) | ConvertFrom-Json
@@ -408,7 +408,7 @@ try {
             --parameters "@$registryAuthParameters"
     }
 
-    $bicepSettingsId = rad resource show Radius.Core/bicepSettings bcd-registry-auth `
+    $bicepSettingsId = rad resource show Radius.Core/bicepSettings oms-registry-auth `
         --workspace $WorkspaceName --group $ResourceGroup --output json 2>$null |
         ConvertFrom-Json | Select-Object -ExpandProperty id
     if ([string]::IsNullOrWhiteSpace($bicepSettingsId)) {
@@ -427,7 +427,7 @@ try {
 
     # The SQL container authenticates with this password, so it must survive redeployment. Kept in
     # a Kubernetes Secret, generated on first use.
-    $sqlSecretName = 'bcd-sql-admin'
+    $sqlSecretName = 'oms-sql-admin'
     if ($SqlAdminPassword -and $RotateSqlPassword) {
         throw 'Pass either -SqlAdminPassword or -RotateSqlPassword, not both.'
     }
@@ -445,7 +445,7 @@ try {
             # Base64 of random bytes satisfies SQL Server complexity rules and contains no ';'.
             $randomBytes = [byte[]]::new(24)
             [System.Security.Cryptography.RandomNumberGenerator]::Fill($randomBytes)
-            $plainSqlPassword = 'Bcd1!' + [Convert]::ToBase64String($randomBytes)
+            $plainSqlPassword = 'Oms1!' + [Convert]::ToBase64String($randomBytes)
             $verb = if ($RotateSqlPassword) { 'Rotated' } else { 'Generated' }
             Write-Host "==> $verb the SQL administrator password and stored it in secret '$sqlSecretName'" -ForegroundColor DarkGray
         }
@@ -482,8 +482,8 @@ try {
 
     $applicationParameters = New-ParameterFile @{
         # Pinned by digest: with a bare ':latest' the pod spec never changes, so a rebuild never rolls out.
-        publisherImage              = "$PullRegistry/bcd/publisher@$($expectedDigests["bcd/publisher:$ImageTag"])"
-        consumerImage               = "$PullRegistry/bcd/consumer@$($expectedDigests["bcd/consumer:$ImageTag"])"
+        apiImage              = "$PullRegistry/oms/api@$($expectedDigests["oms/api:$ImageTag"])"
+        processorImage               = "$PullRegistry/oms/processor@$($expectedDigests["oms/processor:$ImageTag"])"
         apiAuthentication           = $apiAuthentication
         spaSettings                 = $spaSettings
         sqlAdminUsername            = 'sa'
@@ -521,13 +521,13 @@ try {
     }
     else {
         Write-Host "Open the orders app (MSAL needs a secure context, so it is served on localhost):"
-        Write-Host "  kubectl port-forward -n $Namespace service/publisher-publisher ${UiLocalPort}:8080 --context $KubeContext"
+        Write-Host "  kubectl port-forward -n $Namespace service/api-api ${UiLocalPort}:8080 --context $KubeContext"
         Write-Host "  http://localhost:$UiLocalPort"
     }
-    Write-Host "Watch the workers with:"
-    Write-Host "  kubectl logs -n $Namespace -l radapp.io/resource=consumer --context $KubeContext -f"
+    Write-Host "Watch the order processor with:"
+    Write-Host "  kubectl logs -n $Namespace -l radapp.io/resource=processor --context $KubeContext -f"
     Write-Host "Check the records written to SQL Server (the password is read from '$sqlSecretName'):"
-    Write-Host "  ./lab/local/verify.ps1 -KubeContext $KubeContext -Namespace $Namespace"
+    Write-Host "  ./lab/azurelocal/verify.ps1 -KubeContext $KubeContext -Namespace $Namespace"
     Write-Host "Troubleshoot the platform with:"
     Write-Host "  ./scripts/azurelocal/diagnose.ps1"
 }

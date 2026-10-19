@@ -29,6 +29,8 @@
 [CmdletBinding()]
 param(
     [string]$ResourceGroup = 'bcd-azurelocal',
+    # The Premium ACR the connected registry syncs from; usually set as Common.RegistryName in settings.json.
+    [string]$RegistryName = '<acr-name>',
     [string]$ClusterName = 'bcd-aksarc',
     [string]$KubeContext = 'bcd-aksarc',
     [string]$LoadBalancerName = 'bcd-lb',
@@ -42,11 +44,11 @@ param(
     [string]$WebhookCertgenTag = 'v1.6.9',
     [string]$PullRegistry = '10.96.0.50',
     [string]$PullSecretName = 'azurelocal-registry',
-    [string]$ApplicationNamespace = 'bcd-azurelocal',
-    [string]$TlsSecretName = 'bcd-app-tls',
+    [string]$ApplicationNamespace = 'oms-azurelocal',
+    [string]$TlsSecretName = 'oms-app-tls',
     [string]$CaSecretName = 'bcd-site-ca',
     [string]$CaCommonName = 'BCD Azure Local Site CA',
-    [string]$IdentityCaSecretName = 'bcd-identity-ca',
+    [string]$IdentityCaSecretName = 'oms-identity-ca',
     [int]$CertificateDays = 365
 )
 
@@ -108,6 +110,7 @@ try {
     # ------------------------------------------------------------------------------------------
     Write-Host "==> Syncing ingress-nginx images to the connected registry" -ForegroundColor Cyan
     ./scripts/azurelocal/connected-registry.ps1 -KubeContext $KubeContext `
+        -ResourceGroup $ResourceGroup -RegistryName $RegistryName `
         -Repositories @('ingress-nginx/controller', 'ingress-nginx/kube-webhook-certgen') |
         Where-Object { $_ -match '^==>' }
 
@@ -222,7 +225,7 @@ controller:
     # Sign-in redirects the browser to Keycloak, whose certificate comes from the identity CA.
     $identityCaPem = Get-SecretData $ApplicationNamespace $IdentityCaSecretName 'ca.crt'
     if ($identityCaPem) {
-        $caFiles += Join-Path $repoRoot 'bcd-identity-ca.crt'
+        $caFiles += Join-Path $repoRoot 'oms-identity-ca.crt'
         [IO.File]::WriteAllText($caFiles[1], $identityCaPem)
     }
 

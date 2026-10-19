@@ -13,14 +13,14 @@
 // schema but not yet supported. Use a scoped ACR token rather than enabling the ACR admin user:
 //
 //   az acr token create --registry <acr> --name bcd-recipe-puller \
-//       --repository bcd/recipes content/read --output json
+//       --repository oms/recipes content/read --output json
 //
 // DEPLOYMENT ORDER
 // The Environment references these settings, so the two cannot be created in a single pass.
 // Deploy in this order:
 //
 //   1. rad deploy deploy/environments/azure.bicep                          (Environment, no auth)
-//   2. rad deploy deploy/registry-auth.bicep -e bcd-azure                  (this file)
+//   2. rad deploy deploy/registry-auth.bicep -e oms-azure                  (this file)
 //   3. rad deploy deploy/environments/azure.bicep -p configureRegistryAuth=true
 //
 // scripts/azure/deploy.ps1 performs all three automatically when -RegistryUsername is supplied.
@@ -38,13 +38,13 @@ param registryUsername string
 param registryPassword string
 
 resource registrySecret 'Applications.Core/secretStores@2023-10-01-preview' = {
-  name: 'bcd-registry-credentials'
+  name: 'oms-registry-credentials'
   properties: {
     // Deliberately NOT Radius.Security/secrets. That Resource Type is provisioned by a Recipe, and
     // in an air-gapped environment its Recipe lives in the very registry these credentials unlock,
     // so creating it fails with 401 before the credentials exist. Applications.Core/secretStores is
     // built into the control plane and needs no Recipe, which breaks the cycle.
-    resource: 'radius-system/bcd-registry-credentials'
+    resource: 'radius-system/oms-registry-credentials'
     type: 'basicAuthentication'
     data: {
       username: {
@@ -60,7 +60,7 @@ resource registrySecret 'Applications.Core/secretStores@2023-10-01-preview' = {
 }
 
 resource bicepRegistry 'Radius.Core/bicepSettings@2025-08-01-preview' = {
-  name: 'bcd-registry-auth'
+  name: 'oms-registry-auth'
   properties: {
     // Keyed by hostname. Radius matches this against the host in each Recipe's source.
     registryAuthentications: {

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Layer 0: provisions the Azure platform infrastructure for the Business Continuity Demo App.
+    Layer 0: provisions the Azure platform infrastructure for the Order Management sample.
 
 .DESCRIPTION
     Creates the resource group, container registry, AKS cluster (OIDC issuer + workload identity),
@@ -42,12 +42,12 @@ param(
     [string]$ClusterName = 'bcd-aks',
     [string]$IdentityName = 'bcd-workload-identity',
     [string]$RadiusIdentityName = 'bcd-radius-identity',
-    [string]$AppNamespace = 'bcd-azure',
-    [string]$ServiceAccountName = 'bcd-workload-identity',
+    [string]$AppNamespace = 'oms-azure',
+    [string]$ServiceAccountName = 'oms-workload-identity',
     # Radius workspace bound to the AKS cluster. Radius CLI commands target the workspace's
     # Kubernetes context, which is NOT necessarily the current kubectl context, so this must exist
     # before any `rad` command that talks to the control plane.
-    [string]$WorkspaceName = 'bcd-azure',
+    [string]$WorkspaceName = 'oms-azure',
     [int]$NodeCount = 2,
     [string]$NodeVmSize = 'Standard_D4s_v7',
     [ValidateSet('Basic', 'Standard', 'Premium')][string]$RegistrySku = 'Standard',

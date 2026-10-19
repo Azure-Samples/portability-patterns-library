@@ -8,14 +8,11 @@
     *from the cluster*, not just from your workstation.
 
 .PARAMETER Registry
-    Registry host and path prefix, for example 'myregistry.azurecr.io' or
-    'registry.bcd-registry.svc.cluster.local:5000'.
+    Registry host and path prefix, for example 'myregistry.azurecr.io'.
 
 .PARAMETER Set
-    Which Recipe set to publish: 'local', 'azure', 'aldo', 'azurelocal', 'kubernetes' or 'all'.
-
-.EXAMPLE
-    ./scripts/publish-recipes.ps1 -Registry registry.bcd-registry.svc.cluster.local:5000 -Set local -PlainHttp
+    Which Recipe set to publish: 'azure', 'azurelocal' or 'all'. The shared Kubernetes Recipes
+    (deploy/recipes/kubernetes) are always published with it.
 
 .EXAMPLE
     ./scripts/publish-recipes.ps1 -Registry myregistry.azurecr.io -Set azure
@@ -25,7 +22,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Registry,
 
-    [ValidateSet('local', 'azure', 'aldo', 'azurelocal', 'kubernetes', 'all')]
+    [ValidateSet('azure', 'azurelocal', 'all')]
     [string]$Set = 'all',
 
     [string]$Tag = 'latest',
@@ -36,32 +33,10 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
-# A single-element array returned from an `if` expression is unrolled to a scalar, which turns the
-# later `+=` into string concatenation ('azure' + 'kubernetes' = 'azurekubernetes'). Building an
-# explicit list avoids that.
-$sets = [System.Collections.Generic.List[string]]::new()
-if ($Set -eq 'all') {
-    $sets.Add('local')
-    $sets.Add('azure')
-}
-elseif ($Set -eq 'aldo' -or $Set -eq 'azurelocal') {
-    # Azure Local disconnected operations has no Service Bus, Azure SQL or Blob Storage, so it uses
-    # the same in-cluster container Recipes as the local environment. Connected Azure Local uses
-    # them too, so the workload does not depend on the Azure link.
-    $sets.Add('local')
-}
-else {
-    $sets.Add($Set)
-}
-
-# The Kubernetes Recipes (containers and secrets) are shared. `containers` is a local build of the
-# stock Recipe adding platformOptions support; `secrets` is the stock Recipe vendored so that
-# air-gapped environments never have to mirror an OCI artifact. Both are needed wherever Radius
-# deploys containers, so they accompany every set except a bare 'local' publish, which uses the
-# copies already in the in-cluster registry.
-if (($sets -contains 'azure' -or $Set -eq 'aldo' -or $Set -eq 'azurelocal' -or $Set -eq 'local' -or $Set -eq 'all') -and -not $sets.Contains('kubernetes')) {
-    $sets.Add('kubernetes')
-}
+# `containers` is a local build of the stock Recipe adding platformOptions support; `secrets` is the
+# stock Recipe vendored so that no environment has to mirror an extra OCI artifact. Both are needed
+# wherever Radius deploys containers, so they accompany every set.
+$sets = if ($Set -eq 'all') { @('azure', 'azurelocal', 'kubernetes') } else { @($Set, 'kubernetes') }
 
 foreach ($setName in $sets) {
     $recipeDir = Join-Path $repoRoot "deploy/recipes/$setName"
@@ -71,7 +46,7 @@ foreach ($setName in $sets) {
     $recipes = Get-ChildItem -Path $recipeDir -Filter *.bicep
 
     foreach ($recipe in $recipes) {
-        $target = "br:$Registry/bcd/recipes/$($recipe.BaseName):$Tag"
+        $target = "br:$Registry/oms/recipes/$($recipe.BaseName):$Tag"
         Write-Host "Publishing $($recipe.Name) -> $target" -ForegroundColor Cyan
 
         $radArgs = @('bicep', 'publish', '--file', $recipe.FullName, '--target', $target)

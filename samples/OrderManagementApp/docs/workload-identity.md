@@ -1,9 +1,10 @@
-# Workload identity: Azure and Azure Local disconnected
+# Workload identity: Azure and Azure Local
 
-How a worker proves who it is without holding a secret, in each environment.
+How the API and processor prove who they are without holding a secret, in each environment.
 
-On AKS the trust anchor is Microsoft Entra. In disconnected operations there is no Entra, so
-Keycloak takes its place, federated to the cluster's own token issuer. The mechanism either side is
+On AKS the trust anchor is Microsoft Entra. On Azure Local the workload must keep working when the
+link to Azure is down, so Keycloak in the cluster takes Entra's place, federated to the cluster's own
+token issuer. The mechanism either side is
 the same: a token the cluster signs is presented as a *client assertion*, and exchanged for an
 access token the backing service accepts.
 
@@ -26,7 +27,7 @@ The kubelet writes it, the application reads it. Nothing else is involved, and t
 for a different audience or a different ServiceAccount's token: both were fixed in the pod spec at
 admission.
 
-The file holds a single line of three base64url segments. Measured on a running publisher:
+The file holds a single line of three base64url segments. Measured on a running API pod:
 
 ```
 bytes: 1114    segments: 3
@@ -71,7 +72,7 @@ stolen assertion grants ten minutes against one issuer.
 Treat the file as sensitive. Note also that any process in the pod can read it — the gap that
 SPIFFE's process-level attestation closes by never handing out a replayable file.
 
-### Decoded assertion, Azure Local disconnected
+### Decoded assertion, Azure Local
 
 Header:
 
@@ -87,23 +88,25 @@ Payload:
 
 ```json
 {
-  "iss": "https://10.0.60.50:6443",
-  "sub": "system:serviceaccount:bcd-aldo:bcd-workload",
-  "aud": ["https://10.0.60.50:30443/realms/bcd"],
+  "iss": "https://kubernetes.default.svc.cluster.local",
+  "sub": "system:serviceaccount:oms-azurelocal:oms-workload",
+  "aud": ["https://192.168.44.121:30443/realms/oms"],
   "exp": 1791830400,
   "iat": 1791829800,
   "kubernetes.io": {
-    "namespace": "bcd-aldo",
-    "node": { "name": "bcd" },
-    "pod": { "name": "publisher-848b9cfb54-kznbz" },
-    "serviceaccount": { "name": "bcd-workload" }
+    "namespace": "oms-azurelocal",
+    "node": { "name": "moc-l2prscqqfqr" },
+    "pod": { "name": "api-848b9cfb54-kznbz" },
+    "serviceaccount": { "name": "oms-workload" }
   }
 }
 ```
 
 The values above are illustrative; the claim shape is real.
 
-Three claims carry the whole design. `iss` names the cluster that vouched for the pod. `sub`
+Three claims carry the whole design. `iss` names the cluster that vouched for the pod. AKS enabled
+by Arc keeps the default in-cluster issuer; Keycloak can still verify it because it runs in the same
+cluster. `sub`
 identifies the ServiceAccount, and is what the issuer pins the client to. `aud` binds the token to
 one recipient, so a leaked assertion cannot be replayed against the Kubernetes API server or any
 other service.
@@ -113,7 +116,7 @@ The equivalent on AKS differs only in those same three claims:
 ```json
 {
   "iss": "https://eastus.oic.prod-aks.azure.com/<tenant-id>/<cluster-id>/",
-  "sub": "system:serviceaccount:bcd:bcd-workload",
+  "sub": "system:serviceaccount:oms-azure:oms-workload-identity",
   "aud": ["api://AzureADTokenExchange"]
 }
 ```
@@ -124,12 +127,12 @@ What Keycloak issues in exchange, and what RabbitMQ receives as its AMQP passwor
 
 ```json
 {
-  "iss": "https://10.0.60.50:30443/realms/bcd",
+  "iss": "https://192.168.44.121:30443/realms/oms",
   "aud": ["rabbitmq", "minio", "account"],
   "sub": "f4c1b8e2-9a7d-4c3e-b6f1-2d8a5e0c7b94",
   "typ": "Bearer",
-  "azp": "bcd-workloads",
-  "preferred_username": "service-account-bcd-workloads",
+  "azp": "oms-workloads",
+  "preferred_username": "service-account-oms-workloads",
   "rabbitmq_scopes": "rabbitmq.configure:*/* rabbitmq.write:*/* rabbitmq.read:*/*",
   "exp": 1791830700,
   "iat": 1791829800
@@ -145,7 +148,7 @@ sequenceDiagram
     autonumber
     participant WH as Workload Identity<br/>webhook
     participant KL as kubelet
-    participant POD as consumer pod
+    participant POD as processor pod
     participant ENT as Microsoft Entra
     participant AKS as AKS OIDC issuer
     participant SB as Service Bus
@@ -167,16 +170,16 @@ sequenceDiagram
     SB-->>POD: authorised
 ```
 
-## Azure Local disconnected: k3s pod to RabbitMQ
+## Azure Local: AKS Arc pod to RabbitMQ
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant BIC as app.bicep
     participant KL as kubelet
-    participant POD as consumer pod
+    participant POD as processor pod
     participant KC as Keycloak
-    participant API as k3s API server
+    participant API as Kubernetes API server
     participant RMQ as RabbitMQ
 
     BIC->>POD: declares token volume + oauth connection values
@@ -210,7 +213,7 @@ flowchart TB
         A4 --> A5["Azure RBAC<br/>role assignment"]
     end
 
-    subgraph AL["Azure Local disconnected"]
+    subgraph AL["Azure Local"]
         direction TB
         B1["Projected SA token"] --> B2["Keycloak client<br/>federated-jwt"]
         B2 --> B3["Keycloak access token"]
@@ -251,15 +254,15 @@ flowchart TD
 
 ## Mapping
 
-| Concept | Azure | Azure Local disconnected |
+| Concept | Azure | Azure Local |
 | --- | --- | --- |
 | Trust anchor | Microsoft Entra | Keycloak |
-| Federated on | AKS OIDC issuer | k3s API server issuer |
-| Identity object | User-assigned managed identity | Client `bcd-workloads` |
+| Federated on | AKS OIDC issuer | Cluster's in-cluster issuer |
+| Identity object | User-assigned managed identity | Client `oms-workloads` |
 | Pinning | Federated identity credential (issuer + subject) | `jwt.credential.issuer` + `jwt.credential.sub` |
-| Assertion audience | `api://AzureADTokenExchange` | `https://10.0.60.50:30443/realms/bcd` |
+| Assertion audience | `api://AzureADTokenExchange` | `https://192.168.44.121:30443/realms/oms` |
 | Environment wiring | Mutating admission webhook | Declared in `deploy/app.bicep` |
-| Client library | `Azure.Identity` | `src/Bcd.Shared/Identity/WorkloadTokenProvider.cs` |
+| Client library | `Azure.Identity` | `src/OrderManagement.Shared/Identity/WorkloadTokenProvider.cs` |
 | Token to broker | AMQP CBS node | SASL PLAIN password |
 | Authorisation | Azure RBAC, outside the token | Claims inside the token |
 
@@ -275,12 +278,12 @@ cost of more traffic to the token endpoint.
 
 | Where | Setting | Value |
 | --- | --- | --- |
-| k3s | `--service-account-issuer` | `https://10.0.60.50:6443` |
-| `deploy/app.bicep` | token volume audience | `https://10.0.60.50:30443/realms/bcd` |
-| Keycloak identity provider | `issuer` | `https://10.0.60.50:6443` |
+| AKS enabled by Arc | service-account issuer (default) | `https://kubernetes.default.svc.cluster.local` |
+| `deploy/app.bicep` | token volume audience | `https://192.168.44.121:30443/realms/oms` |
+| Keycloak identity provider | `issuer` | `https://kubernetes.default.svc.cluster.local` |
 | Keycloak client | `clientAuthenticatorType` | `federated-jwt` |
-| Keycloak client | `jwt.credential.sub` | `system:serviceaccount:bcd-aldo:bcd-workload` |
-| RabbitMQ | `auth_oauth2.issuer` | `https://10.0.60.50:30443/realms/bcd` |
+| Keycloak client | `jwt.credential.sub` | `system:serviceaccount:oms-azurelocal:oms-workload` |
+| RabbitMQ | `auth_oauth2.issuer` | `https://192.168.44.121:30443/realms/oms` |
 | RabbitMQ | `auth_oauth2.resource_server_id` | `rabbitmq` |
 | RabbitMQ | `auth_oauth2.additional_scopes_key` | `rabbitmq_scopes` |
 | RabbitMQ | `auth_oauth2.https.cacertfile` | `/etc/rabbitmq/oauth-ca/ca.crt` |
@@ -292,7 +295,7 @@ invalid" symptom is more often a key-retrieval problem than a bad token.
 
 | Symptom | Cause |
 | --- | --- |
-| Keycloak reports signature validation failure | The k3s API server refuses anonymous callers. Keycloak needs a ClusterRoleBinding granting `system:service-account-issuer-discovery` to its own ServiceAccount. |
+| Keycloak reports signature validation failure | The API server refuses anonymous callers. Keycloak needs a ClusterRoleBinding granting `system:service-account-issuer-discovery` to its own ServiceAccount. |
 | `Bad Certificate - selfsigned_peer` in the broker log | Erlang requires a trust anchor to be a real CA. A self-signed serving certificate cannot anchor itself, so Keycloak is issued a certificate from a small CA instead. |
 | `client_not_found` from Keycloak | `federated-jwt` was absent from the realm's `clients` authentication flow. Realms created before Keycloak 26.8 and then migrated do not gain it. |
 | Broker logs stop appearing in `kubectl logs` | Mounting a ConfigMap over `/etc/rabbitmq/conf.d` replaces the image's defaults, including console logging. The recipe restores `log.console = true`. |
@@ -310,4 +313,4 @@ exposes a configurable token issuer:
 
 That is a property of what each resource can consume, not a gap in the identity design. The SQL
 password path re-reads its credential per connection, so a vault can rotate it under a running
-worker without a restart.
+process without a restart.

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Creates the Microsoft Entra Workload Identity used by the Business Continuity Demo App on AKS.
+    Creates the Microsoft Entra Workload Identity used by the Order Management sample on AKS.
 
 .DESCRIPTION
     USE THIS ONLY WITH A PRE-EXISTING CLUSTER. If you are provisioning from scratch, run
@@ -39,9 +39,9 @@ param(
 
     [string]$IdentityName = 'bcd-workload-identity',
 
-    [string]$Namespace = 'bcd-azure',
+    [string]$Namespace = 'oms-azure',
 
-    [string]$ServiceAccountName = 'bcd-workload-identity',
+    [string]$ServiceAccountName = 'oms-workload-identity',
 
     [string]$Location = 'eastus'
 )

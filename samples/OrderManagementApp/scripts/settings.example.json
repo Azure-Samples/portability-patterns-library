@@ -4,7 +4,7 @@
       "SubscriptionId": "<subscription-id>",
       "Location": "eastus2",
       "ClusterName": "bcd-aks",
-      "WorkspaceName": "bcd-azure"
+      "WorkspaceName": "oms-azure"
     },
     "Cluster": {
       "ResourceGroup": "bcd-infra",
@@ -23,7 +23,7 @@
       "AppInfraResourceGroup": "bcd-infra",
       "WorkloadIdentityClientId": "<printed by setup-platform: Cluster>",
       "WorkloadIdentityPrincipalId": "<printed by setup-platform: Cluster>",
-      "ResourceGroup": "bcd",
+      "ResourceGroup": "oms",
       "IngressCertIssuer": "letsencrypt"
     }
   },
@@ -52,8 +52,8 @@
       "AdDomain": "<ad-domain>",
       "Registry": "10.96.0.50",
       "ImagePullSecretName": "azurelocal-registry",
-      "ImagePullSecretSourceNamespace": "bcd-azurelocal",
-      "WorkloadNamespace": "bcd-azurelocal",
+      "ImagePullSecretSourceNamespace": "oms-azurelocal",
+      "WorkloadNamespace": "oms-azurelocal",
       "AllowInClusterIssuer": true
     },
     "Ingress": {

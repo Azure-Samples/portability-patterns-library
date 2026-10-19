@@ -2,17 +2,14 @@
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
   "contentVersion": "1.0.0.0",
   "parameters": {
-    "publisherImage": {
-      "value": "REPLACE_ME.azurecr.io/bcd/publisher:latest"
+    "apiImage": {
+      "value": "REPLACE_ME.azurecr.io/oms/api:latest"
     },
-    "consumerImage": {
-      "value": "REPLACE_ME.azurecr.io/bcd/consumer:latest"
-    },
-    "publishIntervalSeconds": {
-      "value": 5
+    "processorImage": {
+      "value": "REPLACE_ME.azurecr.io/oms/processor:latest"
     },
     "sqlAdminUsername": {
-      "value": "bcdadmin"
+      "value": "omsadmin"
     },
     "sqlAdminPassword": {
       "value": "REPLACE_ME"
@@ -27,7 +24,7 @@
       "value": false
     },
     "serviceAccountName": {
-      "value": "bcd-workload-identity"
+      "value": "oms-workload-identity"
     }
   }
 }

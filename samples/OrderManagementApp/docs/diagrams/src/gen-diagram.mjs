@@ -210,7 +210,7 @@ column(
     "Azure Container Registry\nMicrosoft.ContainerRegistry/registries",
   ],
   "Azure Policy  ·  Azure Monitor  ·  Defender — native cloud control plane",
-  "POLICY GATE\n✖  Sql/servers — passes Azure Local, FAILS ALDO\n✖  Storage/storageAccounts — FAILS Azure Local, passes ALDO\n✖  ServiceBus/namespaces — fails both\n✖  ManagedIdentity + FIC — fails both",
+  "POLICY GATE — Azure Local\n✔  Sql/servers — passes\n✖  Storage/storageAccounts — fails\n✖  ServiceBus/namespaces — fails\n✖  ManagedIdentity + FIC — fails",
   ["SQL (TDS) · AMQP 1.0 · Blob REST", "Entra workload identity (OIDC federation)"],
   RED
 );

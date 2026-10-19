@@ -27,7 +27,7 @@ param(
     [string]$NatName = 'AzureLocalLabNAT',
     [string]$InternalPrefix = '192.168.44.0/24',
     [string]$KubeContext = 'bcd-aksarc',
-    [string]$Namespace = 'bcd-azurelocal',
+    [string]$Namespace = 'oms-azurelocal',
     [string]$ProbePodSelector = 'app=rabbitmq',
     [string]$CloudRegistry = '<acr-name>.azurecr.io'
 )

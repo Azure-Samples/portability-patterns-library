@@ -1,4 +1,4 @@
-// Layer 0 -- platform infrastructure for the Business Continuity Demo App on Azure.
+// Layer 0 -- platform infrastructure for the Order Management sample on Azure.
 //
 // Creates everything the application deployment assumes already exists:
 //
@@ -45,10 +45,10 @@ client secret, replacing `rad credential register azure sp`.
 param radiusIdentityName string = 'bcd-radius-identity'
 
 @description('Kubernetes namespace the application is deployed into. Must match the Radius Environment namespace.')
-param appNamespace string = 'bcd-azure'
+param appNamespace string = 'oms-azure'
 
 @description('Kubernetes service account the workers run as. Must match what the Radius Environment injects.')
-param serviceAccountName string = 'bcd-workload-identity'
+param serviceAccountName string = 'oms-workload-identity'
 
 @description('Number of nodes in the system pool.')
 @minValue(1)
@@ -89,7 +89,7 @@ param useEntraAuthentication bool = true
 
 @description('Tags applied to every resource.')
 param tags object = {
-  application: 'business-continuity-demo'
+  application: 'order-management'
   managedBy: 'radius'
 }
 

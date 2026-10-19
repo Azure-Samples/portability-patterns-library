@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Deploys the Business Continuity Demo App to an AKS cluster backed by Azure PaaS.
+    Deploys the Order Management sample to an AKS cluster backed by Azure PaaS.
 
 .DESCRIPTION
     Assumes ./scripts/azure/provision-infra.ps1 (or bootstrap-identity.ps1 against an existing
@@ -33,7 +33,7 @@
 .EXAMPLE
     # Private registry: supply a scoped ACR token so the Radius control plane can pull Recipes.
     #   az acr token create --registry mycr --name bcd-recipe-puller `
-    #       --repository bcd/recipes content/read --expiration-in-days 30
+    #       --repository oms/recipes content/read --expiration-in-days 30
     ./scripts/azure/deploy.ps1 `
         -Registry mycr.azurecr.io `
         -SubscriptionId <sub-id> `
@@ -69,13 +69,13 @@ param(
     [securestring]$RegistryPassword,
 
     [string]$WorkloadIdentityName = 'bcd-workload-identity',
-    [string]$ServiceAccountName = 'bcd-workload-identity',
+    [string]$ServiceAccountName = 'oms-workload-identity',
 
     # A RADIUS resource group, not an Azure one. Holds the Radius Environment, Recipe Pack and
     # application resources within the Radius control plane.
-    [string]$ResourceGroup = 'bcd',
+    [string]$ResourceGroup = 'oms',
 
-    [string]$WorkspaceName = 'bcd-azure',
+    [string]$WorkspaceName = 'oms-azure',
     # Kubernetes context the Radius CLI uses. Recreated with a fresh ServiceAccount token at the
     # start of every run, because an Entra user token carries too many group headers for the
     # Kubernetes aggregated API proxy and returns HTTP 431.
@@ -90,8 +90,8 @@ param(
 
     # Lifetime of the Radius CLI ServiceAccount token minted for this run.
     [int]$RadiusCliTokenHours = 24,
-    [string]$EnvironmentName = 'bcd-azure',
-    [string]$AppNamespace = 'bcd-azure',
+    [string]$EnvironmentName = 'oms-azure',
+    [string]$AppNamespace = 'oms-azure',
     [string]$Location = 'eastus2',
 
     # Region for the Azure SQL logical server. Defaults to $Location. Override when the primary
@@ -100,8 +100,8 @@ param(
     [string]$SqlLocation,
 
     # Entra app registrations for user sign-in, as created by scripts/azure/configure-app-identity.ps1.
-    [string]$OrdersApiAppName = 'bcd-orders-api',
-    [string]$OrdersSpaAppName = 'bcd-orders-spa',
+    [string]$OrdersApiAppName = 'oms-api',
+    [string]$OrdersSpaAppName = 'oms-spa',
     [int]$UiLocalPort = 5090,
 
     # Managed ingress from scripts/azure/provision-ingress.ps1.
@@ -146,7 +146,7 @@ function New-ParameterFile {
         parameters     = $parameters
     }
 
-    $path = Join-Path ([System.IO.Path]::GetTempPath()) "bcd-params-$([guid]::NewGuid().ToString('N')).json"
+    $path = Join-Path ([System.IO.Path]::GetTempPath()) "oms-params-$([guid]::NewGuid().ToString('N')).json"
     # Windows PowerShell's 'utf8' encoding emits a BOM, which the rad CLI rejects with
     # "invalid character 'ï' looking for beginning of value".
     [System.IO.File]::WriteAllText($path, ($document | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
@@ -169,7 +169,7 @@ try {
             Write-Host "==> Minting a read-only Recipe pull token for $Registry ($RecipeTokenDays days)" -ForegroundColor Cyan
             $RegistryUsername = 'bcd-recipe-puller'
             $repositories = Get-ChildItem deploy/recipes/azure, deploy/recipes/kubernetes -Filter *.bicep |
-                ForEach-Object { "bcd/recipes/$($_.BaseName)" }
+                ForEach-Object { "oms/recipes/$($_.BaseName)" }
             $scopeArguments = $repositories | ForEach-Object { '--repository', $_, 'content/read', 'metadata/read' }
 
             az acr scope-map show --registry $acrName --name $RegistryUsername --only-show-errors 2>$null | Out-Null
@@ -221,7 +221,7 @@ try {
         rad resource-type create messageQueues -f deploy/types/messageQueues.yaml --workspace $WorkspaceName
     }
     Invoke-Checked 'rad bicep publish-extension' {
-        rad bicep publish-extension -f deploy/types/messageQueues.yaml --target deploy/types/businessContinuity.tgz
+        rad bicep publish-extension -f deploy/types/messageQueues.yaml --target deploy/types/orderManagement.tgz
     }
 
     $containerTool = if (Get-Command podman -ErrorAction SilentlyContinue) { 'podman' }
@@ -252,19 +252,19 @@ try {
         if (-not $containerTool) { throw 'Neither podman nor docker is on PATH. Install one, or pass -SkipImageBuild.' }
 
         Write-Host "==> Building and pushing images to $Registry with $containerTool" -ForegroundColor Cyan
-        foreach ($worker in @('publisher', 'consumer')) {
+        foreach ($worker in @('api', 'processor')) {
             Invoke-Checked "$containerTool build $worker" {
-                & $containerTool build -f "docker/Dockerfile.$worker" -t "$Registry/bcd/${worker}:latest" .
+                & $containerTool build -f "docker/Dockerfile.$worker" -t "$Registry/oms/${worker}:latest" .
             }
-            Invoke-Checked "$containerTool push $worker" { & $containerTool push "$Registry/bcd/${worker}:latest" }
+            Invoke-Checked "$containerTool push $worker" { & $containerTool push "$Registry/oms/${worker}:latest" }
         }
     }
 
     # Pinned by digest: with a bare ':latest' the pod spec never changes, so a rebuild never rolls out.
     $imageDigests = @{}
-    foreach ($worker in @('publisher', 'consumer')) {
-        $imageDigests[$worker] = az acr manifest show-metadata "$Registry/bcd/${worker}:latest" --query digest --output tsv 2>$null
-        if (-not $imageDigests[$worker]) { throw "Could not read the digest of bcd/${worker}:latest in $Registry." }
+    foreach ($worker in @('api', 'processor')) {
+        $imageDigests[$worker] = az acr manifest show-metadata "$Registry/oms/${worker}:latest" --query digest --output tsv 2>$null
+        if (-not $imageDigests[$worker]) { throw "Could not read the digest of oms/${worker}:latest in $Registry." }
     }
 
     Write-Host "==> Publishing Azure Recipes" -ForegroundColor Cyan
@@ -337,7 +337,7 @@ try {
 
         # Look the ID up rather than hand-constructing it, and pass it as a string. A conditional
         # `existing` reference inside the template fails before the resource exists.
-        $bicepSettingsId = rad resource show Radius.Core/bicepSettings bcd-registry-auth `
+        $bicepSettingsId = rad resource show Radius.Core/bicepSettings oms-registry-auth `
             --workspace $WorkspaceName --group $ResourceGroup --output json 2>$null |
             ConvertFrom-Json | Select-Object -ExpandProperty id
         if ([string]::IsNullOrWhiteSpace($bicepSettingsId)) {
@@ -368,7 +368,7 @@ try {
         # authenticate with it: SQL authentication is disabled on the server.
         $randomBytes = [byte[]]::new(24)
         [System.Security.Cryptography.RandomNumberGenerator]::Fill($randomBytes)
-        $plainPassword = 'Bcd1!' + [Convert]::ToBase64String($randomBytes)
+        $plainPassword = 'Oms1!' + [Convert]::ToBase64String($randomBytes)
         Write-Host "==> No -SqlAdminPassword supplied; generated an unused value (Azure SQL uses Entra-only auth)" -ForegroundColor DarkGray
     }
 
@@ -400,8 +400,8 @@ try {
 
     # Booleans must come from a parameter file, so all application parameters are written together.
     $applicationParameters = New-ParameterFile @{
-        publisherImage             = "$Registry/bcd/publisher@$($imageDigests['publisher'])"
-        consumerImage              = "$Registry/bcd/consumer@$($imageDigests['consumer'])"
+        apiImage                   = "$Registry/oms/api@$($imageDigests['api'])"
+        processorImage             = "$Registry/oms/processor@$($imageDigests['processor'])"
         apiAuthentication          = $apiAuthentication
         spaSettings                = $spaSettings
         sqlAdminPassword           = $plainPassword
@@ -427,10 +427,10 @@ try {
     }
     else {
         Write-Host "Open the orders app (MSAL needs a secure context, so it is served on localhost):"
-        Write-Host "  kubectl port-forward -n $AppNamespace service/publisher-publisher ${UiLocalPort}:8080 --context $KubeContext"
+        Write-Host "  kubectl port-forward -n $AppNamespace service/api-api ${UiLocalPort}:8080 --context $KubeContext"
         Write-Host "  http://localhost:$UiLocalPort"
     }
-    Write-Host "  kubectl logs -n $AppNamespace -l radapp.io/resource=consumer -f"
+    Write-Host "  kubectl logs -n $AppNamespace -l radapp.io/resource=processor -f"
 }
 finally {
     foreach ($file in $temporaryFiles) {

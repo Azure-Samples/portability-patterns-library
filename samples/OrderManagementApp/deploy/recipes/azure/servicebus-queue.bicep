@@ -1,4 +1,4 @@
-// Recipe: BusinessContinuity.Messaging/messageQueues -> Azure Service Bus queue.
+// Recipe: OrderManagement.Messaging/messageQueues -> Azure Service Bus queue.
 //
 // Creates a Service Bus namespace and queue, then grants the application's federated user-assigned
 // managed identity the data-plane roles it needs. No SAS keys or connection strings are ever
@@ -32,7 +32,7 @@ var queueName = context.resource.properties.?queueName ?? context.resource.name
 var maxDeliveryCount = context.resource.properties.?maxDeliveryCount ?? 10
 
 // Service Bus namespace names are globally unique and limited to 50 characters.
-var namespaceName = take('bcd-sb-${uniqueString(context.resource.id)}', 50)
+var namespaceName = take('oms-sb-${uniqueString(context.resource.id)}', 50)
 
 // Built-in role definition IDs for the Service Bus data plane.
 var dataSenderRoleId = '69a216fc-b8fb-44d8-bc22-1f3c2cd27a39'

@@ -4,13 +4,13 @@
     registry, AKS admin group, AKS logical network and an AKS enabled by Arc cluster.
 
 .DESCRIPTION
-    Targets an Azure Local instance that is CONNECTED to public Azure (unlike lab/aldo, which
-    targets disconnected operations). Everything the application owns lives in one resource group,
+    Targets an Azure Local instance that is connected to public Azure. Everything the application
+    owns lives in one resource group,
     'bcd-azurelocal' by default, separate from the resource group that holds the Azure Local
     instance and its custom location.
 
-    CLI driven for the same reason as lab/aldo/provision-infra.ps1: AKS Arc is an extension
-    resource on a connected cluster, and 'az aksarc create' orchestrates that.
+    CLI driven because AKS Arc is an extension resource on a connected cluster, and
+    'az aksarc create' orchestrates that.
 
     The registry is Premium because scripts/azurelocal/connected-registry.ps1 runs an ACR connected
     registry inside the cluster, so images and Recipes stay pullable when the Azure link drops.

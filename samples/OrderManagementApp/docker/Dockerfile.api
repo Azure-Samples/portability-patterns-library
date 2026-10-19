@@ -1,0 +1,32 @@
+# Build from the sample root:
+#   docker build -f docker/Dockerfile.api -t oms-api:latest .
+#
+# Where mcr.microsoft.com is unreachable, import the .NET base images into a registry you can
+# reach and point the build at it:
+#   docker build --build-arg BASE_REGISTRY=myacr.azurecr.io -f docker/Dockerfile.api .
+
+ARG BASE_REGISTRY=mcr.microsoft.com
+
+FROM ${BASE_REGISTRY}/dotnet/sdk:9.0 AS build
+WORKDIR /src
+
+# NuGet.Config is optional (redirects restore where nuget.org is unreachable). Paired with a file
+# that always exists, the glob may match nothing under both Docker and podman/buildah.
+COPY Directory.Build.props NuGet.Confi[g] ./
+COPY src/OrderManagement.Shared/OrderManagement.Shared.csproj src/OrderManagement.Shared/
+COPY src/OrderManagement.Api/OrderManagement.Api.csproj src/OrderManagement.Api/
+RUN dotnet restore src/OrderManagement.Api/OrderManagement.Api.csproj
+
+COPY src/ src/
+RUN dotnet publish src/OrderManagement.Api/OrderManagement.Api.csproj -c Release -o /app --no-restore
+
+# The API hosts the orders API and the browser app, so it needs the ASP.NET Core runtime.
+FROM ${BASE_REGISTRY}/dotnet/aspnet:9.0 AS runtime
+WORKDIR /app
+COPY --from=build /app ./
+EXPOSE 8080
+
+# Run as a non-root user; required by most cluster admission policies.
+USER $APP_UID
+
+ENTRYPOINT ["dotnet", "OrderManagement.Api.dll"]

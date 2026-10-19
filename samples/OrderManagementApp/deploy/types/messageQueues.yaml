@@ -1,28 +1,28 @@
-namespace: BusinessContinuity.Messaging
+namespace: OrderManagement.Messaging
 types:
   messageQueues:
     description: |
-      The `BusinessContinuity.Messaging/messageQueues` Resource Type represents a durable
+      The `OrderManagement.Messaging/messageQueues` Resource Type represents a durable
       point-to-point message queue, independent of the broker that backs it.
 
       This type exists because Radius ships no portable queue abstraction that spans both a
       self-hosted broker and Azure Service Bus. A developer declares the intent to have a queue; the
       platform engineer decides through Recipes whether that is a RabbitMQ container in the cluster
-      (local / kind / Azure Local) or an Azure Service Bus queue reached with a federated managed
+      (Azure Local) or an Azure Service Bus queue reached with a federated managed
       identity (AKS).
 
       ```bicep
       extension radius
-      extension businessContinuity
+      extension orderManagement
 
       param environment string
 
-      resource queue 'BusinessContinuity.Messaging/messageQueues@2025-08-01-preview' = {
-        name: 'events'
+      resource queue 'OrderManagement.Messaging/messageQueues@2025-08-01-preview' = {
+        name: 'orders'
         properties: {
           environment: environment
           application: app.id
-          queueName: 'business-events'
+          queueName: 'orders'
         }
       }
       ```

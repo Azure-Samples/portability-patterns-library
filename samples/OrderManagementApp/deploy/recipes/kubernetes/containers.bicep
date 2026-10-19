@@ -62,7 +62,7 @@ var labels = {
 // ACI Recipe uses:
 //
 //   platformOptions: {
-//     serviceAccountName: 'bcd-workload-identity'
+//     serviceAccountName: 'oms-workload-identity'
 //     podLabels: { 'azure.workload.identity/use': 'true' }
 //     imagePullSecrets: [ { name: 'local-registry' } ]
 //   }

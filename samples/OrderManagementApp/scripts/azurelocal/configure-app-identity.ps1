@@ -7,12 +7,12 @@
     Everything here is platform configuration; the application keeps its Entra assumptions and
     Keycloak is made to issue tokens of the same shape:
 
-      bcd-orders-api    the API's identity; access tokens carry it in 'aud', like an Entra API app
-      bcd-orders-spa    public SPA client: authorization code + PKCE, redirect to -SpaOrigins
-      client scope      'api://bcd-orders-api/access_as_user', the name an Entra app requests; adds
+      oms-api    the API's identity; access tokens carry it in 'aud', like an Entra API app
+      oms-spa    public SPA client: authorization code + PKCE, redirect to -SpaOrigins
+      client scope      'api://oms-api/access_as_user', the name an Entra app requests; adds
                         aud, scp=access_as_user, a flat 'roles' claim (Entra app roles) and 'oid'
-      realm roles       Orders.Read   <- AD group bcd-app-readers
-                        Orders.Create <- AD group bcd-app-writers
+      realm roles       Orders.Read   <- AD group oms-app-readers
+                        Orders.Create <- AD group oms-app-writers
 
     The Entra equivalent is an API app registration exposing 'access_as_user' with app roles
     Orders.Read and Orders.Create assigned to groups, plus a SPA app registration.
@@ -31,14 +31,14 @@
 param(
     [string]$KubeContext = 'bcd-aksarc',
     [string]$IdentityNamespace = 'identity',
-    [string]$Realm = 'bcd',
+    [string]$Realm = 'oms',
     [int]$NodePort = 30443,
     [string[]]$SpaOrigins = @('http://localhost:5090'),
-    [string]$ApiClientId = 'bcd-orders-api',
-    [string]$SpaClientId = 'bcd-orders-spa',
+    [string]$ApiClientId = 'oms-api',
+    [string]$SpaClientId = 'oms-spa',
     [string]$ApiScopeName = 'access_as_user',
-    [string]$ReaderGroup = 'bcd-app-readers',
-    [string]$WriterGroup = 'bcd-app-writers'
+    [string]$ReaderGroup = 'oms-app-readers',
+    [string]$WriterGroup = 'oms-app-writers'
 )
 
 $ErrorActionPreference = 'Stop'

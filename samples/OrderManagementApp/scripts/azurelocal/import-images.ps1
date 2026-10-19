@@ -1,39 +1,38 @@
 <#
 .SYNOPSIS
-    Moves every container image this application needs into a local registry.
+    Moves every container image this application needs into the site's registry.
 
 .DESCRIPTION
-    Azure Local with disconnected operations cannot reach mcr.microsoft.com, ghcr.io, quay.io or
-    Docker Hub. Every image must therefore be present in the local Azure Container Registry before
-    anything is deployed, including the Radius control plane itself.
+    On Azure Local every image is pulled from the ACR connected registry inside the cluster, so a
+    restarted pod finds its image even while the link to Azure is down. That registry syncs from a
+    cloud ACR, so every image, including the Radius control plane itself, must be in that ACR before
+    anything is deployed.
 
     Recipes do NOT need mirroring: every Recipe in this repository, including the vendored stock
-    Radius ones, is published from source with `rad bicep publish`, so the air gap only has to carry
-    container images.
+    Radius ones, is published from source with `rad bicep publish`, so only container images have to
+    be moved.
 
     Four modes:
 
       Copy    Registry-to-registry copy driven by this machine, with `docker buildx imagetools`.
               Use this when the machine running the script can reach both the public registries and
-              the local one, which is the usual shape when the ALDO appliance runs on a devbox. The
-              registry itself needs no outbound access.
+              target registry. The registry itself needs no outbound access.
 
       Mirror  Server-side copy with `az acr import`. Only works when the target registry itself can
-              reach the public registries, which is true for a connected Azure Local instance or for
-              rehearsing the flow against a normal ACR. A disconnected appliance cannot do this, and
-              the command hangs until the server-side pull times out.
+              reach the public registries, which is true for the cloud ACR behind the connected
+              registry. This is the normal mode for Azure Local.
 
-      Export  `docker pull` then `docker save` into a folder, run on a CONNECTED machine. Copy the
-              folder across the air gap by whatever means your environment allows.
+      Export  `docker pull` then `docker save` into a folder, run on a machine with internet access.
+              Copy the folder to the target side by whatever means your environment allows.
 
-      Import  `docker load` then push into the local registry, run on the DISCONNECTED side.
+      Import  `docker load` then push into the target registry, for a registry with no internet path.
               Multi-platform images are a known weak spot here: `docker save` writes the whole
               index, and after `docker load` the daemon refuses to push it, reporting that the
               image 'does not provide any platform'. Prefer Copy whenever both endpoints are
               reachable from one machine.
 
 .PARAMETER Registry
-    Login server of the target registry, for example 'mylocalacr.azurecr.local'.
+    Login server of the target registry, for example 'myacr.azurecr.io'.
 
 .PARAMETER Platform
     Platform to select from multi-platform images. The cluster nodes decide this, not this machine.
@@ -43,22 +42,18 @@
 
 .PARAMETER IncludeContour
     Also transfer the Contour ingress images. Not needed by this application: it exposes no
-    gateways or routes, and lab/aldo/deploy.ps1 installs Radius with
-    --skip-contour-install. Adds two images to the air-gap payload.
+    gateways or routes, and scripts/azurelocal/deploy.ps1 installs Radius with
+    --skip-contour-install. Adds two images.
 
 .EXAMPLE
-    # ALDO appliance hosted on this machine: the script can reach both sides.
-    ./scripts/azurelocal/import-images.ps1 -Mode Copy -Registry mylocalacr.autonomous.cloud.private
+    # Azure Local: server-side copy into the cloud ACR the connected registry syncs from.
+    ./scripts/azurelocal/import-images.ps1 -Mode Mirror -Registry myacr.azurecr.io
 
 .EXAMPLE
-    # Connected rehearsal, or a connected Azure Local instance.
-    ./scripts/azurelocal/import-images.ps1 -Mode Mirror -Registry mylocalacr.azurecr.io
-
-.EXAMPLE
-    # Air-gapped: on the connected machine...
-    ./scripts/azurelocal/import-images.ps1 -Mode Export -Path D:\bcd-images
-    # ...then, after moving the folder, on the disconnected side:
-    ./scripts/azurelocal/import-images.ps1 -Mode Import -Path D:\bcd-images -Registry mylocalacr.azurecr.local
+    # No internet path from the target: on a machine with internet access...
+    ./scripts/azurelocal/import-images.ps1 -Mode Export -Path D:\oms-images
+    # ...then, after moving the folder, on the target side:
+    ./scripts/azurelocal/import-images.ps1 -Mode Import -Path D:\oms-images -Registry myacr.azurecr.io
 #>
 [CmdletBinding()]
 param(
@@ -123,7 +118,7 @@ $images = @(
     @{ Source = "ghcr.io/radius-project/pre-upgrade:$RadiusVersion";       Target = "pre-upgrade:$RadiusVersion" }
 
     # --- Backing services deployed by the Recipes -------------------------------------------
-    # Repository paths match the imageRepository defaults in deploy/recipes/local/*.bicep.
+    # Repository paths match the imageRepository defaults in deploy/recipes/azurelocal/*.bicep.
     @{ Source = "mcr.microsoft.com/mssql/server:$SqlServerTag";            Target = "mssql/server:$SqlServerTag" }
     @{ Source = "mcr.microsoft.com/azure-storage/azurite:$AzuriteTag";     Target = "azure-storage/azurite:$AzuriteTag" }
     @{ Source = "docker.io/library/rabbitmq:$RabbitMqTag";                 Target = "rabbitmq:$RabbitMqTag" }
@@ -138,7 +133,7 @@ $images = @(
     @{ Source = "registry.k8s.io/ingress-nginx/controller:$IngressNginxTag";            Target = "ingress-nginx/controller:$IngressNginxTag" }
     @{ Source = "registry.k8s.io/ingress-nginx/kube-webhook-certgen:$WebhookCertgenTag"; Target = "ingress-nginx/kube-webhook-certgen:$WebhookCertgenTag" }
 
-    # --- Base images for building the workers -----------------------------------------------
+    # --- Base images for building the API and processor -------------------------------------
     # Needed only where `docker build` runs. Referenced through the BASE_REGISTRY build argument
     # in docker/Dockerfile.*.
     @{ Source = "mcr.microsoft.com/dotnet/sdk:$DotnetTag";                 Target = "dotnet/sdk:$DotnetTag" }
@@ -227,7 +222,7 @@ switch ($Mode) {
             Invoke-Checked "docker save $($image.Source)" { docker save --output $archive $image.Source }
         }
 
-        # The manifest carries the source-to-target mapping across the air gap so Import does not
+        # The manifest carries the source-to-target mapping with the folder so Import does not
         # have to re-derive it, and records the versions the payload was built for.
         $manifest = @{
             createdUtc     = (Get-Date).ToUniversalTime().ToString('o')
@@ -241,7 +236,7 @@ switch ($Mode) {
 
         $sizeMb = [math]::Round(((Get-ChildItem $Path -Filter *.tar | Measure-Object -Property Length -Sum).Sum / 1MB), 1)
         Write-Host "`nExported $($images.Count) images ($sizeMb MB) to $Path" -ForegroundColor Green
-        Write-Host 'Copy this folder across the air gap, then run this script with -Mode Import.'
+        Write-Host 'Copy this folder to the target side, then run this script with -Mode Import.'
     }
 
     'Import' {

@@ -45,9 +45,9 @@ param(
     [string]$RadiusVersion = '0.60',
     [string]$ImageTag = 'latest',
 
-    [string]$Namespace = 'bcd-azurelocal',
+    [string]$Namespace = 'oms-azurelocal',
     [string]$IdentityNamespace = 'identity',
-    [string]$KeycloakRealm = 'bcd',
+    [string]$KeycloakRealm = 'oms',
     [int]$KeycloakNodePort = 30443,
 
     [switch]$IncludeNodeBootstrap,
@@ -215,8 +215,8 @@ try {
             $auth = $null
             $accept = 'application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json'
             $artifacts = @("ucpd:$RadiusVersion", "applications-rp:$RadiusVersion", "dynamic-rp:$RadiusVersion",
-                "bcd/publisher:$ImageTag", "bcd/consumer:$ImageTag", 'keycloak/keycloak:26.8', 'mssql/server:2022-latest') +
-            (Get-ChildItem deploy/recipes/local, deploy/recipes/kubernetes -Filter *.bicep | ForEach-Object { "bcd/recipes/$($_.BaseName):$ImageTag" })
+                "oms/api:$ImageTag", "oms/processor:$ImageTag", 'keycloak/keycloak:26.8', 'mssql/server:2022-latest') +
+            (Get-ChildItem deploy/recipes/azurelocal, deploy/recipes/kubernetes -Filter *.bicep | ForEach-Object { "oms/recipes/$($_.BaseName):$ImageTag" })
 
             $missing = foreach ($artifact in $artifacts) {
                 $repository, $tag = $artifact -split ':', 2
@@ -288,9 +288,9 @@ try {
     }
     catch { Write-Check FAIL 'realm discovery' "$issuer unreachable" }
 
-    foreach ($secret in 'bcd-ad-bind', 'bcd-ad-ca') {
+    foreach ($secret in 'oms-ad-bind', 'oms-ad-ca') {
         if (Invoke-Probe { kubectl get secret $secret -n $IdentityNamespace --context $KubeContext -o name }) { Write-Check PASS "secret $IdentityNamespace/$secret" }
-        else { Write-Check FAIL "secret $IdentityNamespace/$secret" 'missing; run lab/aldo/addc-vm.ps1 -ExistingDomainController ...' }
+        else { Write-Check FAIL "secret $IdentityNamespace/$secret" 'missing; run lab/azurelocal/ad-setup.ps1 (lab) or create it for your directory' }
     }
 
     # ------------------------------------------------------------------------------------------
@@ -315,7 +315,7 @@ try {
     $summaryColor = if ($script:failures) { 'Red' } elseif ($script:warnings) { 'Yellow' } else { 'Green' }
     Write-Host ("==> {0} failure(s), {1} warning(s)" -f $script:failures, $script:warnings) -ForegroundColor $summaryColor
     if ($script:failures -eq 0) {
-        Write-Host "Data check: ./lab/local/verify.ps1 -KubeContext $KubeContext -Namespace $Namespace" -ForegroundColor DarkGray
+        Write-Host "Data check: ./lab/azurelocal/verify.ps1 -KubeContext $KubeContext -Namespace $Namespace" -ForegroundColor DarkGray
     }
 }
 finally {

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Deploys the Business Continuity Demo App: the same deploy/app.bicep and images to Azure or to
+    Deploys the Order Management sample: the same deploy/app.bicep and images to Azure or to
     Azure Local.
 
 .DESCRIPTION
@@ -29,7 +29,7 @@ if (-not $Target) { throw 'Specify -Target Azure or -Target AzureLocal.' }
 . "$PSScriptRoot/lib/settings.ps1"
 
 $script = Join-Path $PSScriptRoot "$($Target.ToLowerInvariant())/deploy.ps1"
-$arguments = Get-BcdStepArguments (Read-BcdSettings $Target $SettingsPath) 'Deploy' $script
+$arguments = Get-OmsStepArguments (Read-OmsSettings $Target $SettingsPath) 'Deploy' $script
 foreach ($argument in $args) {
     if ($argument -is [string] -and $argument -match '^-([A-Za-z]\w*):?$') { $arguments.Remove($Matches[1]) }
 }

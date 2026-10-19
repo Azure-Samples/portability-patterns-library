@@ -1,7 +1,7 @@
 {
   "extensions": {
     "radius": "br:biceptypes.azurecr.io/radius:latest",
-    "businessContinuity": "./deploy/types/businessContinuity.tgz"
+    "orderManagement": "./deploy/types/orderManagement.tgz"
   },
   "experimentalFeaturesEnabled": {
     "extensibility": true

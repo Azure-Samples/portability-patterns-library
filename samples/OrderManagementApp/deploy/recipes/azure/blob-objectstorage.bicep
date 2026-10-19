@@ -25,7 +25,7 @@ param sku string = 'Standard_LRS'
 var containerName = context.resource.properties.?containerName ?? 'data'
 
 // Storage account names are globally unique, lowercase alphanumeric, 3-24 characters.
-var accountName = take('bcd${uniqueString(context.resource.id)}', 24)
+var accountName = take('oms${uniqueString(context.resource.id)}', 24)
 
 // Built-in role definition ID for Storage Blob Data Contributor.
 var blobDataContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'

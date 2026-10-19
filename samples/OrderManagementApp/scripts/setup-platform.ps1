@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Prepares a site for the Business Continuity Demo App, once: cluster, HTTPS ingress, user sign-in
+    Prepares a site for the Order Management sample, once: cluster, HTTPS ingress, user sign-in
     and, on Azure Local, what keeps the app running when the link to Azure is down.
 
 .DESCRIPTION
@@ -26,7 +26,7 @@
     step only. Keep secrets out of it; the scripts read those from Kubernetes Secrets.
 
     Azure Local expects a Keycloak bind account for the site's Active Directory in the Secret
-    identity/bcd-ad-bind. In the lab, lab/aldo/addc-vm.ps1 -ExistingDomainController creates it.
+    identity/oms-ad-bind. In the lab, lab/azurelocal/ad-setup.ps1 creates it.
 
 .EXAMPLE
     ./scripts/setup-platform.ps1 -Target AzureLocal
@@ -67,7 +67,7 @@ else {
     }
 }
 
-$settings = Read-BcdSettings $Target $SettingsPath
+$settings = Read-OmsSettings $Target $SettingsPath
 Push-Location (Split-Path -Parent $PSScriptRoot)
 try {
     foreach ($step in $steps.Keys) {
@@ -76,7 +76,7 @@ try {
             continue
         }
         $script = Join-Path $PSScriptRoot $steps[$step]
-        $arguments = Get-BcdStepArguments $settings $step $script
+        $arguments = Get-OmsStepArguments $settings $step $script
         $shown = ($arguments.GetEnumerator() | Sort-Object Key | ForEach-Object { "-$($_.Key) $(@($_.Value) -join ',')" }) -join ' '
         if ($PSCmdlet.ShouldProcess("scripts/$($steps[$step]) $shown", "$Target $step")) {
             Write-Host "`n==> [$Target] $step : scripts/$($steps[$step])" -ForegroundColor Magenta

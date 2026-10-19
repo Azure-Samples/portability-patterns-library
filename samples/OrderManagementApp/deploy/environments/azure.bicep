@@ -12,7 +12,7 @@ param subscriptionId string
 param resourceGroupName string
 
 @description('Kubernetes namespace that application resources are deployed into.')
-param namespace string = 'bcd-azure'
+param namespace string = 'oms-azure'
 
 @description('''
 Resource ID of a `Radius.Core/bicepSettings` resource holding credentials for pulling Recipes from a
@@ -26,7 +26,7 @@ resource has been created. See deploy/registry-auth.bicep for the deployment ord
 param bicepSettingsId string = ''
 
 resource azureRecipes 'Radius.Core/recipePacks@2025-08-01-preview' existing = {
-  name: 'bcd-azure-recipes'
+  name: 'oms-azure-recipes'
 }
 
 // The Environment is declared twice under mutually exclusive conditions rather than building
@@ -34,7 +34,7 @@ resource azureRecipes 'Radius.Core/recipePacks@2025-08-01-preview' existing = {
 // object: an ARM expression there (union, if, ...) is not evaluated, and the resource is created
 // with empty properties, silently falling back to the default Recipe Pack and no providers.
 resource azureEnvironment 'Radius.Core/environments@2025-08-01-preview' = if (empty(bicepSettingsId)) {
-  name: 'bcd-azure'
+  name: 'oms-azure'
   properties: {
     recipePacks: [
       azureRecipes.id
@@ -52,7 +52,7 @@ resource azureEnvironment 'Radius.Core/environments@2025-08-01-preview' = if (em
 }
 
 resource azureEnvironmentWithRegistryAuth 'Radius.Core/environments@2025-08-01-preview' = if (!empty(bicepSettingsId)) {
-  name: 'bcd-azure'
+  name: 'oms-azure'
   properties: {
     recipePacks: [
       azureRecipes.id

@@ -1,32 +1,28 @@
-// Business Continuity Demo App
+// Order Management sample app
 //
 // This file is environment-agnostic. It declares *what* the application needs -- a queue, object
-// storage, a SQL database, and two workers -- and never states *how* those are provisioned. The
+// storage, a SQL database, and two containers -- and never states *how* those are provisioned. The
 // Recipe Pack bound to the target Environment decides whether the queue is RabbitMQ or Azure
 // Service Bus, whether object storage is Azurite or Azure Blob Storage, and whether SQL is a
 // container or Azure SQL Database.
 //
-// Deploy with:
-//   rad deploy ./deploy/app.bicep -e bcd-local -p @deploy/params.local.json
-//   rad deploy ./deploy/app.bicep -e bcd-azure -p @deploy/params.azure.json
+// Deployed by scripts/azure/deploy.ps1 (environment oms-azure) and scripts/azurelocal/deploy.ps1
+// (environment oms-azurelocal), which supply the image references and platform parameters.
 
 extension radius
-extension businessContinuity
+extension orderManagement
 
 @description('Radius Environment ID. Supplied by the rad CLI.')
 param environment string
 
 @description('Name of the Radius Application.')
-param application string = 'bcd'
+param application string = 'oms'
 
-@description('Container image for the publisher, which serves the orders API and the browser app.')
-param publisherImage string
+@description('Container image for the API, which serves the orders API and the browser app.')
+param apiImage string
 
-@description('Container image for the consumer worker.')
-param consumerImage string
-
-@description('Seconds between generated business events. 0 turns the generator off; orders arrive through the API.')
-param publishIntervalSeconds int = 0
+@description('Container image for the order processor.')
+param processorImage string
 
 @description('''
 How the orders API validates user access tokens, passed unchanged to Microsoft.Identity.Web as its
@@ -41,17 +37,17 @@ MSAL.js settings for the browser app, served to it as /config.json: `Authority`,
 ''')
 param spaSettings object = {}
 
-@description('Name of the queue that carries business continuity events.')
-param queueName string = 'business-events'
+@description('Name of the queue that carries orders from the API to the processor.')
+param queueName string = 'orders'
 
-@description('Blob container / bucket that archived event JSON is written to.')
-param archiveContainerName string = 'business-events'
+@description('Blob container / bucket that archived order JSON is written to.')
+param archiveContainerName string = 'orders'
 
 @description('Name of the application database.')
-param databaseName string = 'bcddb'
+param databaseName string = 'omsdb'
 
 @description('SQL administrator username.')
-param sqlAdminUsername string = 'bcdadmin'
+param sqlAdminUsername string = 'omsadmin'
 
 @description('SQL administrator password.')
 @secure()
@@ -79,9 +75,8 @@ environments, which have no Entra identity to federate with.
 param serviceAccountName string = ''
 
 @description('''
-Name of a Kubernetes image pull secret for a private registry. Required in air-gapped environments
-such as Azure Local disconnected operations, where the kubelet must authenticate to the local
-registry. Empty where the registry allows anonymous pull or the nodes already hold credentials.
+Name of a Kubernetes image pull secret for a private registry. Required on Azure Local, where the
+kubelet must authenticate to the in-cluster connected registry. Empty where the registry allows anonymous pull or the nodes already hold credentials.
 ''')
 param imagePullSecretName string = ''
 
@@ -125,7 +120,7 @@ var identityMounts = concat(
   empty(identityCaSecretName) ? [] : [
     {
       volumeName: 'identityca'
-      mountPath: '/etc/bcd/identity-ca'
+      mountPath: '/etc/oms/identity-ca'
     }
   ]
 )
@@ -233,7 +228,7 @@ var userIdentityEnv = toObject(
 // CA (Keycloak on Azure Local) the platform supplies that CA; the API itself has no trust code.
 var userIdentityCaEnv = empty(identityCaSecretName) ? {} : {
   SSL_CERT_FILE: {
-    value: '/etc/bcd/identity-ca/ca.crt'
+    value: '/etc/oms/identity-ca/ca.crt'
   }
 }
 
@@ -245,8 +240,8 @@ resource app 'Radius.Core/applications@2025-08-01-preview' = {
 }
 
 // Portable queue. Backed by RabbitMQ locally and Azure Service Bus in Azure.
-resource queue 'BusinessContinuity.Messaging/messageQueues@2025-08-01-preview' = {
-  name: 'events'
+resource queue 'OrderManagement.Messaging/messageQueues@2025-08-01-preview' = {
+  name: 'orders'
   properties: {
     environment: environment
     application: app.id
@@ -267,7 +262,7 @@ resource archive 'Radius.Storage/objectStorage@2025-08-01-preview' = {
 
 // Portable relational database. Backed by a SQL Server container locally and Azure SQL in Azure.
 resource database 'Radius.Data/sqlServerDatabases@2025-08-01-preview' = {
-  name: 'eventsdb'
+  name: 'ordersdb'
   properties: {
     environment: environment
     application: app.id
@@ -278,16 +273,16 @@ resource database 'Radius.Data/sqlServerDatabases@2025-08-01-preview' = {
 }
 
 // Orders API and browser app: users sign in, place orders, and the API publishes each order to the
-// queue. Can also generate random business events on a timer (off by default).
-resource publisher 'Radius.Compute/containers@2025-08-01-preview' = {
-  name: 'publisher'
+// queue.
+resource api 'Radius.Compute/containers@2025-08-01-preview' = {
+  name: 'api'
   properties: union({
     environment: environment
     application: app.id
     replicas: 1
     containers: {
-      publisher: union({
-        image: publisherImage
+      api: union({
+        image: apiImage
         ports: {
           http: {
             containerPort: 8080
@@ -312,10 +307,7 @@ resource publisher 'Radius.Compute/containers@2025-08-01-preview' = {
           DOTNET_ENVIRONMENT: {
             value: 'Production'
           }
-          Bcd__Publisher__IntervalSeconds: {
-            value: '${publishIntervalSeconds}'
-          }
-          Bcd__Sql__UseEntraId: {
+          OrderManagement__Sql__UseEntraId: {
             value: '${sqlUseEntraId}'
           }
         }, queueSecretEnv, sqlSecretEnv, userIdentityEnv, userIdentityCaEnv)
@@ -337,7 +329,7 @@ resource publisher 'Radius.Compute/containers@2025-08-01-preview' = {
       queue: {
         source: queue.id
       }
-      // Read side of the orders the consumer records.
+      // Read side of the orders the processor records.
       sql: {
         source: database.id
       }
@@ -346,21 +338,21 @@ resource publisher 'Radius.Compute/containers@2025-08-01-preview' = {
   }, identityVolumeOption)
 }
 
-// Worker 2: consumes events, archives each as a JSON blob, and records a row in SQL Server.
-resource consumer 'Radius.Compute/containers@2025-08-01-preview' = {
-  name: 'consumer'
+// Order processor: consumes orders, archives each as a JSON blob, and records it in SQL Server.
+resource processor 'Radius.Compute/containers@2025-08-01-preview' = {
+  name: 'processor'
   properties: union({
     environment: environment
     application: app.id
     replicas: 1
     containers: {
-      consumer: union({
-        image: consumerImage
+      processor: union({
+        image: processorImage
         env: union({
           DOTNET_ENVIRONMENT: {
             value: 'Production'
           }
-          Bcd__Sql__UseEntraId: {
+          OrderManagement__Sql__UseEntraId: {
             value: '${sqlUseEntraId}'
           }
         }, queueSecretEnv, archiveSecretEnv, sqlSecretEnv)

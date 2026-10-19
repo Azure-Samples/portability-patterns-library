@@ -48,14 +48,14 @@ param ingressCertIssuer string = ''
 var containerIngressParameters = empty(ingressClassName) ? {} : {
   ingressClassName: ingressClassName
   ingressHost: ingressHost
-  ingressTlsSecretName: 'bcd-app-tls'
+  ingressTlsSecretName: 'oms-app-tls'
   ingressAnnotations: empty(ingressCertIssuer) ? {} : {
     'cert-manager.io/cluster-issuer': ingressCertIssuer
   }
 }
 
 resource azureRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
-  name: 'bcd-azure-recipes'
+  name: 'oms-azure-recipes'
   properties: {
     recipes: {
       // Local build of the stock Kubernetes container Recipe, adding `platformOptions` support for
@@ -65,16 +65,16 @@ resource azureRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
       // back at '${radiusRecipeRegistry}/containers:latest' once that ships.
       'Radius.Compute/containers': {
         kind: 'bicep'
-        source: '${registry}/bcd/recipes/containers:${tag}'
+        source: '${registry}/oms/recipes/containers:${tag}'
         parameters: containerIngressParameters
       }
       'Radius.Security/secrets': {
         kind: 'bicep'
         source: '${radiusRecipeRegistry}/secrets:latest'
       }
-      'BusinessContinuity.Messaging/messageQueues': {
+      'OrderManagement.Messaging/messageQueues': {
         kind: 'bicep'
-        source: '${registry}/bcd/recipes/servicebus-queue:${tag}'
+        source: '${registry}/oms/recipes/servicebus-queue:${tag}'
         parameters: {
           location: location
           workloadIdentityClientId: workloadIdentityClientId
@@ -84,7 +84,7 @@ resource azureRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
       }
       'Radius.Storage/objectStorage': {
         kind: 'bicep'
-        source: '${registry}/bcd/recipes/blob-objectstorage:${tag}'
+        source: '${registry}/oms/recipes/blob-objectstorage:${tag}'
         parameters: {
           location: location
           workloadIdentityPrincipalId: workloadIdentityPrincipalId
@@ -93,7 +93,7 @@ resource azureRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
       }
       'Radius.Data/sqlServerDatabases': {
         kind: 'bicep'
-        source: '${registry}/bcd/recipes/azuresql-database:${tag}'
+        source: '${registry}/oms/recipes/azuresql-database:${tag}'
         parameters: {
           location: sqlLocation
           workloadIdentityPrincipalId: workloadIdentityPrincipalId

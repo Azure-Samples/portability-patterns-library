@@ -6,9 +6,9 @@
 .DESCRIPTION
     Creates or updates, through Microsoft Graph:
 
-      bcd-orders-api   API app registration: identifier URI api://<appId>, delegated scope
+      oms-api   API app registration: identifier URI api://<appId>, delegated scope
                        'access_as_user', app roles Orders.Read and Orders.Create, v2 tokens
-      bcd-orders-spa   SPA app registration: redirect URIs -SpaOrigins, permission to the API scope
+      oms-spa   SPA app registration: redirect URIs -SpaOrigins, permission to the API scope
       assignments      Orders.Create (and Orders.Read) for the signed-in user, plus any groups in
                        -ReaderGroupIds / -WriterGroupIds
 
@@ -37,14 +37,14 @@ param(
     [Parameter(Mandatory = $true)]
     [string[]]$SpaOrigins,
 
-    [string]$ApiAppName = 'bcd-orders-api',
-    [string]$SpaAppName = 'bcd-orders-spa',
+    [string]$ApiAppName = 'oms-api',
+    [string]$SpaAppName = 'oms-spa',
     [string]$ApiScopeName = 'access_as_user',
     [string[]]$ReaderGroupIds = @(),
     [string[]]$WriterGroupIds = @(),
     [switch]$SkipSignedInUserAssignment,
     [string]$ServiceManagementReference,
-    [string]$Notes = 'Business Continuity Demo App (orders): one app definition deployed to Azure and Azure Local. https://github.com/Azure-Samples/portability-patterns-library/tree/main/samples/OrderManagementApp'
+    [string]$Notes = 'Order Management sample: one app definition deployed to Azure and Azure Local. https://github.com/Azure-Samples/portability-patterns-library/tree/main/samples/OrderManagementApp'
 )
 
 $ErrorActionPreference = 'Stop'

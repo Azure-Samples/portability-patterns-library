@@ -205,11 +205,11 @@
 <text x="945" y="1029.6" font-size="13" fill="#000000" text-anchor="middle">Azure Container Registry</text>
 <text x="945" y="1045.8" font-size="13" fill="#000000" text-anchor="middle">Microsoft.ContainerRegistry/registries</text>
 <text x="615" y="1143.9" font-size="12" fill="#000000" text-anchor="middle">Azure Policy  ·  Azure Monitor  ·  Defender — native cloud control plane</text>
-<text x="615" y="1238.9" font-size="12" fill="#000000" text-anchor="middle">POLICY GATE</text>
-<text x="615" y="1253.9" font-size="12" fill="#000000" text-anchor="middle">✖  Sql/servers — passes Azure Local, FAILS ALDO</text>
-<text x="615" y="1268.9" font-size="12" fill="#000000" text-anchor="middle">✖  Storage/storageAccounts — FAILS Azure Local, passes ALDO</text>
-<text x="615" y="1283.9" font-size="12" fill="#000000" text-anchor="middle">✖  ServiceBus/namespaces — fails both</text>
-<text x="615" y="1298.9" font-size="12" fill="#000000" text-anchor="middle">✖  ManagedIdentity + FIC — fails both</text>
+<text x="615" y="1238.9" font-size="12" fill="#000000" text-anchor="middle">POLICY GATE — Azure Local</text>
+<text x="615" y="1253.9" font-size="12" fill="#000000" text-anchor="middle">✔  Sql/servers — passes</text>
+<text x="615" y="1268.9" font-size="12" fill="#000000" text-anchor="middle">✖  Storage/storageAccounts — fails</text>
+<text x="615" y="1283.9" font-size="12" fill="#000000" text-anchor="middle">✖  ServiceBus/namespaces — fails</text>
+<text x="615" y="1298.9" font-size="12" fill="#000000" text-anchor="middle">✖  ManagedIdentity + FIC — fails</text>
 <text x="1308" y="389.0" font-size="20" fill="#000000" text-anchor="start" font-weight="600">Azure Local — connected</text>
 <text x="1314" y="452.4" font-size="13" fill="#000000" text-anchor="start">AKS enabled by Azure Arc  ·  Microsoft.Kubernetes/connectedClusters</text>
 <text x="1450" y="549.6" font-size="13" fill="#000000" text-anchor="middle">Order Intake</text>

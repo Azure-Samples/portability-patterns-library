@@ -2,9 +2,7 @@
 //
 // The instance is connected today, but the workload has to keep running when that link drops:
 // management and redeployment may stop, the application must not. That rules out every PaaS
-// dependency, so the backing services run as in-cluster containers exactly as they do on ALDO.
-//
-// Differences from the ALDO Recipe Pack:
+// dependency, so the backing services run as in-cluster containers.
 //
 //   * `registry` is the ACR connected registry running inside the cluster (an Arc extension that
 //     syncs from a Premium ACR in Azure). Kubelet and the Radius control plane both pull from it,
@@ -12,7 +10,7 @@
 //   * The connected registry always serves HTTPS with a private CA, which
 //     scripts/azurelocal/deploy.ps1 hands to the Radius control plane, so plainHttp stays false.
 //
-// Identity is the same as ALDO: Keycloak in the cluster federates the cluster's own ServiceAccount
+// Identity: Keycloak in the cluster federates the cluster's own ServiceAccount
 // issuer and binds Active Directory, so token exchange never leaves the site.
 
 extension radius
@@ -48,7 +46,7 @@ param oauthIssuer string = ''
 param oauthCaSecretName string = ''
 
 @description('Keycloak client the workloads authenticate as.')
-param oauthClientId string = 'bcd-workloads'
+param oauthClientId string = 'oms-workloads'
 
 @description('Ingress class that publishes containers with ports on the site network, from scripts/azurelocal/provision-ingress.ps1. Empty keeps them cluster-internal.')
 param ingressClassName string = ''
@@ -63,12 +61,12 @@ var queueOAuthParameters = empty(oauthIssuer) ? {} : {
 }
 
 resource azureLocalRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
-  name: 'bcd-azurelocal-recipes'
+  name: 'oms-azurelocal-recipes'
   properties: {
     recipes: {
-      'BusinessContinuity.Messaging/messageQueues': {
+      'OrderManagement.Messaging/messageQueues': {
         kind: 'bicep'
-        source: '${registry}/bcd/recipes/rabbitmq-queue:${tag}'
+        source: '${registry}/oms/recipes/rabbitmq-queue:${tag}'
         plainHttp: plainHttp
         parameters: union({
           imageRegistry: registry
@@ -79,7 +77,7 @@ resource azureLocalRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
       }
       'Radius.Storage/objectStorage': {
         kind: 'bicep'
-        source: '${registry}/bcd/recipes/azurite-objectstorage:${tag}'
+        source: '${registry}/oms/recipes/azurite-objectstorage:${tag}'
         plainHttp: plainHttp
         parameters: {
           imageRegistry: registry
@@ -90,7 +88,7 @@ resource azureLocalRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
       }
       'Radius.Data/sqlServerDatabases': {
         kind: 'bicep'
-        source: '${registry}/bcd/recipes/mssql-database:${tag}'
+        source: '${registry}/oms/recipes/mssql-database:${tag}'
         plainHttp: plainHttp
         parameters: {
           imageRegistry: registry
@@ -101,7 +99,7 @@ resource azureLocalRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
       }
       'Radius.Compute/containers': {
         kind: 'bicep'
-        source: '${registry}/bcd/recipes/containers:${tag}'
+        source: '${registry}/oms/recipes/containers:${tag}'
         plainHttp: plainHttp
         parameters: {
           ingressClassName: ingressClassName
@@ -110,7 +108,7 @@ resource azureLocalRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
       }
       'Radius.Security/secrets': {
         kind: 'bicep'
-        source: '${registry}/bcd/recipes/secrets:${tag}'
+        source: '${registry}/oms/recipes/secrets:${tag}'
         plainHttp: plainHttp
       }
     }

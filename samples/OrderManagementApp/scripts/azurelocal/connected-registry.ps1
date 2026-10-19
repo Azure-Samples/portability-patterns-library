@@ -44,8 +44,8 @@ param(
     [string]$ClientTokenName = 'bcd-azurelocal-pull',
     [string]$PullSecretName = 'azurelocal-registry',
     [string]$CaConfigMapName = 'azurelocal-registry-ca',
-    [string[]]$PullSecretNamespaces = @('bcd-azurelocal', 'identity', 'radius-system', 'ingress-nginx'),
-    [string]$ApplicationNamespace = 'bcd-azurelocal',
+    [string[]]$PullSecretNamespaces = @('oms-azurelocal', 'identity', 'radius-system', 'ingress-nginx'),
+    [string]$ApplicationNamespace = 'oms-azurelocal',
 
     [string]$RadiusVersion = '0.60',
 
@@ -56,9 +56,9 @@ param(
         'rabbitmq', 'mssql/server', 'azure-storage/azurite',
         'keycloak/keycloak', 'postgres',
         'ingress-nginx/controller', 'ingress-nginx/kube-webhook-certgen',
-        'bcd/publisher', 'bcd/consumer',
-        'bcd/recipes/rabbitmq-queue', 'bcd/recipes/azurite-objectstorage', 'bcd/recipes/mssql-database',
-        'bcd/recipes/containers', 'bcd/recipes/secrets'
+        'oms/api', 'oms/processor',
+        'oms/recipes/rabbitmq-queue', 'oms/recipes/azurite-objectstorage', 'oms/recipes/mssql-database',
+        'oms/recipes/containers', 'oms/recipes/secrets'
     )
 )
 
