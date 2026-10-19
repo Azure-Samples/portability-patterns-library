@@ -37,7 +37,7 @@ The repository provides samples and references. Customers remain responsible for
 ### Infrastructure scope
 
 - Infrastructure automation, such as scripts that set up Azure Local, AKS, Radius, ingress, a registry or identity, is sample code. It is not official or prescriptive deployment guidance.
-- For prerequisites and environment setup, see the official Microsoft documentation: [Azure Local](https://learn.microsoft.com/en-us/azure/azure-local/), [Azure Local disconnected operations](https://learn.microsoft.com/en-us/azure/azure-local/manage/disconnected-operations-overview), [AKS enabled by Azure Arc](https://learn.microsoft.com/en-us/azure/aks/aksarc/) and [Radius](https://docs.radapp.io/).
+- For any prerequisites and environment setup, see the official Microsoft documentation: [Azure Local](https://learn.microsoft.com/en-us/azure/azure-local/), [Azure Local disconnected operations](https://learn.microsoft.com/en-us/azure/azure-local/manage/disconnected-operations-overview), [AKS enabled by Azure Arc](https://learn.microsoft.com/en-us/azure/aks/aksarc/) and [Radius](https://docs.radapp.io/).
 - Customers must adapt the samples to their environment, tools, security requirements and production standards.
 
 ## 3. Structure
