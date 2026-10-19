@@ -2,7 +2,7 @@
 
 ## 1. Purpose
 
-This repository hosts samples and references for running Azure workloads on Azure Local or another Kubernetes platform. For each Azure resource it describes what carries over, what changes and which alternatives were evaluated, with sample applications that run on Azure and Azure Local.
+This repository hosts samples and references for running Azure workloads on Azure Local. For each Azure resource it describes what carries over, what changes and which alternatives were evaluated, with sample applications that run on Azure and Azure Local.
 
 It supports the scenario *Redeploy from Sovereign Public Cloud to Sovereign Private Cloud*: same container images, same application definition, only the infrastructure changes, with documented degradations.
 
@@ -61,7 +61,7 @@ portability-patterns-library/
 |---|---|
 | `resources/<slug>/examples/` | The smallest deployment of that one resource on each target. For SQL: a small app that writes and reads one row, with no queue or backend. |
 | `samples/` | Multi-resource apps that combine identity, messaging, storage and SQL across targets. The business-continuity demo runs from here. |
-| `targets/` | One page per environment (Azure Local, Kubernetes): links to the official Microsoft documentation for prerequisites, how the environment differs from Azure (connectivity, identity model), and which recipe pack sample applies. |
+| `targets/` | One page per environment (Azure Local, Kubernetes, what works offline): links to the official Microsoft documentation for prerequisites, how the environment differs from Azure (connectivity, identity model), and which recipe pack sample applies. |
 
 ## 4. Resource guide
 
