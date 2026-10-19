@@ -92,13 +92,8 @@ follow the same rule: a connection string or password means the on-site containe
 managed identity.
 
 Sign-in stays an ordinary Entra app: MSAL.js in the browser and Microsoft.Identity.Web in the API.
-On Azure Local, Keycloak is configured to issue Entra-shaped tokens, so only settings differ:
-
-| Setting | Entra ID | Keycloak |
-|---|---|---|
-| API `AzureAd` section | `Instance`, `TenantId`, `ClientId` | `Authority`, `MetadataAddress`, `ClientId`, `Audience` |
-| Browser `ProtocolMode` | `AAD` | `OIDC` (plus `KnownAuthorities`) |
-| Roles `Orders.Read` / `Orders.Create` | app roles assigned to groups | realm roles mapped from AD groups |
+On Azure Local, Keycloak issues tokens shaped like Entra's, so only settings change. See
+[How authentication works](#how-authentication-works).
 
 ### 3. Write one Recipe per resource for each platform
 
@@ -154,8 +149,80 @@ most of them.
 lookups and `kubectl` with the admin kubeconfig keep working. Pushing new images, Azure management of
 the cluster and Entra sign-in to the cluster do not.
 
-[docs/workload-identity.md](./docs/workload-identity.md) explains how the app authenticates without
-secrets on each platform.
+## How authentication works
+
+There are two kinds of authentication: **users** signing in to the app, and the **app's own pods**
+signing in to the queue, storage and SQL.
+
+### Users: sign-in and roles
+
+```
+1. Browser loads /config.json from the API        → which identity provider, client ID and scope to use
+2. MSAL.js redirects the user to the provider     → Entra ID, or Keycloak (password checked against AD)
+3. Provider returns an access token to the browser  (authorization code + PKCE)
+4. Browser calls /api/... with  Authorization: Bearer <token>
+5. API validates the token: issuer, signature, audience, scope 'access_as_user'
+6. API checks the 'roles' claim: Orders.Read to list orders, Orders.Create to place one
+```
+
+The code is written once, for Entra, and doesn't know which provider it is talking to:
+
+| Piece | File | What it does |
+|---|---|---|
+| Browser sign-in | [app.js](./src/OrderManagement.Api/wwwroot/js/app.js) | MSAL.js `PublicClientApplication`, built from `/config.json` |
+| Browser settings | [SpaSettings.cs](./src/OrderManagement.Api/SpaSettings.cs) | serves `/config.json` from the `Spa` settings; allows the provider's origin in the Content Security Policy |
+| Token validation | [Program.cs](./src/OrderManagement.Api/Program.cs) | `AddMicrosoftIdentityWebApi` from the `AzureAd` settings; `RequireScope("access_as_user")` on `/api` |
+| Roles | [OrderAuthorization.cs](./src/OrderManagement.Api/OrderAuthorization.cs) | policies on `Orders.Read` / `Orders.Create`; the user's ID is the `oid` claim |
+
+Only the settings differ. They are the `apiAuthentication` and `spaSettings` parameters of
+[app.bicep](./deploy/app.bicep), which become `AzureAd__*` and `Spa__*` environment variables on the
+API:
+
+| Setting | Entra ID (Azure) | Keycloak (Azure Local) |
+|---|---|---|
+| `apiAuthentication` | `Instance: https://login.microsoftonline.com/`<br>`TenantId: <tenant>`<br>`ClientId: <API app ID>` | `Authority: https://<keycloak>/realms/oms`<br>`MetadataAddress: <Authority>/.well-known/openid-configuration`<br>`ClientId: oms-api`<br>`Audience: oms-api` |
+| `spaSettings` | `Authority: https://login.microsoftonline.com/<tenant>`<br>`ClientId: <SPA app ID>`<br>`ProtocolMode: AAD`<br>`ApiScope: api://<API app ID>/access_as_user` | `Authority: https://<keycloak>/realms/oms`<br>`ClientId: oms-spa`<br>`ProtocolMode: OIDC`<br>`KnownAuthorities: <keycloak host>`<br>`ApiScope: api://oms-api/access_as_user` |
+
+`MetadataAddress` is needed because Microsoft.Identity.Web otherwise adds Entra's `/v2.0` to the
+authority. `KnownAuthorities` stops MSAL from checking the authority against Entra.
+
+Both providers need the same registrations. On Keycloak,
+[configure-app-identity.ps1](./scripts/azurelocal/configure-app-identity.ps1) creates them and adds
+the claim mappers that make the token match Entra's:
+
+| Needed | Entra ID | Keycloak (realm `oms`) |
+|---|---|---|
+| The API | app registration exposing scope `access_as_user`, with app roles `Orders.Read`, `Orders.Create` | confidential client `oms-api` with no flows, used only as the token audience; realm roles `Orders.Read`, `Orders.Create` |
+| The browser app | SPA app registration, redirect URI = the app's URL | public client `oms-spa`, standard flow with PKCE (S256), redirect URI = the app's URL |
+| The scope | `api://<API app ID>/access_as_user` | client scope `api://oms-api/access_as_user`, optional on `oms-spa` |
+| Token claims | built in: `aud`, `scp`, `roles`, `oid` | mappers on that scope: `aud` = `oms-api`, `scp` = `access_as_user`, `roles` = realm roles as a flat list, `oid` = the user's ID |
+| Who gets which role | app roles assigned to Entra groups | AD groups mapped to realm roles (see [Connect your Active Directory](#connect-your-active-directory)) |
+
+### Workloads: the app's access to the queue, storage and SQL
+
+The API and processor pick their credential from what their connection provides, so the code has
+no platform switch:
+
+| Service | Azure | Azure Local | Where the choice is made |
+|---|---|---|---|
+| Queue | Entra Workload ID: the pod's Kubernetes token is exchanged for an Entra token for Service Bus | the pod's Kubernetes token is exchanged at Keycloak for a token RabbitMQ accepts | [ServiceCollectionExtensions.cs](./src/OrderManagement.Shared/DependencyInjection/ServiceCollectionExtensions.cs): OAuth when the connection has `oauth*` values |
+| Object storage | Entra Workload ID | Azurite connection string, issued by the Recipe | [ArchiveOptions.cs](./src/OrderManagement.Shared/Configuration/ArchiveOptions.cs): managed identity when there is no connection string |
+| SQL | Entra Workload ID; the app's managed identity is the database admin | `sa` login; password from the Kubernetes Secret `oms-sql-admin` | [SqlOptions.cs](./src/OrderManagement.Shared/Configuration/SqlOptions.cs): Entra when the pod has a workload identity or there is no password |
+
+- **Azure:** [AzureCredentialFactory.cs](./src/OrderManagement.Shared/Identity/AzureCredentialFactory.cs)
+  uses `WorkloadIdentityCredential`. The Recipe Pack gives the pods the `oms-workload-identity`
+  service account and the Workload ID label, and the managed identity has a federated credential
+  that trusts that service account.
+- **Azure Local:** [WorkloadTokenProvider.cs](./src/OrderManagement.Shared/Identity/WorkloadTokenProvider.cs)
+  sends the pod's projected Kubernetes token to Keycloak as a client assertion
+  (`client_credentials`, `jwt-bearer`) and uses the access token it gets back as the RabbitMQ
+  password. Keycloak trusts the cluster's token issuer, the same way Entra trusts it through the
+  federated credential. The Recipe Pack projects the token at `/var/run/secrets/identity/token`
+  and mounts Keycloak's CA certificate.
+
+Every step runs inside the site, so this keeps working without Azure. The full walkthrough,
+including decoded tokens and troubleshooting, is in
+[docs/workload-identity.md](./docs/workload-identity.md).
 
 ## Connect your Active Directory
 
