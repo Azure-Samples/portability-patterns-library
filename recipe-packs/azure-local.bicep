@@ -7,8 +7,8 @@
 //   * `registry` is the ACR connected registry running inside the cluster (an Arc extension that
 //     syncs from a Premium ACR in Azure). Kubelet and the Radius control plane both pull from it,
 //     so a lost Azure link does not stop a restarted pod from finding its image or Recipe.
-//   * The connected registry always serves HTTPS with a private CA, which
-//     scripts/azurelocal/deploy.ps1 hands to the Radius control plane, so plainHttp stays false.
+//   * The connected registry always serves HTTPS with a private CA. Give that CA to the Radius
+//     control plane and leave plainHttp false.
 //
 // Identity: Keycloak in the cluster federates the cluster's own ServiceAccount
 // issuer and binds Active Directory, so token exchange never leaves the site.
@@ -23,6 +23,15 @@ param registry string
 
 @description('Tag applied to the Recipes published from this repository.')
 param tag string = 'latest'
+
+@description('''
+Registry path holding Radius's stock Kubernetes Recipes, used for secrets. On Azure Local they are
+mirrored from ghcr.io into the cloud ACR and synced into the cluster like every other artifact.
+''')
+param radiusRecipeRegistry string = '${registry}/radius-project/kube-recipes'
+
+@description('Tag of the stock Radius Recipes.')
+param radiusRecipeTag string = 'latest'
 
 @description('Set true only for a registry that does not serve HTTPS.')
 param plainHttp bool = false
@@ -46,12 +55,12 @@ param oauthIssuer string = ''
 param oauthCaSecretName string = ''
 
 @description('Keycloak client the workloads authenticate as.')
-param oauthClientId string = 'oms-workloads'
+param oauthClientId string = ''
 
 @description('Kubernetes service account Keycloak trusts for that client; must match the client federated subject.')
-param serviceAccountName string = 'oms-workload'
+param serviceAccountName string = ''
 
-@description('Ingress class that publishes containers with ports on the site network, from scripts/azurelocal/provision-ingress.ps1. Empty keeps them cluster-internal.')
+@description('Ingress class that publishes containers with ports on the site network. Empty keeps them cluster-internal.')
 param ingressClassName string = ''
 
 @description('TLS Secret in the application namespace that the ingress serves.')
@@ -72,12 +81,12 @@ var queueOAuthParameters = empty(oauthIssuer) ? {} : {
 }
 
 resource azureLocalRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
-  name: 'oms-azurelocal-recipes'
+  name: 'azure-local-recipes'
   properties: {
     recipes: {
-      'OrderManagement.Messaging/messageQueues': {
+      'Portability.Messaging/messageQueues': {
         kind: 'bicep'
-        source: '${registry}/oms/recipes/rabbitmq-queue:${tag}'
+        source: '${registry}/recipes/rabbitmq-queue:${tag}'
         plainHttp: plainHttp
         parameters: union({
           imageRegistry: registry
@@ -88,7 +97,7 @@ resource azureLocalRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
       }
       'Radius.Storage/objectStorage': {
         kind: 'bicep'
-        source: '${registry}/oms/recipes/azurite-objectstorage:${tag}'
+        source: '${registry}/recipes/azurite-objectstorage:${tag}'
         plainHttp: plainHttp
         parameters: {
           imageRegistry: registry
@@ -99,7 +108,7 @@ resource azureLocalRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
       }
       'Radius.Data/sqlServerDatabases': {
         kind: 'bicep'
-        source: '${registry}/oms/recipes/mssql-database:${tag}'
+        source: '${registry}/recipes/mssql-database:${tag}'
         plainHttp: plainHttp
         parameters: {
           imageRegistry: registry
@@ -110,7 +119,7 @@ resource azureLocalRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
       }
       'Radius.Compute/containers': {
         kind: 'bicep'
-        source: '${registry}/oms/recipes/containers:${tag}'
+        source: '${registry}/recipes/containers:${tag}'
         plainHttp: plainHttp
         parameters: union({
           imagePullSecretName: imagePullSecretName
@@ -120,7 +129,7 @@ resource azureLocalRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
       }
       'Radius.Security/secrets': {
         kind: 'bicep'
-        source: '${registry}/oms/recipes/secrets:${tag}'
+        source: '${radiusRecipeRegistry}/secrets:${radiusRecipeTag}'
         plainHttp: plainHttp
       }
     }

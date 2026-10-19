@@ -3,4 +3,3 @@
 .git/
 .vs/
 .idea/
-deploy/types/*.tgz

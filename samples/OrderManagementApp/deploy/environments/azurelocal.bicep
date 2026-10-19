@@ -17,7 +17,7 @@ the connected registry. Passed as a string: a conditional `existing` reference i
 param bicepSettingsId string = ''
 
 resource azureLocalRecipes 'Radius.Core/recipePacks@2025-08-01-preview' existing = {
-  name: 'oms-azurelocal-recipes'
+  name: 'azure-local-recipes'
 }
 
 // Two mutually exclusive declarations: the deployment engine does not evaluate expressions that

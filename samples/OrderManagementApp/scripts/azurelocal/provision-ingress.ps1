@@ -6,7 +6,7 @@
 .DESCRIPTION
     Platform layer, like provision-infra.ps1. Applications then only declare ports; the Recipe Pack
     tells the containers Recipe to publish them through this ingress (see
-    deploy/recipe-packs/azurelocal.bicep), so deploy/app.bicep is the same as in Azure.
+    recipe-packs/azure-local.bicep at the repository root), so deploy/app.bicep is the same as in Azure.
 
       1. Registers Microsoft.KubernetesRuntime and enables the AKS Arc load balancer (MetalLB,
          ARP mode) with the address range -Addresses, outside the AKS logical network pool.

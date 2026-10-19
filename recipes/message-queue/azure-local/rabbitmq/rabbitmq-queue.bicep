@@ -1,4 +1,4 @@
-// Recipe: OrderManagement.Messaging/messageQueues -> RabbitMQ container in the cluster.
+// Recipe: Portability.Messaging/messageQueues -> RabbitMQ container in the cluster.
 //
 // Used by the Azure Local environment, where the workload must not depend on Azure Service Bus.
 // Publishes provider = 'rabbitmq' so the API and processor select the RabbitMQ client at startup.
@@ -26,7 +26,7 @@ plane's registry credentials nor the application's own pull secret.
 param imagePullSecretName string = ''
 
 @description('Username for the RabbitMQ broker.')
-param username string = 'oms'
+param username string = 'app'
 
 @description('''
 Issuer URL of the token service, for example `https://keycloak/realms/oms`. Setting this turns on
@@ -45,7 +45,7 @@ param oauthScopesKey string = 'rabbitmq_scopes'
 param oauthCaSecretName string = ''
 
 @description('Client the workload authenticates as at the issuer.')
-param oauthClientId string = 'oms-workloads'
+param oauthClientId string = ''
 
 @description('Path of the ServiceAccount token the container Recipe projects into each workload.')
 param oauthAssertionFile string = '/var/run/secrets/identity/token'

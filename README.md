@@ -8,6 +8,16 @@ Note: These resources are provided solely as reference and sample implementation
 | Sample | What it shows |
 |---|---|
 | [Order Management](./samples/OrderManagementApp/README.md) | One Radius application definition and one set of container images deployed unchanged to AKS with Azure PaaS services and to Azure Local (AKS enabled by Arc), where it keeps running when the site loses its link to Azure. Users sign in with MSAL.js against Entra ID in Azure or Keycloak federated to Active Directory on Azure Local, and place orders that flow through a queue into object storage and SQL Server. |
+
+## Recipes and Recipe Packs
+
+Samples share the Radius Recipes and Recipe Packs at the repository root:
+
+| Folder | What it holds |
+|---|---|
+| [`recipes/`](./recipes) | One Recipe per resource and platform, as `<capability>/<platform>/<implementation>/`: for example `message-queue/azure/service-bus` and `message-queue/azure-local/rabbitmq`. |
+| [`recipe-packs/`](./recipe-packs) | One Recipe Pack per platform (`azure.bicep`, `azure-local.bicep`), choosing the Recipe for each resource type. |
+
 ## Getting started
 
 Start with the [Order Management sample](./samples/OrderManagementApp/README.md) for

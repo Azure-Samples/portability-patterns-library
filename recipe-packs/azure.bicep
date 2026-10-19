@@ -1,9 +1,9 @@
-// Recipe Pack for Azure environments (AKS + Azure PaaS).
+// Recipe Pack for Azure: AKS with Azure PaaS services.
 //
-// The same three Resource Types the local pack binds to containers are bound here to Azure Service
-// Bus, Azure Storage, and Azure SQL Database. The identity parameters come from
-// scripts/azure/provision-infra.ps1, which creates the user-assigned managed identity and the
-// federated identity credential that trusts the cluster's OIDC issuer for one service account.
+// The queue, object storage and SQL types that the Azure Local pack binds to containers are bound
+// here to Azure Service Bus, Azure Blob Storage and Azure SQL Database. Every container runs with
+// Entra Workload ID, so the platform needs a user-assigned managed identity with a federated
+// credential that trusts the cluster's OIDC issuer for `serviceAccountName`.
 
 extension radius
 
@@ -20,7 +20,7 @@ param workloadIdentityPrincipalId string
 param workloadIdentityName string
 
 @description('Kubernetes service account annotated for that identity. Its name must match the federated credential subject.')
-param serviceAccountName string = 'oms-workload-identity'
+param serviceAccountName string
 
 @description('Azure region for provisioned infrastructure.')
 param location string = 'eastus2'
@@ -33,10 +33,13 @@ in a different region from the cluster at the cost of some latency and cross-reg
 ''')
 param sqlLocation string = location
 
-@description('Registry holding the stock Radius Kubernetes Recipes that this pack does not override.')
+@description('Registry path holding the stock Radius Kubernetes Recipes, used for secrets.')
 param radiusRecipeRegistry string = 'ghcr.io/radius-project/kube-recipes'
 
-@description('Ingress class that publishes containers with ports, from scripts/azure/provision-ingress.ps1. Empty keeps them cluster-internal.')
+@description('Tag of the stock Radius Recipes.')
+param radiusRecipeTag string = 'latest'
+
+@description('Ingress class that publishes containers with ports. Empty keeps them cluster-internal.')
 param ingressClassName string = ''
 
 @description('Public host name the ingress answers on, for example <label>.<region>.cloudapp.azure.com.')
@@ -44,6 +47,9 @@ param ingressHost string = ''
 
 @description('cert-manager ClusterIssuer that obtains the certificate for ingressHost.')
 param ingressCertIssuer string = ''
+
+@description('TLS Secret the ingress serves; cert-manager writes the certificate into it.')
+param ingressTlsSecretName string = 'app-tls'
 
 // Every container runs as the annotated service account with the Workload Identity label, so the
 // webhook gives it AZURE_CLIENT_ID and a federated token. The application declares none of this.
@@ -55,30 +61,30 @@ var containerIdentityParameters = {
 var containerIngressParameters = empty(ingressClassName) ? {} : {
   ingressClassName: ingressClassName
   ingressHost: ingressHost
-  ingressTlsSecretName: 'oms-app-tls'
+  ingressTlsSecretName: ingressTlsSecretName
   ingressAnnotations: empty(ingressCertIssuer) ? {} : {
     'cert-manager.io/cluster-issuer': ingressCertIssuer
   }
 }
 
 resource azureRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
-  name: 'oms-azure-recipes'
+  name: 'azure-recipes'
   properties: {
     recipes: {
       // Local build of the stock Kubernetes container Recipe that adds identity, registry and
-      // ingress settings chosen by the platform (see deploy/recipes/kubernetes/containers.bicep).
+      // ingress settings chosen by the platform (see recipes/containers/kubernetes/deployment).
       'Radius.Compute/containers': {
         kind: 'bicep'
-        source: '${registry}/oms/recipes/containers:${tag}'
+        source: '${registry}/recipes/containers:${tag}'
         parameters: union(containerIdentityParameters, containerIngressParameters)
       }
       'Radius.Security/secrets': {
         kind: 'bicep'
-        source: '${radiusRecipeRegistry}/secrets:latest'
+        source: '${radiusRecipeRegistry}/secrets:${radiusRecipeTag}'
       }
-      'OrderManagement.Messaging/messageQueues': {
+      'Portability.Messaging/messageQueues': {
         kind: 'bicep'
-        source: '${registry}/oms/recipes/servicebus-queue:${tag}'
+        source: '${registry}/recipes/servicebus-queue:${tag}'
         parameters: {
           location: location
           workloadIdentityPrincipalId: workloadIdentityPrincipalId
@@ -87,7 +93,7 @@ resource azureRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
       }
       'Radius.Storage/objectStorage': {
         kind: 'bicep'
-        source: '${registry}/oms/recipes/blob-objectstorage:${tag}'
+        source: '${registry}/recipes/blob-objectstorage:${tag}'
         parameters: {
           location: location
           workloadIdentityPrincipalId: workloadIdentityPrincipalId
@@ -96,7 +102,7 @@ resource azureRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
       }
       'Radius.Data/sqlServerDatabases': {
         kind: 'bicep'
-        source: '${registry}/oms/recipes/azuresql-database:${tag}'
+        source: '${registry}/recipes/azuresql-database:${tag}'
         parameters: {
           location: sqlLocation
           workloadIdentityPrincipalId: workloadIdentityPrincipalId

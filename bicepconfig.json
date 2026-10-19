@@ -1,7 +1,7 @@
 {
   "extensions": {
     "radius": "br:biceptypes.azurecr.io/radius:latest",
-    "orderManagement": "./deploy/types/orderManagement.tgz"
+    "portability": "./recipes/message-queue/messageQueues.tgz"
   },
   "experimentalFeaturesEnabled": {
     "extensibility": true

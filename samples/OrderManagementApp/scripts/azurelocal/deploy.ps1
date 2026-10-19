@@ -69,6 +69,8 @@ param(
     [string]$KeycloakRelease = 'keycloak',
     [string]$KeycloakRealm = 'oms',
     [int]$KeycloakNodePort = 30443,
+    # Keycloak client and service account the workloads authenticate as, from scripts/azurelocal/keycloak.ps1.
+    [string]$WorkloadClientId = 'oms-workloads',
     [string]$WorkloadServiceAccount = 'oms-workload',
     [string]$IdentityCaSecretName = 'oms-identity-ca',
     [switch]$SkipOAuth,
@@ -90,6 +92,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+. (Join-Path $repoRoot 'scripts/lib/recipes.ps1')
 Push-Location $repoRoot
 
 function Invoke-Checked {
@@ -167,7 +170,7 @@ try {
     # Build, push and publish to the cloud registry.
     # ------------------------------------------------------------------------------------------
     Invoke-Checked 'rad bicep publish-extension' {
-        rad bicep publish-extension -f deploy/types/messageQueues.yaml --target deploy/types/orderManagement.tgz
+        rad bicep publish-extension -f $QueueTypeFile --target $QueueTypeExtension
     }
 
     # An ACR access token lasts three hours, plenty for one run. It is written to the Docker-
@@ -199,18 +202,18 @@ try {
     $acrToken = $null
 
     if (-not $SkipImageBuild) {
-        Write-Host "==> Building worker images with $containerTool against base images in $pushRegistry" -ForegroundColor Cyan
-        foreach ($worker in @('api', 'processor')) {
-            $image = "$pushRegistry/oms/${worker}:$ImageTag"
-            Invoke-Checked "$containerTool build $worker" {
-                & $containerTool build --build-arg "BASE_REGISTRY=$pushRegistry" -f "docker/Dockerfile.$worker" -t $image .
+        Write-Host "==> Building application images with $containerTool against base images in $pushRegistry" -ForegroundColor Cyan
+        foreach ($component in @('api', 'processor')) {
+            $image = "$pushRegistry/oms/${component}:$ImageTag"
+            Invoke-Checked "$containerTool build $component" {
+                & $containerTool build --build-arg "BASE_REGISTRY=$pushRegistry" -f "docker/Dockerfile.$component" -t $image .
             }
-            Invoke-Checked "$containerTool push $worker" { & $containerTool push $image }
+            Invoke-Checked "$containerTool push $component" { & $containerTool push $image }
         }
     }
 
     Write-Host "==> Publishing Recipes to $pushRegistry" -ForegroundColor Cyan
-    ./scripts/publish-recipes.ps1 -Registry $pushRegistry -Set azurelocal -Tag $ImageTag
+    ./scripts/publish-recipes.ps1 -Registry $pushRegistry -Platform azure-local -Tag $ImageTag
 
     # ------------------------------------------------------------------------------------------
     # Wait for the connected registry to hold everything this deployment pulls. It syncs
@@ -232,8 +235,8 @@ try {
         "ucpd:$RadiusVersion", "controller:$RadiusVersion", "applications-rp:$RadiusVersion",
         "dynamic-rp:$RadiusVersion", "deployment-engine:$RadiusVersion", "bicep:$RadiusVersion",
         "oms/api:$ImageTag", "oms/processor:$ImageTag"
-    ) + (Get-ChildItem deploy/recipes/azurelocal, deploy/recipes/kubernetes -Filter *.bicep |
-            ForEach-Object { "oms/recipes/$($_.BaseName):$ImageTag" })
+    ) + (Get-LibraryRecipe -Platform azure-local | ForEach-Object { "recipes/$($_.BaseName):$ImageTag" }) +
+        @('radius-project/kube-recipes/secrets:latest')
 
     $basicAuth = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes("$($pullAuth.username):$($pullAuth.password)"))
     $accept = 'application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json'
@@ -326,7 +329,7 @@ try {
 
     Write-Host "==> Registering the messageQueues Resource Type" -ForegroundColor Cyan
     Invoke-Checked 'rad resource-type create' {
-        rad resource-type create messageQueues -f deploy/types/messageQueues.yaml --workspace $WorkspaceName
+        rad resource-type create messageQueues -f $QueueTypeFile --workspace $WorkspaceName
     }
 
     Write-Host "==> Creating the bootstrap environment" -ForegroundColor Cyan
@@ -364,7 +367,7 @@ try {
     $useIngress = -not [string]::IsNullOrWhiteSpace($ingressAddress)
     if ($useIngress) { Write-Host "    publishing through ingress '$IngressClassName' at https://$ingressAddress" -ForegroundColor DarkGray }
     Invoke-Checked 'rad deploy recipe pack' {
-        rad deploy deploy/recipe-packs/azurelocal.bicep `
+        rad deploy (Join-Path $LibraryRecipePackRoot 'azure-local.bicep') `
             --workspace $WorkspaceName `
             --group $ResourceGroup `
             --environment bootstrap `
@@ -373,6 +376,7 @@ try {
             --parameters imagePullSecretName=$ImagePullSecretName `
             --parameters oauthIssuer=$oauthIssuer `
             --parameters oauthCaSecretName=$(if ($oauthIssuer) { $IdentityCaSecretName } else { '' }) `
+            --parameters oauthClientId=$(if ($oauthIssuer) { $WorkloadClientId } else { '' }) `
             --parameters serviceAccountName=$WorkloadServiceAccount `
             --parameters ingressClassName=$(if ($useIngress) { $IngressClassName } else { '' }) `
             --parameters ingressTlsSecretName=$(if ($useIngress) { $IngressTlsSecretName } else { '' })

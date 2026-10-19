@@ -32,7 +32,7 @@
 .EXAMPLE
     # Private registry: supply a scoped ACR token so the Radius control plane can pull Recipes.
     #   az acr token create --registry mycr --name bcd-recipe-puller `
-    #       --repository oms/recipes content/read --expiration-in-days 30
+    #       --repository recipes/containers content/read --expiration-in-days 30
     ./scripts/azure/deploy.ps1 `
         -Registry mycr.azurecr.io `
         -SubscriptionId <sub-id> `
@@ -112,6 +112,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+. (Join-Path $repoRoot 'scripts/lib/recipes.ps1')
 Push-Location $repoRoot
 
 # $ErrorActionPreference does not apply to native commands, so every external call is checked.
@@ -165,8 +166,7 @@ try {
             # repository is listed individually. Refreshed on each run so it never silently expires.
             Write-Host "==> Minting a read-only Recipe pull token for $Registry ($RecipeTokenDays days)" -ForegroundColor Cyan
             $RegistryUsername = 'bcd-recipe-puller'
-            $repositories = Get-ChildItem deploy/recipes/azure, deploy/recipes/kubernetes -Filter *.bicep |
-                ForEach-Object { "oms/recipes/$($_.BaseName)" }
+            $repositories = Get-LibraryRecipe -Platform azure | ForEach-Object { "recipes/$($_.BaseName)" }
             $scopeArguments = $repositories | ForEach-Object { '--repository', $_, 'content/read', 'metadata/read' }
 
             az acr scope-map show --registry $acrName --name $RegistryUsername --only-show-errors 2>$null | Out-Null
@@ -215,10 +215,10 @@ try {
 
     Write-Host "==> Registering the messageQueues Resource Type" -ForegroundColor Cyan
     Invoke-Checked 'rad resource-type create' {
-        rad resource-type create messageQueues -f deploy/types/messageQueues.yaml --workspace $WorkspaceName
+        rad resource-type create messageQueues -f $QueueTypeFile --workspace $WorkspaceName
     }
     Invoke-Checked 'rad bicep publish-extension' {
-        rad bicep publish-extension -f deploy/types/messageQueues.yaml --target deploy/types/orderManagement.tgz
+        rad bicep publish-extension -f $QueueTypeFile --target $QueueTypeExtension
     }
 
     $containerTool = if (Get-Command podman -ErrorAction SilentlyContinue) { 'podman' }
@@ -265,7 +265,7 @@ try {
     }
 
     Write-Host "==> Publishing Azure Recipes" -ForegroundColor Cyan
-    ./scripts/publish-recipes.ps1 -Registry $Registry -Set azure
+    ./scripts/publish-recipes.ps1 -Registry $Registry -Platform azure
 
     # `rad deploy` always needs an environment to deploy into, including for the Recipe Pack that
     # the real environment depends on.
@@ -283,7 +283,7 @@ try {
     $ingressHost = if ($dnsLabel) { "$dnsLabel.$Location.cloudapp.azure.com" } else { '' }
     if ($ingressHost) { Write-Host "    publishing through the managed ingress at https://$ingressHost" -ForegroundColor DarkGray }
     Invoke-Checked 'rad deploy recipe pack' {
-        rad deploy deploy/recipe-packs/azure.bicep `
+        rad deploy (Join-Path $LibraryRecipePackRoot 'azure.bicep') `
             --workspace $WorkspaceName `
             --group $ResourceGroup `
             --environment bootstrap `

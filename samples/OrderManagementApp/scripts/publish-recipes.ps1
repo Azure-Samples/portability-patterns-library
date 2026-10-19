@@ -1,29 +1,33 @@
 <#
 .SYNOPSIS
-    Compiles and publishes the Bicep Recipes to an OCI registry.
+    Compiles and publishes the library's Bicep Recipes to an OCI registry.
 
 .DESCRIPTION
     Radius fetches Bicep Recipes from an OCI registry at deployment time. The pull is performed by
     the Radius control plane running inside the cluster, so the registry address must be resolvable
     *from the cluster*, not just from your workstation.
 
-.PARAMETER Registry
-    Registry host and path prefix, for example 'myregistry.azurecr.io'.
+    Recipes live at the repository root in recipes/<capability>/<platform>/<implementation>/. Each
+    is published as <Registry>/recipes/<file name>:<Tag>, which is what the Recipe Packs in
+    recipe-packs/ reference.
 
-.PARAMETER Set
-    Which Recipe set to publish: 'azure', 'azurelocal' or 'all'. The shared Kubernetes Recipes
-    (deploy/recipes/kubernetes) are always published with it.
+.PARAMETER Registry
+    Registry host, for example 'myregistry.azurecr.io'.
+
+.PARAMETER Platform
+    Which platform's Recipes to publish: 'azure', 'azure-local' or 'all'. The shared Kubernetes
+    Recipes (recipes/*/kubernetes) are always published with it.
 
 .EXAMPLE
-    ./scripts/publish-recipes.ps1 -Registry myregistry.azurecr.io -Set azure
+    ./scripts/publish-recipes.ps1 -Registry myregistry.azurecr.io -Platform azure
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [string]$Registry,
 
-    [ValidateSet('azure', 'azurelocal', 'all')]
-    [string]$Set = 'all',
+    [ValidateSet('azure', 'azure-local', 'all')]
+    [string]$Platform = 'all',
 
     [string]$Tag = 'latest',
 
@@ -31,32 +35,22 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
 
-# `containers` is a local build of the stock Recipe adding platform identity and ingress settings; `secrets` is the
-# stock Recipe vendored so that no environment has to mirror an extra OCI artifact. Both are needed
-# wherever Radius deploys containers, so they accompany every set.
-$sets = if ($Set -eq 'all') { @('azure', 'azurelocal', 'kubernetes') } else { @($Set, 'kubernetes') }
+. (Join-Path $PSScriptRoot 'lib/recipes.ps1')
+$recipes = Get-LibraryRecipe -Platform $Platform
+if (-not $recipes) { throw "No Recipes found for platform '$Platform' under $LibraryRecipeRoot." }
 
-foreach ($setName in $sets) {
-    $recipeDir = Join-Path $repoRoot "deploy/recipes/$setName"
-    if (-not (Test-Path $recipeDir)) {
-        throw "Recipe directory '$recipeDir' does not exist."
-    }
-    $recipes = Get-ChildItem -Path $recipeDir -Filter *.bicep
+foreach ($recipe in $recipes) {
+    $target = "br:$Registry/recipes/$($recipe.BaseName):$Tag"
+    Write-Host "Publishing $($recipe.Name) -> $target" -ForegroundColor Cyan
 
-    foreach ($recipe in $recipes) {
-        $target = "br:$Registry/oms/recipes/$($recipe.BaseName):$Tag"
-        Write-Host "Publishing $($recipe.Name) -> $target" -ForegroundColor Cyan
+    $radArgs = @('bicep', 'publish', '--file', $recipe.FullName, '--target', $target)
+    if ($PlainHttp) { $radArgs += '--plain-http' }
 
-        $radArgs = @('bicep', 'publish', '--file', $recipe.FullName, '--target', $target)
-        if ($PlainHttp) { $radArgs += '--plain-http' }
-
-        & rad @radArgs
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to publish $($recipe.Name)"
-        }
+    & rad @radArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to publish $($recipe.Name)"
     }
 }
 
-Write-Host "`nAll '$Set' Recipes published to $Registry" -ForegroundColor Green
+Write-Host "`nAll '$Platform' Recipes published to $Registry" -ForegroundColor Green

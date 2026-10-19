@@ -6,7 +6,7 @@
 .DESCRIPTION
     Platform layer, the Azure counterpart of scripts/azurelocal/provision-ingress.ps1. Applications
     only declare ports; the Recipe Pack tells the containers Recipe to publish them through this
-    ingress (see deploy/recipe-packs/azure.bicep), so deploy/app.bicep is the same as on Azure Local.
+    ingress (see recipe-packs/azure.bicep at the repository root), so deploy/app.bicep is the same as on Azure Local.
 
       1. Gives the managed ingress's public IP the DNS name <DnsLabel>.<region>.cloudapp.azure.com.
       2. Installs cert-manager and a ClusterIssuer: Let's Encrypt with HTTP-01 challenges answered

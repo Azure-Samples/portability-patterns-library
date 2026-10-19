@@ -12,8 +12,10 @@
 // As of Radius 0.60 only `BasicAuth` is implemented; `AzureWI` and `AwsIrsa` are declared in the
 // schema but not yet supported. Use a scoped ACR token rather than enabling the ACR admin user:
 //
-//   az acr token create --registry <acr> --name oms-recipe-puller \
-//       --repository oms/recipes content/read --output json
+//   az acr token create --registry <acr> --name recipe-puller \
+//       --repository recipes/containers content/read --output json
+//
+// (one --repository per Recipe under recipes/ at the repository root)
 //
 // DEPLOYMENT ORDER
 // The Environment references these settings, so the two cannot be created in a single pass.

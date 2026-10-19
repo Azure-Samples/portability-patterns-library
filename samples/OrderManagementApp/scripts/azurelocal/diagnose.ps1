@@ -60,6 +60,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+. (Join-Path $repoRoot 'scripts/lib/recipes.ps1')
 Push-Location $repoRoot
 
 $script:failures = 0
@@ -216,7 +217,8 @@ try {
             $accept = 'application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json'
             $artifacts = @("ucpd:$RadiusVersion", "applications-rp:$RadiusVersion", "dynamic-rp:$RadiusVersion",
                 "oms/api:$ImageTag", "oms/processor:$ImageTag", 'keycloak/keycloak:26.8', 'mssql/server:2022-latest') +
-            (Get-ChildItem deploy/recipes/azurelocal, deploy/recipes/kubernetes -Filter *.bicep | ForEach-Object { "oms/recipes/$($_.BaseName):$ImageTag" })
+            (Get-LibraryRecipe -Platform azure-local | ForEach-Object { "recipes/$($_.BaseName):$ImageTag" }) +
+            @('radius-project/kube-recipes/secrets:latest')
 
             $missing = foreach ($artifact in $artifacts) {
                 $repository, $tag = $artifact -split ':', 2

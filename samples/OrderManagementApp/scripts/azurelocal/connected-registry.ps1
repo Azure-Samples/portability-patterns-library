@@ -57,8 +57,8 @@ param(
         'keycloak/keycloak', 'postgres',
         'ingress-nginx/controller', 'ingress-nginx/kube-webhook-certgen',
         'oms/api', 'oms/processor',
-        'oms/recipes/rabbitmq-queue', 'oms/recipes/azurite-objectstorage', 'oms/recipes/mssql-database',
-        'oms/recipes/containers', 'oms/recipes/secrets'
+        'recipes/rabbitmq-queue', 'recipes/azurite-objectstorage', 'recipes/mssql-database',
+        'recipes/containers', 'radius-project/kube-recipes/secrets'
     )
 )
 

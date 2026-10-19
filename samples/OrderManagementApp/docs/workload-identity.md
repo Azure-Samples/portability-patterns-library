@@ -279,7 +279,7 @@ cost of more traffic to the token endpoint.
 | Where | Setting | Value |
 | --- | --- | --- |
 | AKS enabled by Arc | service-account issuer (default) | `https://kubernetes.default.svc.cluster.local` |
-| `deploy/recipe-packs/azurelocal.bicep` | token volume audience | `https://192.168.44.121:30443/realms/oms` |
+| `recipe-packs/azure-local.bicep` (repository root) | token volume audience | `https://192.168.44.121:30443/realms/oms` |
 | Keycloak identity provider | `issuer` | `https://kubernetes.default.svc.cluster.local` |
 | Keycloak client | `clientAuthenticatorType` | `federated-jwt` |
 | Keycloak client | `jwt.credential.sub` | `system:serviceaccount:oms-azurelocal:oms-workload` |

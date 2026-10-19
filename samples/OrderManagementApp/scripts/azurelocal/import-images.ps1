@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Moves every container image this application needs into the site's registry.
+    Moves every container image and stock Radius Recipe this application needs into the site's registry.
 
 .DESCRIPTION
     On Azure Local every image is pulled from the ACR connected registry inside the cluster, so a
@@ -8,9 +8,10 @@
     cloud ACR, so every image, including the Radius control plane itself, must be in that ACR before
     anything is deployed.
 
-    Recipes do NOT need mirroring: every Recipe in this repository, including the vendored stock
-    Radius ones, is published from source with `rad bicep publish`, so only container images have to
-    be moved.
+    The library's own Recipes are published from source with `rad bicep publish`. Radius's stock
+    secrets Recipe is used as published on ghcr.io, so it is mirrored here like an image. It is an OCI
+    artifact, not an image: Mirror mode copies it with `az acr import`; for the other modes, copy it
+    with `oras copy`, which the script prints.
 
     Four modes:
 
@@ -67,6 +68,9 @@ param(
 
     [string]$RadiusVersion = '0.60',
 
+    # Tag of Radius's stock Kubernetes Recipes on ghcr.io; must match radiusRecipeTag in the Recipe Pack.
+    [string]$RadiusRecipeTag = 'latest',
+
     [string]$RabbitMqTag = '4-management-alpine',
     [string]$SqlServerTag = '2022-latest',
     [string]$AzuriteTag = '3.35.0',
@@ -118,7 +122,7 @@ $images = @(
     @{ Source = "ghcr.io/radius-project/pre-upgrade:$RadiusVersion";       Target = "pre-upgrade:$RadiusVersion" }
 
     # --- Backing services deployed by the Recipes -------------------------------------------
-    # Repository paths match the imageRepository defaults in deploy/recipes/azurelocal/*.bicep.
+    # Repository paths match the imageRepository values in recipe-packs/azure-local.bicep.
     @{ Source = "mcr.microsoft.com/mssql/server:$SqlServerTag";            Target = "mssql/server:$SqlServerTag" }
     @{ Source = "mcr.microsoft.com/azure-storage/azurite:$AzuriteTag";     Target = "azure-storage/azurite:$AzuriteTag" }
     @{ Source = "docker.io/library/rabbitmq:$RabbitMqTag";                 Target = "rabbitmq:$RabbitMqTag" }
@@ -144,6 +148,21 @@ $images = @(
 if ($IncludeContour) {
     $images += @{ Source = 'ghcr.io/projectcontour/contour:v1.32.0'; Target = 'projectcontour/contour:v1.32.0' }
     $images += @{ Source = 'docker.io/envoyproxy/envoy:v1.34.1';     Target = 'envoyproxy/envoy:v1.34.1' }
+}
+
+# Radius's stock Recipes, kept at the same path under the target registry. Bicep artifacts, not images.
+$recipeArtifacts = @(
+    @{ Source = "ghcr.io/radius-project/kube-recipes/secrets:$RadiusRecipeTag"; Target = "radius-project/kube-recipes/secrets:$RadiusRecipeTag" }
+)
+
+# docker cannot move non-image artifacts, so outside Mirror mode the copy is left to oras.
+function Write-RecipeArtifactHint {
+    param([string]$TargetRegistry = '<registry>')
+
+    Write-Host "`nStock Radius Recipes are OCI artifacts, not images. Copy them with oras:" -ForegroundColor Yellow
+    foreach ($artifact in $recipeArtifacts) {
+        Write-Host "  oras copy $($artifact.Source) $TargetRegistry/$($artifact.Target)"
+    }
 }
 
 function Get-ArchiveName {
@@ -187,6 +206,7 @@ switch ($Mode) {
         }
 
         Write-Host "`nAll images copied into $Registry" -ForegroundColor Green
+        Write-RecipeArtifactHint -TargetRegistry $Registry
     }
 
     'Mirror' {
@@ -197,7 +217,7 @@ switch ($Mode) {
         $acrName = $Registry.Split('.')[0]
         Write-Host "==> Importing $($images.Count) images into '$acrName' (server-side)" -ForegroundColor Cyan
 
-        foreach ($image in $images) {
+        foreach ($image in $images + $recipeArtifacts) {
             Write-Host "    $($image.Source)  ->  $($image.Target)" -ForegroundColor DarkGray
             az acr import --name $acrName --source $image.Source --image $image.Target --force --only-show-errors
             if ($LASTEXITCODE -ne 0) {
@@ -237,6 +257,7 @@ switch ($Mode) {
         $sizeMb = [math]::Round(((Get-ChildItem $Path -Filter *.tar | Measure-Object -Property Length -Sum).Sum / 1MB), 1)
         Write-Host "`nExported $($images.Count) images ($sizeMb MB) to $Path" -ForegroundColor Green
         Write-Host 'Copy this folder to the target side, then run this script with -Mode Import.'
+        Write-RecipeArtifactHint
     }
 
     'Import' {
@@ -268,5 +289,6 @@ switch ($Mode) {
         }
 
         Write-Host "`nAll images pushed to $Registry" -ForegroundColor Green
+        Write-RecipeArtifactHint -TargetRegistry $Registry
     }
 }

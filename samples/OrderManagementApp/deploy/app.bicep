@@ -11,7 +11,7 @@
 // settings, and a SQL password.
 
 extension radius
-extension orderManagement
+extension portability
 
 @description('Radius Environment ID. Supplied by the rad CLI.')
 param environment string
@@ -93,7 +93,7 @@ resource app 'Radius.Core/applications@2025-08-01-preview' = {
 }
 
 // Portable queue: Azure Service Bus on Azure, a RabbitMQ container on Azure Local.
-resource queue 'OrderManagement.Messaging/messageQueues@2025-08-01-preview' = {
+resource queue 'Portability.Messaging/messageQueues@2025-08-01-preview' = {
   name: 'orders'
   properties: {
     environment: environment

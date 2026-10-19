@@ -26,7 +26,7 @@ resource has been created. See deploy/registry-auth.bicep for the deployment ord
 param bicepSettingsId string = ''
 
 resource azureRecipes 'Radius.Core/recipePacks@2025-08-01-preview' existing = {
-  name: 'oms-azure-recipes'
+  name: 'azure-recipes'
 }
 
 // The Environment is declared twice under mutually exclusive conditions rather than building

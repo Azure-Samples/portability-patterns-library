@@ -47,7 +47,7 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = { ... }
 resource server  'Microsoft.Sql/servers@2023-08-01-preview' = { ... }
 
 // After: portable (deploy/app.bicep)
-resource queue    'OrderManagement.Messaging/messageQueues@2025-08-01-preview' = { ... }
+resource queue    'Portability.Messaging/messageQueues@2025-08-01-preview' = { ... }
 resource archive  'Radius.Storage/objectStorage@2025-08-01-preview'               = { ... }
 resource database 'Radius.Data/sqlServerDatabases@2025-08-01-preview'             = { ... }
 
@@ -65,8 +65,8 @@ resource processor 'Radius.Compute/containers@2025-08-01-preview' = {
 ```
 
 Object storage and SQL use Radius's built-in types. Radius has no queue type that covers both
-Service Bus and RabbitMQ, so the sample defines one in
-[deploy/types/messageQueues.yaml](./deploy/types/messageQueues.yaml).
+Service Bus and RabbitMQ, so the library defines one in
+[recipes/message-queue/messageQueues.yaml](../../recipes/message-queue/messageQueues.yaml).
 
 Result: [deploy/app.bicep](./deploy/app.bicep) is identical on both platforms. Its only parameters
 are the image references, the sign-in settings and a SQL password.
@@ -98,25 +98,28 @@ On Azure Local, Keycloak issues tokens shaped like Entra's, so only settings cha
 ### 3. Write one Recipe per resource for each platform
 
 A Recipe is a Bicep template Radius runs to create a resource. It returns the values that become
-the `CONNECTION_*` variables, so both Recipes for a resource must return the same names.
+the `CONNECTION_*` variables, so both Recipes for a resource must return the same names. The
+Recipes are shared by the library, in [recipes/](../../recipes/) at the repository root; this
+sample uses them as they are.
 
 | Resource | Azure Recipe | Azure Local Recipe |
 |---|---|---|
-| Queue | [servicebus-queue.bicep](./deploy/recipes/azure/servicebus-queue.bicep) | [rabbitmq-queue.bicep](./deploy/recipes/azurelocal/rabbitmq-queue.bicep) |
-| Object storage | [blob-objectstorage.bicep](./deploy/recipes/azure/blob-objectstorage.bicep) | [azurite-objectstorage.bicep](./deploy/recipes/azurelocal/azurite-objectstorage.bicep) |
-| SQL | [azuresql-database.bicep](./deploy/recipes/azure/azuresql-database.bicep) | [mssql-database.bicep](./deploy/recipes/azurelocal/mssql-database.bicep) |
-| Containers | [containers.bicep](./deploy/recipes/kubernetes/containers.bicep) (shared) | same |
+| Queue | [servicebus-queue.bicep](../../recipes/message-queue/azure/service-bus/servicebus-queue.bicep) | [rabbitmq-queue.bicep](../../recipes/message-queue/azure-local/rabbitmq/rabbitmq-queue.bicep) |
+| Object storage | [blob-objectstorage.bicep](../../recipes/object-storage/azure/blob-storage/blob-objectstorage.bicep) | [azurite-objectstorage.bicep](../../recipes/object-storage/azure-local/azurite/azurite-objectstorage.bicep) |
+| SQL | [azuresql-database.bicep](../../recipes/sql-database/azure/azure-sql/azuresql-database.bicep) | [mssql-database.bicep](../../recipes/sql-database/azure-local/sql-server/mssql-database.bicep) |
+| Containers | [containers.bicep](../../recipes/containers/kubernetes/deployment/containers.bicep) (shared) | same |
 
 ### 4. Bind them per platform with a Recipe Pack and an Environment
 
 A **Recipe Pack** says which Recipe serves each resource type, and carries every setting that
 differs between platforms. An **Environment** is a deployment target that points at one pack.
 
-| | [Azure pack](./deploy/recipe-packs/azure.bicep) | [Azure Local pack](./deploy/recipe-packs/azurelocal.bicep) |
+| | [Azure pack](../../recipe-packs/azure.bicep) | [Azure Local pack](../../recipe-packs/azure-local.bicep) |
 |---|---|---|
 | Recipes from | your ACR | the connected registry in the cluster |
 | Pod identity | service account + Entra Workload ID label | service account + Keycloak token and CA |
 | Image pulls | AcrPull on the cluster | image pull secret |
+| Radius's stock secrets Recipe | from ghcr.io | mirrored into ACR and synced into the cluster |
 | Environment | [azure.bicep](./deploy/environments/azure.bicep): also names the subscription and resource group for PaaS resources | [azurelocal.bicep](./deploy/environments/azurelocal.bicep): no Azure settings |
 
 ### 5. Deploy the same app to either environment
@@ -306,20 +309,20 @@ With the prerequisites in place, deploying is only Radius commands. For Azure Lo
 ```powershell
 # One-time: workspace, resource group, the queue resource type
 rad workspace create kubernetes oms-azurelocal --context <kube-context> --group oms
-rad resource-type create messageQueues -f deploy/types/messageQueues.yaml
-rad bicep publish-extension -f deploy/types/messageQueues.yaml --target deploy/types/orderManagement.tgz
+rad resource-type create messageQueues -f ../../recipes/message-queue/messageQueues.yaml
+rad bicep publish-extension -f ../../recipes/message-queue/messageQueues.yaml --target ../../recipes/message-queue/messageQueues.tgz
 rad env create bootstrap --group oms      # scratch environment to deploy the pack and environment from
 
 # Publish the Recipes, then bind them for this platform
-./scripts/publish-recipes.ps1 -Registry <acr>.azurecr.io -Set azurelocal
-rad deploy deploy/recipe-packs/azurelocal.bicep -e bootstrap -p registry=<in-cluster registry> ...
+./scripts/publish-recipes.ps1 -Registry <acr>.azurecr.io -Platform azure-local
+rad deploy ../../recipe-packs/azure-local.bicep -e bootstrap -p registry=<in-cluster registry> ...
 rad deploy deploy/environments/azurelocal.bicep -e bootstrap
 
 # The app
 rad deploy deploy/app.bicep -e oms-azurelocal -p apiImage=... -p processorImage=... -p sqlAdminPassword=...
 ```
 
-For Azure, use `recipe-packs/azure.bicep` and `environments/azure.bicep` instead. When Recipes come
+For Azure, use `recipe-packs/azure.bicep` and `deploy/environments/azure.bicep` instead. When Recipes come
 from a private registry (always on Azure Local), Radius also needs pull credentials: see
 [deploy/registry-auth.bicep](./deploy/registry-auth.bicep).
 
@@ -341,6 +344,9 @@ deployment layer by layer.
 
 ## Repository layout
 
+The sample uses the library's shared [recipes/](../../recipes/) and
+[recipe-packs/](../../recipe-packs/) at the repository root. The sample folder holds:
+
 ```
 ├── src/                         application code (.NET)
 │   ├── OrderManagement.Api/        orders API and browser app
@@ -348,10 +354,7 @@ deployment layer by layer.
 │   └── OrderManagement.Shared/     connections, identity, queue/storage/SQL clients
 ├── deploy/                      what to deploy (Bicep)
 │   ├── app.bicep                   the application, same on both platforms
-│   ├── types/                      the portable queue type
-│   ├── recipes/                    azure/, azurelocal/, kubernetes/ (shared)
-│   ├── recipe-packs/               one per platform
-│   ├── environments/               one per platform
+│   ├── environments/               one per platform; each points at a Recipe Pack
 │   ├── registry-auth.bicep         Radius credentials for a private Recipe registry
 │   └── infra/                      Azure platform (AKS, ACR, identities)
 ├── docker/                      Dockerfiles for the API and processor
@@ -379,7 +382,7 @@ Radius injects these into the API and the processor from their connections. The 
 ## Known gaps
 
 - The sample ships its own build of the stock Kubernetes container Recipe
-  ([containers.bicep](./deploy/recipes/kubernetes/containers.bicep)) so the platform can set service
+  ([containers.bicep](../../recipes/containers/kubernetes/deployment/containers.bicep)) so the platform can set service
   accounts, pull secrets, identity tokens and ingress. Upstream support is tracked in
   radius-project/resource-types-contrib#143.
 - The Azure SQL Recipe allows access from all Azure services. Use a private endpoint for production.

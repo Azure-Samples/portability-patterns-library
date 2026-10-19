@@ -44,7 +44,7 @@ var administratorPassword = context.resource.properties.password
 // the first (even failed) creation attempt, and refuses to reuse it elsewhere with
 // "A resource with the same name cannot be created in location ...". Seeding with the location
 // means changing regions yields a new name instead of colliding with the reservation.
-var serverName = take('oms-sql-${uniqueString(context.resource.id, location)}', 63)
+var serverName = take('sql-${uniqueString(context.resource.id, location)}', 63)
 
 resource sqlServer 'Microsoft.Sql/servers@2023-08-01-preview' = {
   name: serverName

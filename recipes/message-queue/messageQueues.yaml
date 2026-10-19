@@ -1,4 +1,4 @@
-namespace: OrderManagement.Messaging
+namespace: Portability.Messaging
 types:
   messageQueues:
     description: |
@@ -8,7 +8,7 @@ types:
 
       A container connected to the queue as `queue` receives `CONNECTION_QUEUE_*` environment
       variables, starting with `CONNECTION_QUEUE_PROVIDER` (`servicebus` or `rabbitmq`), which the
-      application uses to pick its client. See deploy/app.bicep for a complete example.
+      application uses to pick its client. See samples/OrderManagementApp/deploy/app.bicep for a complete example.
     apiVersions:
       '2025-08-01-preview':
         schema:

@@ -11,7 +11,7 @@ public enum QueueProvider
 
 /// <summary>
 /// Settings for the <c>queue</c> connection, backed by the
-/// <c>OrderManagement.Messaging/messageQueues</c> Radius Resource Type.
+/// <c>Portability.Messaging/messageQueues</c> Radius Resource Type.
 /// </summary>
 public sealed class QueueOptions
 {
