@@ -962,10 +962,10 @@ data:
     Write-Host '    -d grant_type=client_credentials \'
     Write-Host "    -d client_id=$WorkloadClientId \"
     Write-Host '    -d client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer \'
-    Write-Host '    -d client_assertion=$(cat /var/run/secrets/tokens/keycloak)'
+    Write-Host '    -d client_assertion=$(cat /var/run/secrets/identity/token)'
     Write-Host ''
     Write-Host 'The pod gets that assertion from a projected volume, not from a stored secret:' -ForegroundColor DarkGray
-    Write-Host "  serviceAccountToken: { audience: '$issuerUrl', path: keycloak, expirationSeconds: 600 }"
+    Write-Host "  serviceAccountToken: { audience: '$issuerUrl', path: token, expirationSeconds: 600 }"
 }
 finally {
     Pop-Location

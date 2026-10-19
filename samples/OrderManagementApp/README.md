@@ -280,28 +280,33 @@ place an order.
 
 ## Configuration reference
 
-The API and the processor read these, whether injected by Radius or set in `appsettings.json`:
+Radius injects these into the API and the processor from their connections; the same names work in
+`appsettings.json` as `OrderManagement:<connection>:<property>`:
 
 | Variable | Consumed by | Notes |
 |---|---|---|
 | `CONNECTION_QUEUE_PROVIDER` | both | `rabbitmq` or `servicebus` |
 | `CONNECTION_QUEUE_QUEUENAME` | both | Queue / entity name |
-| `CONNECTION_QUEUE_HOST` / `_PORT` | both | RabbitMQ only |
-| `CONNECTION_QUEUE_USERNAME` / `_PASSWORD` | both | RabbitMQ only, secret-backed |
-| `CONNECTION_QUEUE_NAMESPACEFQDN` | both | Service Bus only |
+| `CONNECTION_QUEUE_ENDPOINT` | both | `host:port` for RabbitMQ, the namespace host name for Service Bus |
+| `CONNECTION_QUEUE_OAUTH*` | both | Azure Local: Keycloak token endpoint, client and token file |
+| `CONNECTION_QUEUE_USERNAME` / `_PASSWORD` | both | Only where the queue Recipe issues credentials |
 | `CONNECTION_ARCHIVE_ENDPOINT` | processor | Blob endpoint; triggers managed identity |
 | `CONNECTION_ARCHIVE_CONNECTIONSTRING` | processor | Azure Local only (Azurite); takes precedence |
 | `CONNECTION_ARCHIVE_CONTAINERNAME` | processor | Blob container |
 | `CONNECTION_SQL_HOST` / `_PORT` / `_DATABASE` | both | |
-| `CONNECTION_SQL_USERNAME` / `_PASSWORD` | both | Omit password to force Entra ID |
-| `OrderManagement__Sql__UseEntraId` | both | Forces Entra ID even when a password exists |
+| `CONNECTION_SQL_USERNAME` / `_PASSWORD` | both | Ignored when the pod has an Entra workload identity |
+
+What differs per platform is not in `app.bicep`: the Recipe Pack tells the container Recipe which
+service account to run as, whether to add the Entra Workload Identity label, which image pull secret
+to use, and whether to project a Keycloak token and CA. Credentials a Recipe issues (RabbitMQ without
+Keycloak, Azurite) reach the containers automatically; managed-identity Recipes issue none.
 
 ## Known gaps
 
-- **Workload Identity on AKS is not verified end to end.** `app.bicep` passes `serviceAccountName`
-  through `platformOptions.kubernetes`, but the stock container Recipe ignores it and does not set
-  the `azure.workload.identity/use` pod label. Patch the deployment after deploying, or extend the
-  Recipe.
+- The sample ships its own build of the stock Kubernetes container Recipe
+  (`deploy/recipes/kubernetes/containers.bicep`) so the platform can set service accounts, pull
+  secrets, identity tokens and ingress. Upstream support is tracked in
+  radius-project/resource-types-contrib#143.
 - The Azure SQL Recipe opens `AllowAllWindowsAzureIps`. Use a Private Endpoint for anything real.
 - `InvariantGlobalization` must stay `false` — `Microsoft.Data.SqlClient` requires ICU.
 - The Azure Local cluster has no metrics-server, so the stock Recipe's HorizontalPodAutoscaler logs

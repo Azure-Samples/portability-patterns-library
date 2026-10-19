@@ -26,9 +26,9 @@ public sealed class SqlConnectionFactory
         if (options.UseEntraId)
         {
             _logger.LogInformation(
-                "Using Entra ID authentication for SQL host {Host} (client id {ClientId})",
-                options.Host, options.WorkloadIdentityClientId ?? "<default>");
-            _credential = AzureCredentialFactory.Create(options.WorkloadIdentityClientId);
+                "Using Entra ID authentication for SQL host {Host} through workload identity",
+                options.Host);
+            _credential = AzureCredentialFactory.Create();
         }
         else
         {

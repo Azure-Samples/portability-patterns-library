@@ -2,8 +2,8 @@
 //
 // The same three Resource Types the local pack binds to containers are bound here to Azure Service
 // Bus, Azure Storage, and Azure SQL Database. The identity parameters come from
-// scripts/azure/bootstrap-identity.ps1, which creates the user-assigned managed identity and the
-// federated identity credential that trusts the cluster's OIDC issuer.
+// scripts/azure/provision-infra.ps1, which creates the user-assigned managed identity and the
+// federated identity credential that trusts the cluster's OIDC issuer for one service account.
 
 extension radius
 
@@ -13,14 +13,14 @@ param registry string
 @description('Tag applied to the published Recipe modules.')
 param tag string = 'latest'
 
-@description('Client ID of the user-assigned managed identity federated with the AKS cluster.')
-param workloadIdentityClientId string
-
 @description('Principal (object) ID of that managed identity, used for role assignments.')
 param workloadIdentityPrincipalId string
 
 @description('Resource name of that managed identity, used as the Azure SQL Entra administrator login.')
 param workloadIdentityName string
+
+@description('Kubernetes service account annotated for that identity. Its name must match the federated credential subject.')
+param serviceAccountName string = 'oms-workload-identity'
 
 @description('Azure region for provisioned infrastructure.')
 param location string = 'eastus2'
@@ -45,6 +45,13 @@ param ingressHost string = ''
 @description('cert-manager ClusterIssuer that obtains the certificate for ingressHost.')
 param ingressCertIssuer string = ''
 
+// Every container runs as the annotated service account with the Workload Identity label, so the
+// webhook gives it AZURE_CLIENT_ID and a federated token. The application declares none of this.
+var containerIdentityParameters = {
+  serviceAccountName: serviceAccountName
+  azureWorkloadIdentity: true
+}
+
 var containerIngressParameters = empty(ingressClassName) ? {} : {
   ingressClassName: ingressClassName
   ingressHost: ingressHost
@@ -58,15 +65,12 @@ resource azureRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
   name: 'oms-azure-recipes'
   properties: {
     recipes: {
-      // Local build of the stock Kubernetes container Recipe, adding `platformOptions` support for
-      // `serviceAccountName` and pod labels. Both are required to bind the workers to the annotated
-      // service account that Microsoft Entra Workload Identity federates against; the upstream
-      // Recipe ignores platformOptions today. Tracked as resource-types-contrib#143 -- point this
-      // back at '${radiusRecipeRegistry}/containers:latest' once that ships.
+      // Local build of the stock Kubernetes container Recipe that adds identity, registry and
+      // ingress settings chosen by the platform (see deploy/recipes/kubernetes/containers.bicep).
       'Radius.Compute/containers': {
         kind: 'bicep'
         source: '${registry}/oms/recipes/containers:${tag}'
-        parameters: containerIngressParameters
+        parameters: union(containerIdentityParameters, containerIngressParameters)
       }
       'Radius.Security/secrets': {
         kind: 'bicep'
@@ -77,7 +81,6 @@ resource azureRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
         source: '${registry}/oms/recipes/servicebus-queue:${tag}'
         parameters: {
           location: location
-          workloadIdentityClientId: workloadIdentityClientId
           workloadIdentityPrincipalId: workloadIdentityPrincipalId
           sku: 'Standard'
         }

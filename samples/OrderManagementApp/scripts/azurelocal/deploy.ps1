@@ -373,6 +373,7 @@ try {
             --parameters imagePullSecretName=$ImagePullSecretName `
             --parameters oauthIssuer=$oauthIssuer `
             --parameters oauthCaSecretName=$(if ($oauthIssuer) { $IdentityCaSecretName } else { '' }) `
+            --parameters serviceAccountName=$WorkloadServiceAccount `
             --parameters ingressClassName=$(if ($useIngress) { $IngressClassName } else { '' }) `
             --parameters ingressTlsSecretName=$(if ($useIngress) { $IngressTlsSecretName } else { '' })
     }
@@ -480,21 +481,14 @@ try {
         }
     }
 
+    # The same parameters as on Azure: everything platform-specific is in the Recipe Pack.
     $applicationParameters = New-ParameterFile @{
         # Pinned by digest: with a bare ':latest' the pod spec never changes, so a rebuild never rolls out.
-        apiImage              = "$PullRegistry/oms/api@$($expectedDigests["oms/api:$ImageTag"])"
-        processorImage               = "$PullRegistry/oms/processor@$($expectedDigests["oms/processor:$ImageTag"])"
-        apiAuthentication           = $apiAuthentication
-        spaSettings                 = $spaSettings
-        sqlAdminUsername            = 'sa'
-        sqlAdminPassword            = $plainSqlPassword
-        sqlUseEntraId               = $false
-        queueUsesBasicAuth          = [string]::IsNullOrWhiteSpace($oauthIssuer)
-        archiveUsesConnectionString = $true
-        serviceAccountName          = $(if ($oauthIssuer) { $WorkloadServiceAccount } else { '' })
-        workloadTokenAudience       = $oauthIssuer
-        identityCaSecretName        = $(if ($oauthIssuer) { $IdentityCaSecretName } else { '' })
-        imagePullSecretName         = $ImagePullSecretName
+        apiImage          = "$PullRegistry/oms/api@$($expectedDigests["oms/api:$ImageTag"])"
+        processorImage    = "$PullRegistry/oms/processor@$($expectedDigests["oms/processor:$ImageTag"])"
+        apiAuthentication = $apiAuthentication
+        spaSettings       = $spaSettings
+        sqlAdminPassword  = $plainSqlPassword
     }
     $temporaryFiles += $applicationParameters
 

@@ -50,10 +50,11 @@ public sealed class RabbitMqMessageBroker : IMessageBroker
             // here; otherwise every reconnect would leak its socket.
             await CloseQuietlyAsync().ConfigureAwait(false);
 
+            var endpoint = new Uri($"amqp://{_options.Endpoint}");
             var factory = new ConnectionFactory
             {
-                HostName = _options.Host ?? "localhost",
-                Port = _options.Port,
+                HostName = endpoint.Host,
+                Port = endpoint.IsDefaultPort ? 5672 : endpoint.Port,
                 UserName = _options.Username ?? "guest",
                 Password = _options.Password ?? "guest",
                 AutomaticRecoveryEnabled = true

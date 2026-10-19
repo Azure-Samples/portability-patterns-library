@@ -7,7 +7,7 @@ namespace OrderManagement.Shared.Configuration;
 ///
 /// Radius injects one environment variable per property of the connected resource, named
 /// <c>CONNECTION_&lt;CONNECTION-NAME&gt;_&lt;PROPERTY-NAME&gt;</c>. For a connection named
-/// <c>queue</c> exposing a <c>host</c> property the variable is <c>CONNECTION_QUEUE_HOST</c>.
+/// <c>queue</c> exposing an <c>endpoint</c> property the variable is <c>CONNECTION_QUEUE_ENDPOINT</c>.
 ///
 /// A <c>OrderManagement:&lt;connection&gt;:&lt;property&gt;</c> configuration fallback is supported so the
 /// same binaries run under <c>dotnet run</c> without Radius.

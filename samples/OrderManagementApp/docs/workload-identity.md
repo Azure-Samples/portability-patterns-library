@@ -43,7 +43,7 @@ new timestamped directory and swaps a `..data` symlink, so a reader sees either 
 version or the whole new one.
 
 ```
-keycloak -> ..data/keycloak -> ..2026_10_12_05_35_15.1958098714/keycloak
+token -> ..data/token -> ..2026_10_12_05_35_15.1958098714/token
 ```
 
 ### It carries no secret, but it is a credential
@@ -175,14 +175,14 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     autonumber
-    participant BIC as app.bicep
+    participant BIC as container Recipe
     participant KL as kubelet
     participant POD as processor pod
     participant KC as Keycloak
     participant API as Kubernetes API server
     participant RMQ as RabbitMQ
 
-    BIC->>POD: declares token volume + oauth connection values
+    BIC->>POD: projects token volume + CA (from the Recipe Pack)
     Note over BIC,POD: no webhook exists,<br/>so this is explicit
 
     KL->>POD: projects SA token<br/>audience = Keycloak realm URL
@@ -261,7 +261,7 @@ flowchart TD
 | Identity object | User-assigned managed identity | Client `oms-workloads` |
 | Pinning | Federated identity credential (issuer + subject) | `jwt.credential.issuer` + `jwt.credential.sub` |
 | Assertion audience | `api://AzureADTokenExchange` | `https://192.168.44.121:30443/realms/oms` |
-| Environment wiring | Mutating admission webhook | Declared in `deploy/app.bicep` |
+| Environment wiring | Mutating admission webhook | Container Recipe, configured by the Recipe Pack |
 | Client library | `Azure.Identity` | `src/OrderManagement.Shared/Identity/WorkloadTokenProvider.cs` |
 | Token to broker | AMQP CBS node | SASL PLAIN password |
 | Authorisation | Azure RBAC, outside the token | Claims inside the token |
@@ -279,7 +279,7 @@ cost of more traffic to the token endpoint.
 | Where | Setting | Value |
 | --- | --- | --- |
 | AKS enabled by Arc | service-account issuer (default) | `https://kubernetes.default.svc.cluster.local` |
-| `deploy/app.bicep` | token volume audience | `https://192.168.44.121:30443/realms/oms` |
+| `deploy/recipe-packs/azurelocal.bicep` | token volume audience | `https://192.168.44.121:30443/realms/oms` |
 | Keycloak identity provider | `issuer` | `https://kubernetes.default.svc.cluster.local` |
 | Keycloak client | `clientAuthenticatorType` | `federated-jwt` |
 | Keycloak client | `jwt.credential.sub` | `system:serviceaccount:oms-azurelocal:oms-workload` |

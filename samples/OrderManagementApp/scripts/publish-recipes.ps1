@@ -33,7 +33,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
-# `containers` is a local build of the stock Recipe adding platformOptions support; `secrets` is the
+# `containers` is a local build of the stock Recipe adding platform identity and ingress settings; `secrets` is the
 # stock Recipe vendored so that no environment has to mirror an extra OCI artifact. Both are needed
 # wherever Radius deploys containers, so they accompany every set.
 $sets = if ($Set -eq 'all') { @('azure', 'azurelocal', 'kubernetes') } else { @($Set, 'kubernetes') }

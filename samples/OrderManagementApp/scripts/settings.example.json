@@ -21,7 +21,6 @@
     "Deploy": {
       "Registry": "<globally-unique-acr-name>.azurecr.io",
       "AppInfraResourceGroup": "bcd-infra",
-      "WorkloadIdentityClientId": "<printed by setup-platform: Cluster>",
       "WorkloadIdentityPrincipalId": "<printed by setup-platform: Cluster>",
       "ResourceGroup": "oms",
       "IngressCertIssuer": "letsencrypt"

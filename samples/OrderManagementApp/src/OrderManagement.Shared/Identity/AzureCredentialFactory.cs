@@ -18,13 +18,15 @@ namespace OrderManagement.Shared.Identity;
 /// </summary>
 public static class AzureCredentialFactory
 {
-    public static TokenCredential Create(string? workloadIdentityClientId)
+    /// <summary>True when the platform attached an Entra workload identity to this pod.</summary>
+    public static bool HasWorkloadIdentity =>
+        !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("AZURE_FEDERATED_TOKEN_FILE"));
+
+    public static TokenCredential Create()
     {
         var tokenFilePath = Environment.GetEnvironmentVariable("AZURE_FEDERATED_TOKEN_FILE");
         var tenantId = Environment.GetEnvironmentVariable("AZURE_TENANT_ID");
-        var clientId = string.IsNullOrWhiteSpace(workloadIdentityClientId)
-            ? Environment.GetEnvironmentVariable("AZURE_CLIENT_ID")
-            : workloadIdentityClientId;
+        var clientId = Environment.GetEnvironmentVariable("AZURE_CLIENT_ID");
 
         if (!string.IsNullOrWhiteSpace(tokenFilePath) && !string.IsNullOrWhiteSpace(clientId))
         {

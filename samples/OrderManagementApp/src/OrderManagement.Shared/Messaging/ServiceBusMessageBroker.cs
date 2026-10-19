@@ -9,8 +9,8 @@ namespace OrderManagement.Shared.Messaging;
 /// <summary>
 /// Azure Service Bus implementation used by the Azure environments.
 ///
-/// The client is constructed from the namespace FQDN plus a <c>TokenCredential</c>, never a
-/// connection string, so the worker authenticates with its federated managed identity. The identity
+/// The client is constructed from the namespace host name plus a <c>TokenCredential</c>, never a
+/// connection string, so the application authenticates with its federated managed identity. The identity
 /// needs the <c>Azure Service Bus Data Sender</c> and/or <c>Azure Service Bus Data Receiver</c>
 /// role on the namespace or queue.
 /// </summary>
@@ -33,24 +33,8 @@ public sealed class ServiceBusMessageBroker : IMessageBroker
             TransportType = ServiceBusTransportType.AmqpWebSockets
         };
 
-        if (!string.IsNullOrWhiteSpace(options.ConnectionString))
-        {
-            // Escape hatch for local experimentation only; the Azure recipes never emit this.
-            _logger.LogWarning("Connecting to Azure Service Bus with a connection string. Prefer managed identity.");
-            _client = new ServiceBusClient(options.ConnectionString, clientOptions);
-        }
-        else
-        {
-            var fqdn = options.NamespaceFqdn ?? throw new InvalidOperationException(
-                "Azure Service Bus requires either 'namespaceFqdn' or 'connectionString'.");
-
-            _logger.LogInformation(
-                "Connecting to Azure Service Bus namespace {Namespace} using workload identity (client id {ClientId})",
-                fqdn, options.WorkloadIdentityClientId ?? "<default>");
-
-            var credential = AzureCredentialFactory.Create(options.WorkloadIdentityClientId);
-            _client = new ServiceBusClient(fqdn, credential, clientOptions);
-        }
+        _logger.LogInformation("Connecting to Azure Service Bus namespace {Namespace} using workload identity", options.Endpoint);
+        _client = new ServiceBusClient(options.Endpoint, AzureCredentialFactory.Create(), clientOptions);
 
         _sender = _client.CreateSender(options.QueueName);
     }

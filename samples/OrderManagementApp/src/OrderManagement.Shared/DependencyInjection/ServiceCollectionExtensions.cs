@@ -53,8 +53,7 @@ public static class ServiceCollectionExtensions
             {
                 TokenEndpoint = options.OAuthTokenEndpoint!,
                 ClientId = options.OAuthClientId!,
-                AssertionFile = options.OAuthAssertionFile!,
-                CaFile = options.OAuthCaFile
+                AssertionFile = options.OAuthAssertionFile!
             },
             loggerFactory.CreateLogger<WorkloadTokenProvider>());
     }

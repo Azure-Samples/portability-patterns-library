@@ -47,11 +47,8 @@ param oauthCaSecretName string = ''
 @description('Client the workload authenticates as at the issuer.')
 param oauthClientId string = 'oms-workloads'
 
-@description('Path where the workload finds its projected ServiceAccount token.')
-param oauthAssertionFile string = '/var/run/secrets/tokens/keycloak'
-
-@description('Path where the workload finds the issuer certificate authority.')
-param oauthCaFile string = '/etc/oms/identity-ca/ca.crt'
+@description('Path of the ServiceAccount token the container Recipe projects into each workload.')
+param oauthAssertionFile string = '/var/run/secrets/identity/token'
 
 var image = empty(imageRegistry) ? '${imageRepository}:${tag}' : '${imageRegistry}/${imageRepository}:${tag}'
 
@@ -284,17 +281,17 @@ output result object = {
     {
       provider: 'rabbitmq'
       queueName: queueName
-      host: '${svc.metadata.name}.${svc.metadata.namespace}.svc.cluster.local'
-      port: '${amqpPort}'
+      endpoint: '${svc.metadata.name}.${svc.metadata.namespace}.svc.cluster.local:${amqpPort}'
     },
     oauthEnabled ? {
       oauthTokenEndpoint: '${oauthIssuer}/protocol/openid-connect/token'
       oauthClientId: oauthClientId
       oauthAssertionFile: oauthAssertionFile
-      oauthCaFile: oauthCaFile
     } : {}
   )
-  secrets: {
+  // With OAuth the workloads authenticate with a token, so the broker password stays with the
+  // broker (management interface only) and is not handed to the application.
+  secrets: oauthEnabled ? {} : {
     username: username
     #disable-next-line outputs-should-not-contain-secrets
     password: password

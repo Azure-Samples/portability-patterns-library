@@ -1,5 +1,6 @@
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
+using OrderManagement.Shared.Identity;
 
 namespace OrderManagement.Shared.Configuration;
 
@@ -7,8 +8,8 @@ namespace OrderManagement.Shared.Configuration;
 /// Settings for the <c>sql</c> connection, backed by the built-in
 /// <c>Radius.Data/sqlServerDatabases</c> Resource Type.
 ///
-/// Locally this resolves to a SQL Server container in the cluster authenticated with SQL logins.
-/// In Azure it resolves to Azure SQL Database; when no password is supplied the worker acquires an
+/// On Azure Local this resolves to a SQL Server container authenticated with a SQL login. On Azure it
+/// resolves to Azure SQL Database with Entra-only authentication, and the application acquires an
 /// Entra ID access token through Workload Identity instead.
 /// </summary>
 public sealed class SqlOptions
@@ -26,20 +27,17 @@ public sealed class SqlOptions
     /// </summary>
     public string? PasswordFile { get; init; }
 
-    public string? WorkloadIdentityClientId { get; init; }
+    /// <summary>
+    /// True when the platform attached an Entra workload identity to the pod. The Resource Type
+    /// always carries a SQL login, but where an Entra identity exists it is used instead.
+    /// </summary>
+    public bool HasWorkloadIdentity { get; init; }
 
     /// <summary>
-    /// Forces Entra ID authentication even when a password is present. The Azure environment sets
-    /// this because the Resource Type always provisions a SQL administrator login, but the workers
-    /// should still authenticate passwordlessly through Workload Identity.
+    /// True when the application authenticates to SQL with an Entra ID token obtained through
+    /// Workload Identity rather than a SQL login.
     /// </summary>
-    public bool ForceEntraId { get; init; }
-
-    /// <summary>
-    /// True when the worker authenticates to SQL with an Entra ID token obtained via Workload
-    /// Identity rather than a SQL login.
-    /// </summary>
-    public bool UseEntraId => ForceEntraId ||
+    public bool UseEntraId => HasWorkloadIdentity ||
         (string.IsNullOrWhiteSpace(Password) && string.IsNullOrWhiteSpace(PasswordFile));
 
     /// <summary>
@@ -64,8 +62,7 @@ public sealed class SqlOptions
             Username = values.Get("username"),
             Password = values.Get("password"),
             PasswordFile = values.Get("passwordFile"),
-            WorkloadIdentityClientId = values.Get("workloadIdentityClientId"),
-            ForceEntraId = configuration.GetValue("OrderManagement:Sql:UseEntraId", false)
+            HasWorkloadIdentity = AzureCredentialFactory.HasWorkloadIdentity
         };
     }
 
@@ -100,7 +97,7 @@ public sealed class SqlOptions
             "A SQL username is required when a SQL password is configured.");
         builder.Password = password;
 
-        // The local SQL Server container uses a self-signed certificate.
+        // The SQL Server container uses a self-signed certificate.
         builder.TrustServerCertificate = true;
 
         return builder.ConnectionString;

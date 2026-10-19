@@ -39,10 +39,10 @@ public sealed class BlobArchiveStore : IArchiveStore
                 "Object storage requires either 'endpoint' (with managed identity) or 'connectionString'.");
 
             _logger.LogInformation(
-                "Connecting to blob endpoint {Endpoint} using workload identity (client id {ClientId})",
-                endpoint, options.WorkloadIdentityClientId ?? "<default>");
+                "Connecting to blob endpoint {Endpoint} using workload identity",
+                endpoint);
 
-            var credential = AzureCredentialFactory.Create(options.WorkloadIdentityClientId);
+            var credential = AzureCredentialFactory.Create();
             var serviceClient = new BlobServiceClient(new Uri(endpoint), credential);
             _containerClient = serviceClient.GetBlobContainerClient(options.ContainerName);
         }
@@ -53,7 +53,7 @@ public sealed class BlobArchiveStore : IArchiveStore
             // the service version keeps the SDK within what the emulator understands. Real Azure
             // Storage always uses the SDK default above.
             _logger.LogInformation(
-                "Connecting to blob storage with a connection string (local development), pinned to service version {Version}",
+                "Connecting to blob storage with a connection string (Azurite), pinned to service version {Version}",
                 EmulatorServiceVersion);
 
             var clientOptions = new BlobClientOptions(EmulatorServiceVersion);

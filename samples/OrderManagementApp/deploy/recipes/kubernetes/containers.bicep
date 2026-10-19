@@ -15,6 +15,31 @@ param ingressTlsSecretName string = ''
 @description('Annotations for the Ingress, for example a certificate issuer for the ingress class.')
 param ingressAnnotations object = {}
 
+// LOCAL ADDITION. How a workload proves its identity and pulls its images is also a platform
+// decision. The Recipe Pack sets these once per environment and every container gets them, so the
+// application definition never mentions service accounts, pull secrets or certificate authorities.
+@description('Kubernetes ServiceAccount the pods run as. Empty uses the namespace default.')
+param serviceAccountName string = ''
+
+@description('Label pods for Microsoft Entra Workload ID, so its webhook injects AZURE_CLIENT_ID and the federated token.')
+param azureWorkloadIdentity bool = false
+
+@description('Existing image pull secret in the application namespace, for a registry that requires authentication.')
+param imagePullSecretName string = ''
+
+@description('''
+Audience of a ServiceAccount token projected at /var/run/secrets/identity/token, for exchange at an
+in-cluster identity provider. Empty projects no token.
+''')
+param identityTokenAudience string = ''
+
+@description('''
+Existing Secret holding the identity provider's certificate authority under `ca.crt`. Mounted at
+/etc/identity-ca and set as SSL_CERT_FILE, so the application trusts the provider without any trust
+code of its own. Empty mounts nothing.
+''')
+param identityCaSecretName string = ''
+
 extension kubernetes with {
   kubeConfig: ''
   namespace: context.runtime.kubernetes.namespace
@@ -50,37 +75,86 @@ var labels = {
 }
 
 // ------------------------------------------------------------------------------------------------
-// platformOptions passthrough
+// Pod identity and registry settings
 //
-// LOCAL ADDITION. The upstream Kubernetes Recipe does not yet read `platformOptions`, even though
-// the Resource Type documents it as "Kubernetes Deployment and Pod override properties" and the
-// Azure ACI Recipe already implements it. Tracked upstream as:
-//   https://github.com/radius-project/resource-types-contrib/issues/143
-//   "Implement full platformOptions functionality in k8s and ACI recipes"
-//
-// Only the fields this application needs are supported, following the flat key convention the
-// ACI Recipe uses:
+// LOCAL ADDITION. Normally set by the Recipe Pack through the parameters above, so the application
+// never declares them. A resource can still override them through `platformOptions`, which the
+// Resource Type documents as "Kubernetes Deployment and Pod override properties" but the upstream
+// Kubernetes Recipe does not yet read (radius-project/resource-types-contrib#143), using the flat
+// key convention of the ACI Recipe:
 //
 //   platformOptions: {
-//     serviceAccountName: 'oms-workload-identity'
+//     serviceAccountName: 'my-service-account'
 //     podLabels: { 'azure.workload.identity/use': 'true' }
-//     imagePullSecrets: [ { name: 'local-registry' } ]
+//     imagePullSecrets: [ { name: 'my-registry' } ]
 //   }
 //
-// `serviceAccountName` and `podLabels` are required for Microsoft Entra Workload Identity: the
-// service account determines the `sub` claim of the projected token that Entra validates against
-// the federated identity credential, and the label is what makes the Azure Workload Identity
-// webhook inject AZURE_CLIENT_ID, AZURE_TENANT_ID and AZURE_FEDERATED_TOKEN_FILE into the pod.
-//
-// `imagePullSecrets` is required in air-gapped environments such as Azure Local disconnected
-// operations, where images come from a private local registry the kubelet must authenticate to.
-//
-// When issue #143 ships, delete this file and point the Recipe Pack back at the upstream Recipe.
+// The service account fixes the `sub` claim of the projected token an identity provider matches
+// the workload on. On Azure the pod label makes the Workload Identity webhook inject
+// AZURE_CLIENT_ID, AZURE_TENANT_ID and AZURE_FEDERATED_TOKEN_FILE. On Azure Local the kubelet
+// authenticates to the in-cluster connected registry with the pull secret.
 // ------------------------------------------------------------------------------------------------
 var platformOptions = resourceProperties.?platformOptions ?? {}
-var platformPodLabels = platformOptions.?podLabels ?? {}
-var platformServiceAccountName = platformOptions.?serviceAccountName ?? ''
-var platformImagePullSecrets = platformOptions.?imagePullSecrets ?? []
+var platformPodLabels = union(
+  platformOptions.?podLabels ?? {},
+  azureWorkloadIdentity ? { 'azure.workload.identity/use': 'true' } : {}
+)
+var platformServiceAccountName = platformOptions.?serviceAccountName ?? serviceAccountName
+var platformImagePullSecrets = platformOptions.?imagePullSecrets ?? (empty(imagePullSecretName) ? [] : [
+  { name: imagePullSecretName }
+])
+
+// Identity material from the Recipe Pack, added to every container.
+var identityTokenMountPath = '/var/run/secrets/identity'
+var identityCaMountPath = '/etc/identity-ca'
+var platformVolumes = concat(
+  empty(identityTokenAudience) ? [] : [
+    {
+      name: 'identity-token'
+      projected: {
+        sources: [
+          {
+            serviceAccountToken: {
+              audience: identityTokenAudience
+              expirationSeconds: 600
+              path: 'token'
+            }
+          }
+        ]
+      }
+    }
+  ],
+  empty(identityCaSecretName) ? [] : [
+    {
+      name: 'identity-ca'
+      secret: {
+        secretName: identityCaSecretName
+      }
+    }
+  ]
+)
+var platformVolumeMounts = concat(
+  empty(identityTokenAudience) ? [] : [
+    {
+      name: 'identity-token'
+      mountPath: identityTokenMountPath
+      readOnly: true
+    }
+  ],
+  empty(identityCaSecretName) ? [] : [
+    {
+      name: 'identity-ca'
+      mountPath: identityCaMountPath
+      readOnly: true
+    }
+  ]
+)
+var platformEnvVars = empty(identityCaSecretName) ? [] : [
+  {
+    name: 'SSL_CERT_FILE'
+    value: '${identityCaMountPath}/ca.crt'
+  }
+]
 
 // Extract connection data from linked resources (merged with resource properties)
 var resourceConnections = context.resource.?connections ?? {}
@@ -144,7 +218,11 @@ var validatedSecretConnectionEnvVars = length(secretConnectionEnvVarNames) == le
   ? secretConnectionEnvVars
   : fail('Connection secret keys must produce unique environment variable names after uppercasing.')
 
-// When a connection has a secretName property, inject all secret keys via envFrom.secretRef
+// When a connection has a secretName property, inject all secret keys via envFrom.secretRef.
+// LOCAL ADDITION: the same for credentials a producer Recipe returned in `result.secrets`, which
+// Radius stores in a managed Secret named on `properties.secrets.name`. The application then
+// receives them as CONNECTION_<NAME>_<KEY> without declaring each one, and a Recipe that issues no
+// credentials (managed identity) simply injects none.
 var secretNameEnvFrom = reduce(items(resourceConnections), [], (acc, conn) =>
   disableDefaultEnvVars[conn.key]
     ? acc
@@ -162,7 +240,15 @@ var secretNameEnvFrom = reduce(items(resourceConnections), [], (acc, conn) =>
               name: string(conn.value.properties.secretName)
             }
           }])
-        : acc
+        : !empty(string(conn.value.?properties.?secrets.?name ?? ''))
+          ? concat(acc, [{
+              prefix: toUpper('CONNECTION_${conn.key}_')
+              secretRef: {
+                name: string(conn.value.properties.secrets.name)
+                optional: true
+              }
+            }])
+          : acc
 )
 
 // Ordinary top-level scalar values and nested producer properties become
@@ -218,7 +304,7 @@ var containerSpecs = reduce(containerItems, [], (acc, item) => concat(acc, [{
     } : {},
     // Add environment variables from container definition and connections
     // Connection environment variables are automatically added from output values
-    (contains(item.value, 'env') || length(connectionEnvVars) > 0 || length(validatedSecretConnectionEnvVars) > 0) ? {
+    (contains(item.value, 'env') || length(connectionEnvVars) > 0 || length(validatedSecretConnectionEnvVars) > 0 || length(platformEnvVars) > 0) ? {
       // Kubelet expands $(VAR) in an env var's value ONLY against env vars defined
       // earlier in this container's ordered env list. Emit secret/valueFrom env vars
       // FIRST so plain value env vars can compose them via $(VAR) without leaking
@@ -249,19 +335,24 @@ var containerSpecs = reduce(containerItems, [], (acc, item) => concat(acc, [{
               }])
             : envAcc),
         // 4. Ordinary connection values, unless an explicit variable uses the same name.
-        filter(connectionEnvVars, envVar => !contains(item.value.?env ?? {}, envVar.name))
+        filter(connectionEnvVars, envVar => !contains(item.value.?env ?? {}, envVar.name)),
+        // 5. Platform variables from the Recipe Pack, unless an explicit variable uses the same name.
+        filter(platformEnvVars, envVar => !contains(item.value.?env ?? {}, envVar.name))
       )
     } : {},
     // Connections that surface secretName still inject that Kubernetes Secret via envFrom.
     length(secretNameEnvFrom) > 0 ? {
       envFrom: secretNameEnvFrom
     } : {},
-    // Add volume mounts if they exist
-    contains(item.value, 'volumeMounts') ? {
-      volumeMounts: reduce(item.value.volumeMounts, [], (vmAcc, vm) => concat(vmAcc, [{
-        name: toLower(vm.volumeName)
-        mountPath: vm.mountPath
-      }]))
+    // Add volume mounts, plus the platform's identity mounts
+    (contains(item.value, 'volumeMounts') || length(platformVolumeMounts) > 0) ? {
+      volumeMounts: concat(
+        reduce(item.value.?volumeMounts ?? [], [], (vmAcc, vm) => concat(vmAcc, [{
+          name: toLower(vm.volumeName)
+          mountPath: vm.mountPath
+        }])),
+        platformVolumeMounts
+      )
     } : {},
     // Add command if specified
     contains(item.value, 'command') ? { command: item.value.command } : {},
@@ -413,7 +504,7 @@ resource deployment 'apps/Deployment@v1' = {
           enableServiceLinks: false
         },
         length(podInitContainers) > 0 ? { initContainers: podInitContainers } : {},
-        length(podVolumes) > 0 ? { volumes: podVolumes } : {},
+        length(concat(podVolumes, platformVolumes)) > 0 ? { volumes: concat(podVolumes, platformVolumes) } : {},
         contains(resourceProperties, 'restartPolicy') ? { restartPolicy: resourceProperties.restartPolicy } : {},
         // Binds the pod to the annotated ServiceAccount so Kubernetes mints a token whose `sub`
         // claim matches the federated identity credential.

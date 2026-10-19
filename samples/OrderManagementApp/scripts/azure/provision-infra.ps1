@@ -403,7 +403,6 @@ metadata:
     Write-Host "         -Registry $registryLoginServer ``"
     Write-Host "         -SubscriptionId $SubscriptionId ``"
     Write-Host "         -AppInfraResourceGroup $ResourceGroup ``"
-    Write-Host "         -WorkloadIdentityClientId $clientId ``"
     Write-Host "         -WorkloadIdentityPrincipalId $principalId"
     Write-Host ""
     Write-Host "Azure SQL uses Entra-only authentication, so no -SqlAdminPassword is needed."

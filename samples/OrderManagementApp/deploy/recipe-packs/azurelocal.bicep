@@ -48,11 +48,22 @@ param oauthCaSecretName string = ''
 @description('Keycloak client the workloads authenticate as.')
 param oauthClientId string = 'oms-workloads'
 
+@description('Kubernetes service account Keycloak trusts for that client; must match the client federated subject.')
+param serviceAccountName string = 'oms-workload'
+
 @description('Ingress class that publishes containers with ports on the site network, from scripts/azurelocal/provision-ingress.ps1. Empty keeps them cluster-internal.')
 param ingressClassName string = ''
 
 @description('TLS Secret in the application namespace that the ingress serves.')
 param ingressTlsSecretName string = ''
+
+// With Keycloak, every container runs as the trusted service account and gets a token minted for
+// the realm plus the realm's CA, which is all the queue needs to authenticate without a password.
+var containerIdentityParameters = empty(oauthIssuer) ? {} : {
+  serviceAccountName: serviceAccountName
+  identityTokenAudience: oauthIssuer
+  identityCaSecretName: oauthCaSecretName
+}
 
 var queueOAuthParameters = empty(oauthIssuer) ? {} : {
   oauthIssuer: oauthIssuer
@@ -101,10 +112,11 @@ resource azureLocalRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
         kind: 'bicep'
         source: '${registry}/oms/recipes/containers:${tag}'
         plainHttp: plainHttp
-        parameters: {
+        parameters: union({
+          imagePullSecretName: imagePullSecretName
           ingressClassName: ingressClassName
           ingressTlsSecretName: ingressTlsSecretName
-        }
+        }, containerIdentityParameters)
       }
       'Radius.Security/secrets': {
         kind: 'bicep'

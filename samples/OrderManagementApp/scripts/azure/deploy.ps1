@@ -27,7 +27,6 @@
         -Registry mycr.azurecr.io `
         -SubscriptionId 00000000-0000-0000-0000-000000000000 `
         -AppInfraResourceGroup bcd-infra `
-        -WorkloadIdentityClientId <client-id> `
         -WorkloadIdentityPrincipalId <principal-id>
 
 .EXAMPLE
@@ -38,7 +37,6 @@
         -Registry mycr.azurecr.io `
         -SubscriptionId <sub-id> `
         -AppInfraResourceGroup bcd-infra `
-        -WorkloadIdentityClientId <client-id> `
         -WorkloadIdentityPrincipalId <principal-id> `
         -RegistryUsername bcd-recipe-puller `
         -RegistryPassword (Read-Host -AsSecureString)
@@ -54,7 +52,6 @@ param(
     # exist: Radius does not create it.
     [Parameter(Mandatory = $true)][string]$AppInfraResourceGroup,
 
-    [Parameter(Mandatory = $true)][string]$WorkloadIdentityClientId,
     [Parameter(Mandatory = $true)][string]$WorkloadIdentityPrincipalId,
 
     # Optional. Azure SQL is created with Entra-only authentication, so no SQL login exists and this
@@ -291,9 +288,9 @@ try {
             --group $ResourceGroup `
             --environment bootstrap `
             --parameters registry=$Registry `
-            --parameters workloadIdentityClientId=$WorkloadIdentityClientId `
             --parameters workloadIdentityPrincipalId=$WorkloadIdentityPrincipalId `
             --parameters workloadIdentityName=$WorkloadIdentityName `
+            --parameters serviceAccountName=$ServiceAccountName `
             --parameters location=$Location `
             --parameters sqlLocation=$SqlLocation `
             --parameters ingressClassName=$(if ($ingressHost) { $IngressClassName } else { '' }) `
@@ -398,17 +395,13 @@ try {
         Write-Warning "App registrations '$OrdersApiAppName'/'$OrdersSpaAppName' not found; the orders app will have no sign-in. Run scripts/azure/configure-app-identity.ps1."
     }
 
-    # Booleans must come from a parameter file, so all application parameters are written together.
+    # The same parameters as on Azure Local: everything platform-specific is in the Recipe Pack.
     $applicationParameters = New-ParameterFile @{
-        apiImage                   = "$Registry/oms/api@$($imageDigests['api'])"
-        processorImage             = "$Registry/oms/processor@$($imageDigests['processor'])"
-        apiAuthentication          = $apiAuthentication
-        spaSettings                = $spaSettings
-        sqlAdminPassword           = $plainPassword
-        sqlUseEntraId              = $true
-        queueUsesBasicAuth         = $false
-        archiveUsesConnectionString = $false
-        serviceAccountName         = $ServiceAccountName
+        apiImage          = "$Registry/oms/api@$($imageDigests['api'])"
+        processorImage    = "$Registry/oms/processor@$($imageDigests['processor'])"
+        apiAuthentication = $apiAuthentication
+        spaSettings       = $spaSettings
+        sqlAdminPassword  = $plainPassword
     }
     $temporaryFiles += $applicationParameters
 

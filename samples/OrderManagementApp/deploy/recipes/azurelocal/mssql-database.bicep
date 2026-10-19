@@ -157,5 +157,8 @@ output result object = {
     host: '${svc.metadata.name}.${svc.metadata.namespace}.svc.cluster.local'
     port: sqlPort
     database: database
+    // The SQL Server container's administrator login is always 'sa', whatever username the
+    // application declared; reporting it here means the application never has to know.
+    username: 'sa'
   }
 }

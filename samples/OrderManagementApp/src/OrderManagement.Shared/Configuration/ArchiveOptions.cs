@@ -7,7 +7,7 @@ namespace OrderManagement.Shared.Configuration;
 /// <c>Radius.Storage/objectStorage</c> Resource Type.
 ///
 /// In Azure this resolves to an Azure Storage account reached over its blob endpoint using
-/// Workload Identity. Locally it resolves to Azurite, reached with a development connection string.
+/// Workload Identity. On Azure Local it resolves to Azurite, reached with the connection string its Recipe issues.
 /// </summary>
 public sealed class ArchiveOptions
 {
@@ -18,11 +18,8 @@ public sealed class ArchiveOptions
 
     public string? AccountName { get; init; }
 
-    /// <summary>Set only for local/dev (Azurite). When present it takes precedence over managed identity.</summary>
+    /// <summary>Issued only by the Azurite Recipe. When present it takes precedence over managed identity.</summary>
     public string? ConnectionString { get; init; }
-
-    /// <summary>Client ID of the user-assigned managed identity federated with the cluster (FIC).</summary>
-    public string? WorkloadIdentityClientId { get; init; }
 
     public bool UseManagedIdentity => string.IsNullOrWhiteSpace(ConnectionString);
 
@@ -35,8 +32,7 @@ public sealed class ArchiveOptions
             ContainerName = values.Get("containerName") ?? "orders",
             Endpoint = values.Get("endpoint"),
             AccountName = values.Get("accountName"),
-            ConnectionString = values.Get("connectionString"),
-            WorkloadIdentityClientId = values.Get("workloadIdentityClientId")
+            ConnectionString = values.Get("connectionString")
         };
     }
 }
