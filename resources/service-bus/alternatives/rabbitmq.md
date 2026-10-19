@@ -13,7 +13,7 @@ Order Intake / Order Processor      declare a queue, never name a broker
 Resource Type                       BusinessContinuity.Messaging/messageQueues
         │   (the environment's recipe pack chooses the recipe)
         ├── Azure pack                Service Bus recipe  → Azure Service Bus
-        └── Azure Local packs         RabbitMQ recipe     → RabbitMQ container
+        └── Azure Local pack          RabbitMQ recipe     → RabbitMQ container
 ```
 
 At startup the worker reads the `provider` value that the recipe publishes (`rabbitmq` or `servicebus`) and creates the matching client. The rest of the worker only sees a publish interface and a subscribe interface.
@@ -57,10 +57,6 @@ The reference recipe is sample code. As written it has these limitations:
 - **No dead-lettering.** The queue type's `maxDeliveryCount` setting is not applied by this recipe.
 - **No TLS on the AMQP listener.**
 - **Management interface** is exposed on its own port and still uses the generated password.
-
-## Running it where Azure is not reachable
-
-For disconnected operations, the recipe takes a registry address and an image pull secret, so the RabbitMQ image and the recipe itself come from a local registry. Both must be copied there before the registry is needed.
 
 ## Required application changes
 

@@ -2,7 +2,7 @@
 
 ## 1. Purpose
 
-This repository hosts samples and references for running Azure workloads on Azure Local (connected), Azure Local disconnected operations (ALDO) or another Kubernetes platform. For each Azure resource it describes what carries over, what changes and which alternatives were evaluated, with sample applications that run on Azure, Azure Local and ALDO.
+This repository hosts samples and references for running Azure workloads on Azure Local or another Kubernetes platform. For each Azure resource it describes what carries over, what changes and which alternatives were evaluated, with sample applications that run on Azure and Azure Local.
 
 It supports the scenario *Redeploy from Sovereign Public Cloud to Sovereign Private Cloud*: same container images, same application definition, only the infrastructure changes, with documented degradations.
 
@@ -16,7 +16,7 @@ The samples build on [Radius](https://docs.radapp.io/), an open-source applicati
 |---|---|---|
 | **Resource Type** | What the app needs, independent of any product. | `objectStorage` |
 | **Recipe** | How one platform provides it. | Azurite; RabbitMQ |
-| **Recipe Pack** | All recipes for one environment. | `azure-local-disconnected` |
+| **Recipe Pack** | All recipes for one environment. | `azure-local` |
 | **Sample** | An app that combines several resources. | Order Management System |
 | **Resource guide** | One page per Azure resource: what carries over, what changes, alternatives evaluated. | `resources/service-bus/` |
 
@@ -37,7 +37,7 @@ The repository provides samples and references. Customers remain responsible for
 ### Infrastructure scope
 
 - Infrastructure automation, such as scripts that set up Azure Local, AKS, Radius, ingress, a registry or identity, is sample code. It is not official or prescriptive deployment guidance.
-- For any prerequisites and environment setup, see the official Microsoft documentation: [Azure Local](https://learn.microsoft.com/en-us/azure/azure-local/), [Azure Local disconnected operations](https://learn.microsoft.com/en-us/azure/azure-local/manage/disconnected-operations-overview), [AKS enabled by Azure Arc](https://learn.microsoft.com/en-us/azure/aks/aksarc/) and [Radius](https://docs.radapp.io/).
+- For any prerequisites and environment setup, see the official Microsoft documentation: [Azure Local](https://learn.microsoft.com/en-us/azure/azure-local/), [AKS enabled by Azure Arc](https://learn.microsoft.com/en-us/azure/aks/aksarc/) and [Radius](https://docs.radapp.io/).
 - Customers must adapt the samples to their environment, tools, security requirements and production standards.
 
 ## 3. Structure
@@ -53,7 +53,7 @@ portability-patterns-library/
 ├── targets/                                  # One page per target environment
 ├── recipes/                                  # <capability>/<platform>/<implementation>
 │   └── object-storage/azure-local/azurite/   # Recipe source, README, test app
-├── recipe-packs/                             # One pack per environment, e.g. azure-local-disconnected
+├── recipe-packs/                             # One pack per environment, e.g. azure-local
 └── samples/                                  # End-to-end apps, e.g. OrderManagementApp
 ```
 
@@ -61,7 +61,7 @@ portability-patterns-library/
 |---|---|
 | `resources/<slug>/examples/` | The smallest deployment of that one resource on each target. For SQL: a small app that writes and reads one row, with no queue or backend. |
 | `samples/` | Multi-resource apps that combine identity, messaging, storage and SQL across targets. The business-continuity demo runs from here. |
-| `targets/` | One page per environment (Azure Local connected, ALDO, Kubernetes): links to the official Microsoft documentation for prerequisites, how the environment differs from Azure (connectivity, identity model, what works offline), and which recipe pack sample applies. |
+| `targets/` | One page per environment (Azure Local, Kubernetes): links to the official Microsoft documentation for prerequisites, how the environment differs from Azure (connectivity, identity model), and which recipe pack sample applies. |
 
 ## 4. Resource guide
 
@@ -75,9 +75,8 @@ Illustrative example (not final content):
 >
 > | Target | Alternative | Portability class | Availability | Summary |
 > |---|---|---|---|---|
-> | Azure Local (connected) | [RabbitMQ](./alternatives/rabbitmq.md) | `adapter-required` | Sample available | Self-hosted broker with its own addressing, authentication and failure handling. |
-> | Azure Local (disconnected, ALDO) | [RabbitMQ](./alternatives/rabbitmq.md) | `adapter-required` | Sample available | Same as connected, with the image and recipe served from a local registry. |
-> | Azure Local (connected, ALDO) | [Apache Kafka](https://kafka.apache.org/documentation/) | — | Documentation available | Not evaluated by this project. See the linked documentation. |
+> | Azure Local | [RabbitMQ](./alternatives/rabbitmq.md) | `adapter-required` | Sample available | Self-hosted broker with its own addressing, authentication and failure handling. |
+> | Azure Local | [Apache Kafka](https://kafka.apache.org/documentation/) | — | Documentation available | Not evaluated by this project. See the linked documentation. |
 >
 > **What carries over:** queue semantics, message payloads, application logic.
 >
@@ -102,7 +101,7 @@ Illustrative example (not final content):
 |---|---|---|
 | `protocol-compatible` | Same protocol or API on the target; endpoint, identity and operations change. | PostgreSQL; SQL Server |
 | `adapter-required` | Protocols or features differ; a workload change is needed. | Service Bus queues with RabbitMQ |
-| `no-equivalent` | Nothing comparable on the target. | Object storage in ALDO (no local service); virtual networks |
+| `no-equivalent` | Nothing comparable on the target. | Virtual networks |
 
 **Availability** says what this repository contains for an alternative:
 

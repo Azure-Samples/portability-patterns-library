@@ -4,9 +4,8 @@
 
 | Target | Alternative | Portability class | Availability | Summary |
 |---|---|---|---|---|
-| Azure Local (connected) | [RabbitMQ](./alternatives/rabbitmq.md) | `adapter-required` | Sample available | Self-hosted broker with its own addressing, authentication and failure handling. |
-| Azure Local (disconnected, ALDO) | [RabbitMQ](./alternatives/rabbitmq.md) | `adapter-required` | Sample available | Same as connected, with the image and recipe served from a local registry. |
-| Azure Local (connected, ALDO) | [Apache Kafka](https://kafka.apache.org/documentation/) | — | Documentation available | Not evaluated by this project. See the linked documentation. |
+| Azure Local | [RabbitMQ](./alternatives/rabbitmq.md) | `adapter-required` | Sample available | Self-hosted broker with its own addressing, authentication and failure handling. |
+| Azure Local | [Apache Kafka](https://kafka.apache.org/documentation/) | — | Documentation available | Not evaluated by this project. See the linked documentation. |
 
 ## What carries over
 
