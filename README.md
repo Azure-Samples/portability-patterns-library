@@ -21,8 +21,7 @@ The sample's file paths and commands are relative to
 
 ## License and third-party materials
 
-This project is licensed under the [MIT License](./LICENSE.txt). The existing
-[LICENSE](./LICENSE) contains the same license and is retained for compatibility.
+This project is licensed under the [MIT License](./LICENSE.txt).
 Third-party materials remain subject to their respective licenses and terms:
 
 - The Order Management sample includes the Microsoft Authentication Library for
