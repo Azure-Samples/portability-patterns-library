@@ -41,7 +41,8 @@ unmet.
 The following workflow applies to maintainers and contributors whose changes have
 been approved by the maintainers.
 
-1. Fork the repository and create a branch for your change.
+1. Create a branch for your change. Approved external contributors should fork
+   the repository and create a branch in their fork.
 2. Read the [project overview](./README.md) and the relevant sample documentation.
 3. Keep changes focused and follow the existing naming, formatting, and directory
    structure. Update documentation and configuration examples when behavior changes.
@@ -49,21 +50,17 @@ been approved by the maintainers.
 5. Open a pull request describing the change, linking related issues, and listing
    validation performed and any environments you could not test.
 
-### Order Management sample
+### Working with samples
 
-The sample targets .NET 9. Install the .NET 9 SDK, then run from the repository root:
+Samples live under [`samples/`](./samples). Follow the relevant sample's README
+for prerequisites, required tool versions, build and validation commands,
+deployment instructions, and the directory from which to run those commands.
+Requirements may differ between samples.
 
-```powershell
-dotnet build .\samples\OrderManagementApp\BusinessContinuityDemoApp.sln
-```
-
-Follow the [sample README](./samples/OrderManagementApp/README.md) for additional
-prerequisites and deployment instructions for Docker Compose, local Kubernetes,
-Azure, or Azure Local. Run sample commands from the sample directory:
-
-```powershell
-Set-Location .\samples\OrderManagementApp
-```
+When adding a sample, include a README documenting its purpose, supported
+environments, prerequisites, configuration, build and validation steps, deployment
+and cleanup instructions, and known limitations. Link the sample from the
+[project overview](./README.md).
 
 Validate deployment changes on the affected target when possible and describe
 the results in your pull request. Cloud deployments can incur costs; clean up
