@@ -126,7 +126,7 @@ credential trusting the AKS OIDC issuer for one service account subject.
 │   ├── lib/                Settings loader shared by the two commands
 │   └── publish-recipes.ps1 Compile and push Recipes to an OCI registry
 ├── lab/                    NOT part of the sample: stands up what a customer already has
-│   └── azurelocal/         AD objects on the site's DC, WAN cut-off switch, end-to-end check
+│   └── azurelocal/         ad-setup.ps1: demo OU, groups and accounts on the site's existing DC
 └── docker/                 Dockerfiles for the API and the processor
 ```
 
@@ -268,13 +268,8 @@ registry), token exchange (Keycloak and the cluster issuer), directory lookups (
 with the admin kubeconfig. What does not: pushing new images or Recipes, Arc/ARM management of the
 cluster, and Entra sign-in to the cluster.
 
-To prove it, cut the site's link to Azure. The script shows, from inside the cluster, that Azure is
-blocked while the site's own services stay reachable; then sign in and place an order:
-
-```powershell
-./lab/azurelocal/wan.ps1 -State Down      # lab only: removes the host NAT, like cutting the WAN line
-./lab/azurelocal/wan.ps1 -State Up
-```
+To prove it, block the site's outbound route to Azure (for example at its firewall), then sign in and
+place an order.
 
 ## Adding another environment
 

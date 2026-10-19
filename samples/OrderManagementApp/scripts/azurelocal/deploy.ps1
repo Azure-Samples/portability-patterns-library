@@ -526,8 +526,6 @@ try {
     }
     Write-Host "Watch the order processor with:"
     Write-Host "  kubectl logs -n $Namespace -l radapp.io/resource=processor --context $KubeContext -f"
-    Write-Host "Check the records written to SQL Server (the password is read from '$sqlSecretName'):"
-    Write-Host "  ./lab/azurelocal/verify.ps1 -KubeContext $KubeContext -Namespace $Namespace"
     Write-Host "Troubleshoot the platform with:"
     Write-Host "  ./scripts/azurelocal/diagnose.ps1"
 }

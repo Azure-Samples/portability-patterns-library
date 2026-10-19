@@ -314,9 +314,6 @@ try {
     Write-Host ''
     $summaryColor = if ($script:failures) { 'Red' } elseif ($script:warnings) { 'Yellow' } else { 'Green' }
     Write-Host ("==> {0} failure(s), {1} warning(s)" -f $script:failures, $script:warnings) -ForegroundColor $summaryColor
-    if ($script:failures -eq 0) {
-        Write-Host "Data check: ./lab/azurelocal/verify.ps1 -KubeContext $KubeContext -Namespace $Namespace" -ForegroundColor DarkGray
-    }
 }
 finally {
     if ($portForward) { Stop-Process -Id $portForward.Id -Force -ErrorAction SilentlyContinue }
