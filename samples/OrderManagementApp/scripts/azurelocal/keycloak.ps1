@@ -343,7 +343,7 @@ lab/azurelocal/ad-setup.ps1 does this.
                         uuidLDAPAttribute       = @('objectGUID')
                         searchScope             = @('2')
                         # Read only: the directory is authoritative, and Keycloak holding write
-                        # access to it would be a far larger blast radius than this demo needs.
+                        # access to it would be a far larger blast radius than this sample needs.
                         editMode                = @('READ_ONLY')
                         importEnabled           = @('true')
                         syncRegistrations       = @('false')

@@ -27,7 +27,7 @@ The kubelet writes it, the application reads it. Nothing else is involved, and t
 for a different audience or a different ServiceAccount's token: both were fixed in the pod spec at
 admission.
 
-The file holds a single line of three base64url segments. Measured on a running API pod:
+The file holds a single line of three base64url segments. On a running API pod:
 
 ```
 bytes: 1114    segments: 3
@@ -288,10 +288,10 @@ cost of more traffic to the token endpoint.
 | RabbitMQ | `auth_oauth2.additional_scopes_key` | `rabbitmq_scopes` |
 | RabbitMQ | `auth_oauth2.https.cacertfile` | `/etc/rabbitmq/oauth-ca/ca.crt` |
 
-## Failure modes seen while building this
+## Troubleshooting
 
-Both failures were in *fetching public keys*, never in the verification itself. A "signature
-invalid" symptom is more often a key-retrieval problem than a bad token.
+Most of these are failures to *fetch public keys*, not failures of the verification itself: a
+"signature invalid" symptom is more often a key-retrieval problem than a bad token.
 
 | Symptom | Cause |
 | --- | --- |

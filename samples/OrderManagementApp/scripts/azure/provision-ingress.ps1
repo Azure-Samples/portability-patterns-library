@@ -11,8 +11,8 @@
       1. Gives the managed ingress's public IP the DNS name <DnsLabel>.<region>.cloudapp.azure.com.
       2. Installs cert-manager and a ClusterIssuer: Let's Encrypt with HTTP-01 challenges answered
          through the same ingress, or with -PrivateCa a CA kept in the cluster. Use -PrivateCa where
-         policy blocks inbound internet traffic (Let's Encrypt cannot reach the challenge), as in
-         Microsoft-internal subscriptions; trust the CA printed at the end on demo machines.
+         policy blocks inbound internet traffic (Let's Encrypt cannot reach the challenge); trust the
+         CA printed at the end on the machines that open the app.
 
     Idempotent. Run after scripts/azure/provision-infra.ps1.
 
@@ -155,6 +155,6 @@ spec:
 Write-Host "`nIngress ready: https://$fqdn  (class '$IngressClassName', issuer '$IssuerName')" -ForegroundColor Green
 if ($PrivateCa) {
     Write-Host "Deploy with: ./scripts/azure/deploy.ps1 ... -IngressCertIssuer $IssuerName"
-    Write-Host "Trust the CA on demo machines (once, shows a confirmation prompt):"
+    Write-Host "Trust the CA on client machines (once, shows a confirmation prompt):"
     Write-Host "  Import-Certificate -FilePath $caFile -CertStoreLocation Cert:\CurrentUser\Root"
 }

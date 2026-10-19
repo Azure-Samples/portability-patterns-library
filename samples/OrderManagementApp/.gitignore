@@ -17,7 +17,7 @@ deploy/types/*.tgz
 .vs/
 .idea/
 
-## Site CA written by scripts/azurelocal/provision-ingress.ps1 for trusting on demo machines
+## Site CA written by scripts/azurelocal/provision-ingress.ps1 for trusting on client machines
 bcd-site-ca.crt
 bcd-azure-ca.crt
 oms-identity-ca.crt

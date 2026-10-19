@@ -181,10 +181,10 @@ Copy-Item scripts/settings.example.json scripts/settings.json   # then fill in t
 
 `setup-platform.ps1` runs three steps. *Cluster* creates the platform and prints the workload
 identity IDs that `Deploy` needs in the settings. *Ingress* gives the app a public HTTPS address;
-set `PrivateCa` where policy blocks inbound internet traffic, so Let's Encrypt cannot validate, as
-in Microsoft-internal subscriptions, and then `IngressCertIssuer: bcd-private-ca` under `Deploy`.
-*Identity* registers the API and browser app with Entra (in the Microsoft tenant set
-`ServiceManagementReference`).
+set `PrivateCa` where policy blocks inbound internet traffic, so Let's Encrypt cannot validate, and
+then `IngressCertIssuer: bcd-private-ca` under `Deploy`. *Identity* registers the API and browser
+app with Entra; set `ServiceManagementReference` if your tenant's policy requires one on new app
+registrations.
 
 `deploy.ps1` mints a short-lived, read-only registry token for Recipe pulls itself, builds with
 podman or docker, and publishes the orders app through the ingress when

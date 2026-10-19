@@ -38,9 +38,6 @@ Third-party materials remain subject to their respective licenses and terms:
   Dapper, Microsoft.Data.SqlClient, and RabbitMQ.Client, are referenced by the
   sample's project files and restored during the build. Refer to each package
   for its license and notices.
-- Architecture diagrams include Microsoft and third-party product icons.
-  Their sources and usage terms are described in the
-  [diagram documentation](./samples/OrderManagementApp/docs/diagrams/README.md#icons).
 - Deployment definitions use external tools and container images, including
   Radius, Kubernetes, RabbitMQ, Azurite, SQL Server, and Keycloak. These components
   have their own licenses and usage terms; this repository's license does not

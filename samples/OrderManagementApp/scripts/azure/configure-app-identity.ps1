@@ -16,8 +16,9 @@
     a resource group or be created by a Radius Recipe without granting the Radius identity Graph
     permissions; this is the one-time platform step that does it instead.
 
-    Secure Future Initiative (SFI) baseline applied to both registrations on every run:
-      * single tenant (AzureADMyOrg), Service Tree reference, purpose notes, the signed-in user as owner
+    Security baseline applied to both registrations on every run:
+      * single tenant (AzureADMyOrg), optional service management reference, purpose notes, the
+        signed-in user as owner
       * no credentials at all: the SPA is a public client using auth code + PKCE, the API only
         validates tokens
       * implicit grant off, public-client fallback off, HTTPS redirect URIs only, no wildcards
@@ -26,8 +27,8 @@
       * user assignment required on the API: only users or groups granted an app role get tokens
 
 .PARAMETER ServiceManagementReference
-    Some tenants (including Microsoft's) require new app registrations to reference a service
-    record. Supply it if creation fails with a policy error.
+    Some tenants require new app registrations to reference a service record. Supply it if creation
+    fails with a policy error.
 
 .EXAMPLE
     ./scripts/azure/configure-app-identity.ps1 -SpaOrigins https://bcd-orders.eastus2.cloudapp.azure.com
@@ -50,7 +51,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $graph = 'https://graph.microsoft.com/v1.0'
 
-# SFI: HTTPS only. Plain http is allowed for localhost alone, as Entra itself permits.
+# HTTPS only. Plain http is allowed for localhost alone, as Entra itself permits.
 foreach ($origin in $SpaOrigins) {
     $uri = [uri]$origin
     if ($origin -match '\*' -or -not ($uri.Scheme -eq 'https' -or ($uri.Scheme -eq 'http' -and $uri.Host -eq 'localhost'))) {
@@ -169,7 +170,7 @@ Invoke-Graph PATCH "/applications/$($api.id)" @{
     }
 } | Out-Null
 $apiSp = Get-ServicePrincipal $api.appId
-# SFI: only users or groups holding an app role can obtain tokens for the API.
+# Only users or groups holding an app role can obtain tokens for the API.
 Invoke-Graph PATCH "/servicePrincipals/$($apiSp.id)" @{ appRoleAssignmentRequired = $true; notes = $Notes } | Out-Null
 Write-Host "    appId $($api.appId), scope api://$($api.appId)/$ApiScopeName" -ForegroundColor DarkGray
 

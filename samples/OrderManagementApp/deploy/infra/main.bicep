@@ -65,7 +65,7 @@ param nodeVmSize string = 'Standard_D4s_v7'
 @description('Kubernetes version. Leave empty to let AKS pick the default.')
 param kubernetesVersion string = ''
 
-@description('ACR SKU. Basic is enough for a demo; Premium adds private endpoints and geo-replication.')
+@description('ACR SKU. Basic is enough for this sample; Premium adds private endpoints and geo-replication.')
 @allowed([
   'Basic'
   'Standard'
