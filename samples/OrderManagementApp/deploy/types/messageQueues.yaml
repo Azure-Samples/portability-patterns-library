@@ -2,86 +2,13 @@ namespace: OrderManagement.Messaging
 types:
   messageQueues:
     description: |
-      The `OrderManagement.Messaging/messageQueues` Resource Type represents a durable
-      point-to-point message queue, independent of the broker that backs it.
+      A durable point-to-point queue, independent of the broker behind it. The application declares
+      the queue; the environment's Recipe decides what backs it: Azure Service Bus on Azure, a
+      RabbitMQ container on Azure Local. Radius has no built-in queue type that covers both.
 
-      This type exists because Radius ships no portable queue abstraction that spans both a
-      self-hosted broker and Azure Service Bus. A developer declares the intent to have a queue; the
-      platform engineer decides through Recipes whether that is a RabbitMQ container in the cluster
-      (Azure Local) or an Azure Service Bus queue reached with a federated managed
-      identity (AKS).
-
-      ```bicep
-      extension radius
-      extension orderManagement
-
-      param environment string
-
-      resource queue 'OrderManagement.Messaging/messageQueues@2025-08-01-preview' = {
-        name: 'orders'
-        properties: {
-          environment: environment
-          application: app.id
-          queueName: 'orders'
-        }
-      }
-      ```
-
-      Connect a container to the queue to receive the connection values as environment variables
-      named `CONNECTION_<CONNECTION-NAME>_<PROPERTY-NAME>`:
-
-      ```bicep
-      connections: {
-        queue: {
-          source: queue.id
-        }
-      }
-      ```
-
-      For a connection named `queue` the worker receives:
-
-      - CONNECTION_QUEUE_PROVIDER            - `rabbitmq` or `servicebus`
-      - CONNECTION_QUEUE_QUEUENAME           - the queue/entity name
-      - CONNECTION_QUEUE_HOST                - broker host (RabbitMQ only)
-      - CONNECTION_QUEUE_PORT                - broker port (RabbitMQ only)
-      - CONNECTION_QUEUE_NAMESPACEFQDN       - namespace FQDN (Azure Service Bus only)
-      - CONNECTION_QUEUE_WORKLOADIDENTITYCLIENTID - client ID of the federated managed identity
-      - CONNECTION_QUEUE_OAUTHTOKENENDPOINT  - token endpoint, when the broker accepts OAuth 2.0
-      - CONNECTION_QUEUE_OAUTHCLIENTID       - client the workload authenticates as
-      - CONNECTION_QUEUE_OAUTHASSERTIONFILE  - projected ServiceAccount token used as the assertion
-      - CONNECTION_QUEUE_OAUTHCAFILE         - certificate authority of the token issuer
-
-      Credentials are never injected as plain environment variables. When a Recipe returns them
-      (RabbitMQ does; Azure Service Bus does not, because it uses managed identity), Radius writes
-      them into a managed Kubernetes Secret and publishes only its name on
-      `properties.secrets.name`. Bind them explicitly in the container definition:
-
-      ```bicep
-      env: {
-        CONNECTION_QUEUE_USERNAME: {
-          valueFrom: {
-            secretKeyRef: {
-              secretName: queue.properties.secrets.name
-              key: 'username'
-            }
-          }
-        }
-        CONNECTION_QUEUE_PASSWORD: {
-          valueFrom: {
-            secretKeyRef: {
-              secretName: queue.properties.secrets.name
-              key: 'password'
-            }
-          }
-        }
-      }
-      ```
-
-      The application reads `provider` and selects the matching client library at startup. When the
-      provider is `servicebus` no credentials are supplied: the worker authenticates with the
-      workload identity whose client ID is published in `workloadIdentityClientId`. Where
-      `oauthTokenEndpoint` is set the worker likewise receives no credentials: it exchanges its
-      projected ServiceAccount token for an access token and presents that to the broker.
+      A container connected to the queue as `queue` receives `CONNECTION_QUEUE_*` environment
+      variables, starting with `CONNECTION_QUEUE_PROVIDER` (`servicebus` or `rabbitmq`), which the
+      application uses to pick its client. See deploy/app.bicep for a complete example.
     apiVersions:
       '2025-08-01-preview':
         schema:
