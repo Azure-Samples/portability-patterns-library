@@ -385,8 +385,7 @@ end-to-end setup.
 
 Both read site values from `scripts/settings.json`; copy it from
 [settings.example.json](./scripts/settings.example.json). Each script documents itself:
-`Get-Help ./scripts/<path>.ps1 -Full`. `./scripts/azurelocal/diagnose.ps1` checks an Azure Local
-deployment layer by layer.
+`Get-Help ./scripts/<path>.ps1 -Full`.
 
 ## Repository layout
 

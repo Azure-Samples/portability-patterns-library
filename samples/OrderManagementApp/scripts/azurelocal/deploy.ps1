@@ -563,8 +563,6 @@ try {
     }
     Write-Host "Watch the order processor with:"
     Write-Host "  kubectl logs -n $Namespace -l radapp.io/resource=processor --context $KubeContext -f"
-    Write-Host "Troubleshoot the platform with:"
-    Write-Host "  ./scripts/azurelocal/diagnose.ps1"
 }
 finally {
     if ($portForward) { Stop-Process -Id $portForward.Id -Force -ErrorAction SilentlyContinue }
