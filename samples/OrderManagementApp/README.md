@@ -46,19 +46,26 @@ the site is cut off from Azure.
 
 ## Portability patterns in this sample
 
-The sample is a worked example of these portability patterns. Each row says what the sample does and
-where; the next list says what it leaves out.
+How the sample applies each portability pattern on each platform. **Same on both** is what doesn't
+change between them: that part is the portable contract.
 
-| Pattern | What the sample does | Where |
-|---|---|---|
-| Separate application intent from environment | The app declares a queue, object storage and SQL; each platform's Recipe Pack maps them to a product. The code reaches each dependency through an interface (`IMessagePublisher`, `IArchiveStore`, `IOrderStore`) and picks the implementation from its connection at startup. | [app.bicep](./deploy/app.bicep), [recipe-packs/](../../recipe-packs/), [ServiceCollectionExtensions.cs](./src/OrderManagement.Shared/DependencyInjection/ServiceCollectionExtensions.cs) |
-| Standardized container platform on Arc-enabled Kubernetes | AKS on Azure, AKS enabled by Arc on Azure Local, from the same manifests. Images and Recipes are pre-staged in an ACR connected registry inside the cluster. Cluster access offline uses the admin kubeconfig (a certificate), not Entra. A Service of type LoadBalancer works unchanged through the Arc load balancer (MetalLB), with NGINX ingress and Calico. | [infra/azurelocal/](./infra/azurelocal/), [connected-registry.bicep](./infra/azurelocal/connected-registry.bicep) |
-| Portable database engines | Azure SQL Database on Azure, the SQL Server container on Azure Local, behind the same `Radius.Data/sqlServerDatabases` type. Entra authentication is replaced by Windows (Kerberos) authentication against the site's Active Directory. | [sql-database Recipes](../../recipes/sql-database/), [Connect your Active Directory](#connect-your-active-directory) |
-| Portable messaging through protocols and design | Service Bus on Azure, RabbitMQ on Azure Local. Consumers are idempotent (the order is written with `MERGE`), so redelivery is safe. Entra authentication to the broker is replaced by an OIDC provider (Keycloak). | [message-queue Recipes](../../recipes/message-queue/), [SqlOrderStore.cs](./src/OrderManagement.Shared/Persistence/SqlOrderStore.cs) |
-| Classify object storage and abstract it | The processor writes one JSON file per order, which is flat-file persistence. Storage access sits behind `IArchiveStore`, with the endpoint and credentials injected from the connection. | [BlobArchiveStore.cs](./src/OrderManagement.Shared/Storage/BlobArchiveStore.cs) |
-| Portable workload and user identities | Users sign in with standard OpenID Connect: Entra ID on Azure, Keycloak federated to Active Directory on Azure Local, issuing tokens of the same shape. Pods get a Kubernetes service account token projected for the identity provider, the counterpart of Entra Workload ID. | [How authentication works](#how-authentication-works) |
-| Identity estate as code | The Entra app registrations, roles and assignments are Bicep; the Keycloak realm, clients and role mappings are generated from code and imported. | [app-identity.bicep](./infra/azure/app-identity.bicep), [keycloak.ps1](./scripts/azurelocal/keycloak.ps1) |
-
+| Pattern | Azure | Azure Local | Same on both |
+|---|---|---|---|
+| Separate application intent from environment | [azure.bicep](../../recipe-packs/azure.bicep) Recipe Pack maps each type to an Azure service | [azure-local.bicep](../../recipe-packs/azure-local.bicep) Recipe Pack maps each type to a container | [app.bicep](./deploy/app.bicep); `IMessagePublisher`, `IArchiveStore`, `IOrderStore` with the implementation picked at startup ([ServiceCollectionExtensions.cs](./src/OrderManagement.Shared/DependencyInjection/ServiceCollectionExtensions.cs)) |
+| Container platform | AKS | AKS enabled by Arc, on a logical network of the Azure Local instance | container images, Kubernetes manifests from the shared [container Recipe](../../recipes/kubernetes/kubernetes-containers.bicep) |
+| — container registry | Azure Container Registry | ACR connected registry inside the cluster, synced while connected ([connected-registry.bicep](./infra/azurelocal/connected-registry.bicep)) | images and Recipes pushed to one ACR |
+| — load balancer and ingress | Azure Load Balancer, managed NGINX (app routing) | Arc load balancer (MetalLB), NGINX ingress | Service of type LoadBalancer, Ingress |
+| — cluster access | Entra ID with Azure RBAC | Entra while connected; admin kubeconfig (certificate) when offline | `kubectl` |
+| Database engine | Azure SQL Database | SQL Server 2022 container | `Radius.Data/sqlServerDatabases` type, T-SQL, `Microsoft.Data.SqlClient` |
+| — database sign-in | Entra (Workload ID); the app's managed identity is the admin | Windows (Kerberos) against the site's Active Directory | `IOrderStore` |
+| Messaging | Azure Service Bus queue | RabbitMQ container | `Portability.Messaging/messageQueues` type; idempotent consumer (`MERGE`) |
+| — broker sign-in | Entra (Workload ID) | Kubernetes service account token exchanged at Keycloak (OAuth 2.0) | `IMessagePublisher` / `IMessageSubscriber` |
+| Object storage | Azure Blob Storage, with Workload ID | Azurite (development emulator) | flat-file use: one JSON per order behind `IArchiveStore`; endpoint and credentials injected |
+| User identity | Microsoft Entra ID | Keycloak, federated to Active Directory | OpenID Connect with MSAL.js and Microsoft.Identity.Web; `roles`, `scp` and `oid` claims |
+| Workload identity | Entra Workload ID (federated credential) | Kubernetes service account token projection | no secrets in the app definition |
+| Identity estate as code | Entra app registrations, roles and assignments in [app-identity.bicep](./infra/azure/app-identity.bicep) | Keycloak realm, clients and role mappings generated by [keycloak.ps1](./scripts/azurelocal/keycloak.ps1) and imported | app roles `Orders.Read`, `Orders.Create`; scope `access_as_user` |
+| Platform as code | [infra/azure/](./infra/azure/) Bicep | [infra/azurelocal/](./infra/azurelocal/) Bicep (AKS Arc, logical network, ACR, load balancer, connected registry) | Bicep, deployed with `az deployment sub create` |
+| Observability | not covered | not covered | console logs |
 ### Not covered yet
 
 - **Continuous portability assessment** with Azure Policy: no parity or SKU checks against the target
