@@ -3,9 +3,8 @@
     Deploys the Order Management sample to an AKS cluster backed by Azure PaaS.
 
 .DESCRIPTION
-    Assumes ./scripts/azure/provision-infra.ps1 (or bootstrap-identity.ps1 against an existing
-    cluster) has already created the workload identity, and that `rad credential register azure`
-    has been run.
+    Assumes ./scripts/azure/provision-infra.ps1 has already created the workload identity and
+    configured the Radius Azure credential.
 
     Three different things are called a "resource group" here. They are not interchangeable:
 
