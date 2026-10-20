@@ -21,7 +21,9 @@ Samples share the Radius Recipes and Recipe Packs at the repository root:
 ## Getting started
 
 Start with the [Order Management sample](./samples/OrderManagementApp/README.md) for
-prerequisites, build instructions, deployment options, configuration, and known gaps.
+prerequisites, build instructions, deployment options, configuration, and known gaps. Its
+[portability patterns](./samples/OrderManagementApp/README.md#portability-patterns-in-this-sample)
+section maps the sample to the patterns it follows and lists those it doesn't cover yet.
 The sample's file paths and commands are relative to
 [`samples/OrderManagementApp`](./samples/OrderManagementApp).
 

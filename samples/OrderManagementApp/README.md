@@ -470,6 +470,38 @@ Radius injects these into the API and the processor from their connections. The 
 | `CONNECTION_SQL_HOST` / `_PORT` / `_DATABASE` | both | |
 | `CONNECTION_SQL_USERNAME` / `_PASSWORD` | both | ignored when the pod has an Entra workload identity or a Kerberos keytab |
 
+## Portability patterns in this sample
+
+The sample is a worked example of these portability patterns. Each row says what the sample does and
+where; the next list says what it leaves out.
+
+| Pattern | What the sample does | Where |
+|---|---|---|
+| Separate application intent from environment | The app declares a queue, object storage and SQL; each platform's Recipe Pack maps them to a product. The code reaches each dependency through an interface (`IMessagePublisher`, `IArchiveStore`, `IOrderStore`) and picks the implementation from its connection at startup. | [app.bicep](./deploy/app.bicep), [recipe-packs/](../../recipe-packs/), [ServiceCollectionExtensions.cs](./src/OrderManagement.Shared/DependencyInjection/ServiceCollectionExtensions.cs) |
+| Standardized container platform on Arc-enabled Kubernetes | AKS on Azure, AKS enabled by Arc on Azure Local, from the same manifests. Images and Recipes are pre-staged in an ACR connected registry inside the cluster. Cluster access offline uses the admin kubeconfig (a certificate), not Entra. A Service of type LoadBalancer works unchanged through the Arc load balancer (MetalLB), with NGINX ingress and Calico. | [infra/azurelocal/](./infra/azurelocal/), [connected-registry.bicep](./infra/azurelocal/connected-registry.bicep) |
+| Portable database engines | Azure SQL Database on Azure, the SQL Server container on Azure Local, behind the same `Radius.Data/sqlServerDatabases` type. Entra authentication is replaced by Windows (Kerberos) authentication against the site's Active Directory. | [sql-database Recipes](../../recipes/sql-database/), [Connect your Active Directory](#connect-your-active-directory) |
+| Portable messaging through protocols and design | Service Bus on Azure, RabbitMQ on Azure Local. Consumers are idempotent (the order is written with `MERGE`), so redelivery is safe. Entra authentication to the broker is replaced by an OIDC provider (Keycloak). | [message-queue Recipes](../../recipes/message-queue/), [SqlOrderStore.cs](./src/OrderManagement.Shared/Persistence/SqlOrderStore.cs) |
+| Classify object storage and abstract it | The processor writes one JSON file per order, which is flat-file persistence. Storage access sits behind `IArchiveStore`, with the endpoint and credentials injected from the connection. | [BlobArchiveStore.cs](./src/OrderManagement.Shared/Storage/BlobArchiveStore.cs) |
+| Portable workload and user identities | Users sign in with standard OpenID Connect: Entra ID on Azure, Keycloak federated to Active Directory on Azure Local, issuing tokens of the same shape. Pods get a Kubernetes service account token projected for the identity provider, the counterpart of Entra Workload ID. | [How authentication works](#how-authentication-works) |
+| Identity estate as code | The Entra app registrations, roles and assignments are Bicep; the Keycloak realm, clients and role mappings are generated from code and imported. | [app-identity.bicep](./infra/azure/app-identity.bicep), [keycloak.ps1](./scripts/azurelocal/keycloak.ps1) |
+
+### Not covered yet
+
+- **Continuous portability assessment** with Azure Policy: no parity or SKU checks against the target
+  platform.
+- **Observability:** the app logs to the console only. There's no OpenTelemetry instrumentation,
+  collector or alternative backend.
+- **Data paths:** SQL Server, RabbitMQ and Azurite run without persistent volumes, so their data
+  doesn't survive a pod restart, and there's no backup, replication or seeding from Azure. The
+  pattern expects a tested data path with a measured recovery point.
+- **Messaging protocol:** the app uses each broker's own SDK (Service Bus, and RabbitMQ's AMQP 0-9-1
+  client) behind one interface, rather than AMQP 1.0 for both. There's no dead-letter handling on
+  RabbitMQ: a message that keeps failing is requeued with a back-off, indefinitely.
+- **Object storage target:** Azurite is a development emulator, not a production store. Use a file
+  share for this flat-file case, or an object store you operate (for example Azure Container
+  Storage enabled by Azure Arc, or an S3-compatible store behind `IArchiveStore`).
+- **Identity sync and MFA:** Entra users aren't synchronized to Active Directory; each platform has
+  its own users. Keycloak doesn't enforce a second factor.
 ## Known gaps
 
 - The sample ships its own build of the stock Kubernetes container Recipe
