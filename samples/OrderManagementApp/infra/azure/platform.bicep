@@ -14,7 +14,7 @@
 // far higher privileges (role assignments require Owner or User Access Administrator).
 //
 // Deployed at subscription scope so it can create its own resource group:
-//   az deployment sub create --location <region> --template-file deploy/infra/main.bicep
+//   az deployment sub create --location <region> --template-file infra/azure/platform.bicep
 //
 // scripts/azure/provision-infra.ps1 wraps this and performs the imperative follow-up steps.
 
@@ -99,7 +99,7 @@ resource platformResourceGroup 'Microsoft.Resources/resourceGroups@2022-09-01' =
   tags: tags
 }
 
-module platform 'platform.bicep' = {
+module platform 'platform-resources.bicep' = {
   scope: platformResourceGroup
   name: 'bcd-platform'
   params: {

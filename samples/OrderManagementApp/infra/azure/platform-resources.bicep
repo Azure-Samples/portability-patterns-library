@@ -1,4 +1,4 @@
-// Resource-group scoped platform resources. Deployed by deploy/infra/main.bicep.
+// Resource-group scoped platform resources. Deployed by infra/azure/platform.bicep.
 
 @description('Azure region for all resources.')
 param location string

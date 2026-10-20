@@ -5,7 +5,7 @@
 .DESCRIPTION
     Creates the resource group, container registry, AKS cluster (OIDC issuer + workload identity),
     the AcrPull role assignment for the kubelet, and the user-assigned managed identity with its
-    federated identity credential -- all declaratively, through deploy/infra/main.bicep.
+    federated identity credential -- all declaratively, through infra/azure/platform.bicep.
 
     It then performs the imperative follow-up that has no declarative equivalent:
       * fetches cluster credentials
@@ -196,7 +196,7 @@ function New-ParameterFile {
 }
 
 try {
-    $template = 'deploy/infra/main.bicep'
+    $template = 'infra/azure/platform.bicep'
     $deploymentName = "bcd-infra-$(Get-Date -Format 'yyyyMMddHHmmss')"
     $parameterFile = $null
     # Entra users hit HTTP 431 on the aggregated API, so the CLI uses a ServiceAccount context.

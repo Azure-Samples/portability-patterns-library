@@ -143,9 +143,31 @@ rad deploy deploy/app.bicep -e oms-azurelocal -p apiImage=... -p processorImage=
 Same file, same parameters. The environment decides what gets created. Also pass `apiAuthentication`
 and `spaSettings`, the sign-in settings from step 2 for that platform's identity provider.
 
-## What Azure Local has to provide
+## Prerequisites
 
-These are platform prerequisites, set up once per site, not part of your app.
+Set these up once per site, before deploying. They're the platform, not part of your app; the
+app itself is only what's in [deploy/](./deploy).
+
+### Azure
+
+| Need | In this sample |
+|---|---|
+| AKS with the OIDC issuer and workload identity | [infra/azure/platform.bicep](./infra/azure/platform.bicep) |
+| Azure Container Registry for images and Recipes, with AcrPull for the cluster | same template |
+| A user-assigned managed identity with a federated credential for the app's service account | same template |
+| Radius on the cluster, with an Azure credential so Recipes can create Azure resources | `rad install kubernetes --set global.azureWorkloadIdentity.enabled=true`, then `rad credential register azure wi` |
+| Entra app registrations for the API and the browser app | [configure-app-identity.ps1](./scripts/azure/configure-app-identity.ps1) |
+| Ingress with a public HTTPS name | [provision-ingress.ps1](./scripts/azure/provision-ingress.ps1) |
+
+Deploy the template at subscription scope; it needs Owner or User Access Administrator, because it
+assigns roles:
+
+```powershell
+az deployment sub create --location <region> --template-file infra/azure/platform.bicep `
+    -p location=<region> registryName=<globally-unique-acr-name>
+```
+
+### Azure Local
 
 | Need | Why | In this sample |
 |---|---|---|
@@ -154,10 +176,6 @@ These are platform prerequisites, set up once per site, not part of your app.
 | An identity provider on site | sign-in and service tokens without Entra | **Keycloak**, federated to Active Directory over LDAPS and trusting the cluster's token issuer |
 | Active Directory | users and groups | the domain the Azure Local instance already uses; Keycloak needs a read-only bind account |
 | Ingress | users reach the app over HTTPS | Arc load balancer + NGINX ingress |
-
-On Azure the equivalents are AKS with workload identity, ACR, a managed identity with a federated
-credential, and Entra app registrations; [deploy/infra/main.bicep](./deploy/infra/main.bicep) creates
-most of them.
 
 **When the site loses its link to Azure:** running pods, pod restarts, token exchange, directory
 lookups and `kubectl` with the admin kubeconfig keep working. Pushing new images, Azure management of
@@ -397,11 +415,12 @@ The sample uses the library's shared [recipes/](../../recipes/) and
 │   ├── OrderManagement.Api/        orders API and browser app
 │   ├── OrderManagement.Processor/  order processor
 │   └── OrderManagement.Shared/     connections, identity, queue/storage/SQL clients
-├── deploy/                      what to deploy (Bicep)
+├── deploy/                      what `rad deploy` uses, every release (Bicep)
 │   ├── app.bicep                   the application, same on both platforms
 │   ├── environments/               one per platform; each points at a Recipe Pack
-│   ├── recipe-registry-credentials.bicep  Radius credentials for a private Recipe registry
-│   └── infra/                      Azure platform (AKS, ACR, identities)
+│   └── recipe-registry-credentials.bicep  Radius credentials for a private Recipe registry
+├── infra/                       one-time platform prerequisites, not part of the app
+│   └── azure/                      platform.bicep: AKS, ACR, managed identity
 ├── docker/                      Dockerfiles for the API and processor
 ├── docs/                        workload identity explained
 └── scripts/                     optional automation (see above)

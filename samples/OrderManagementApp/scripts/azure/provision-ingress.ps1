@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Gives applications on AKS a public HTTPS address: the managed NGINX ingress (app routing add-on,
-    enabled by deploy/infra/platform.bicep) with an Azure DNS name and a Let's Encrypt certificate.
+    enabled by infra/azure/platform-resources.bicep) with an Azure DNS name and a Let's Encrypt certificate.
 
 .DESCRIPTION
     Platform layer, the Azure counterpart of scripts/azurelocal/provision-ingress.ps1. Applications
