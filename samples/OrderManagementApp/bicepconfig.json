@@ -1,0 +1,9 @@
+{
+  "extensions": {
+    "radius": "br:biceptypes.azurecr.io/radius:0.60",
+    "portability": "../../recipes/message-queue/messageQueues.tgz"
+  },
+  "experimentalFeaturesEnabled": {
+    "extensibility": true
+  }
+}

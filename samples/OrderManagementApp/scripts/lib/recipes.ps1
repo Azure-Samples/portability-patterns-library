@@ -4,7 +4,7 @@ $LibraryRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../../..')).Path
 $LibraryRecipeRoot = Join-Path $LibraryRoot 'recipes'
 $LibraryRecipePackRoot = Join-Path $LibraryRoot 'recipe-packs'
 $QueueTypeFile = Join-Path $LibraryRecipeRoot 'message-queue/messageQueues.yaml'
-# bicepconfig.json at the repository root maps the 'portability' extension to this file.
+# The sample's bicepconfig.json maps the 'portability' extension to this file.
 $QueueTypeExtension = Join-Path $LibraryRecipeRoot 'message-queue/messageQueues.tgz'
 
 # Recipes are laid out as recipes/<capability>/<platform>/<implementation>/<name>.bicep. Recipes in
