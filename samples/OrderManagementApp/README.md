@@ -12,13 +12,24 @@ worked example of each one.
 Users sign in to a browser app and place orders. The **API** publishes each order to a **queue**;
 the **processor** archives the order as JSON in **object storage** and records it in **SQL**.
 
-```
-Browser ──sign in──► Entra ID (Azure) | Keycloak + Active Directory (Azure Local)
-   │
-   ▼
- API ──order──► queue ──► processor ──► object storage (order JSON)
-   ▲                           └──────► SQL (orders table)
-   └──────── "my orders" ◄──────────────┘
+```mermaid
+flowchart LR
+    user(["User in a browser"])
+    idp["Identity provider<br/>Entra ID on Azure<br/>Keycloak + Active Directory on Azure Local"]
+    api["API"]
+    queue[["Queue"]]
+    processor["Processor"]
+    storage[("Object storage<br/>order JSON")]
+    sql[("SQL<br/>orders table")]
+
+    user -- "1. sign in" --> idp
+    idp -- "2. access token" --> user
+    user -- "3. place order" --> api
+    api -- "4. publish" --> queue
+    queue -- "5. deliver" --> processor
+    processor -- "6. archive" --> storage
+    processor -- "7. record" --> sql
+    api -- "my orders" --> sql
 ```
 
 | Dependency | On Azure | On Azure Local |
