@@ -171,11 +171,24 @@ az deployment sub create --location <region> --template-file infra/azure/platfor
 
 | Need | Why | In this sample |
 |---|---|---|
-| AKS enabled by Arc, with Radius installed | runs the app and the Recipes | `az aksarc create`; Radius installed from the local registry |
-| A registry the cluster can pull from without Azure | pods restarted during an outage must find their images, and Radius its Recipes | ACR (Premium) + **ACR connected registry** inside the cluster |
+| AKS enabled by Arc, on a logical network of the Azure Local instance | runs the app and the Recipes | [infra/azurelocal/platform.bicep](./infra/azurelocal/platform.bicep) |
+| A registry the cluster can pull from without Azure | pods restarted during an outage must find their images, and Radius its Recipes | ACR (Premium, from the same template) + **ACR connected registry** inside the cluster ([connected-registry.ps1](./scripts/azurelocal/connected-registry.ps1)) |
+| Radius | deploys the app | installed from the local registry, so it starts offline |
 | An identity provider on site | sign-in and service tokens without Entra | **Keycloak**, federated to Active Directory over LDAPS and trusting the cluster's token issuer |
 | Active Directory | users and groups | the domain the Azure Local instance already uses; Keycloak needs a read-only bind account |
 | Ingress | users reach the app over HTTPS | Arc load balancer + NGINX ingress |
+
+The template creates the Azure resources only: the registry, the logical network and the cluster.
+It needs the Azure Local instance's custom location and virtual switch, and is based on
+[Microsoft's AKS Arc Bicep templates](https://github.com/Azure/aksArc/tree/main/deploymentTemplates/aksarc-bicep-azlocal/Cluster).
+Everything else on the list runs inside the cluster or already exists, so scripts set it up.
+
+```powershell
+az deployment sub create --location <region> --template-file infra/azurelocal/platform.bicep `
+    -p location=<region> registryName=<acr-name> customLocationId=<id> vmSwitchName=<switch> `
+       addressPrefix=<cidr> gateway=<ip> dnsServers='["<ad-dns-ip>"]' ipPoolStart=<ip> ipPoolEnd=<ip> `
+       controlPlaneIp=<ip> kubernetesVersion=<version> sshPublicKey="<key>"
+```
 
 **When the site loses its link to Azure:** running pods, pod restarts, token exchange, directory
 lookups and `kubectl` with the admin kubeconfig keep working. Pushing new images, Azure management of
@@ -420,7 +433,8 @@ The sample uses the library's shared [recipes/](../../recipes/) and
 │   ├── environments/               one per platform; each points at a Recipe Pack
 │   └── recipe-registry-credentials.bicep  Radius credentials for a private Recipe registry
 ├── infra/                       one-time platform prerequisites, not part of the app
-│   └── azure/                      platform.bicep: AKS, ACR, managed identity
+│   ├── azure/                      platform.bicep: AKS, ACR, managed identity
+│   └── azurelocal/                 platform.bicep: AKS Arc cluster, logical network, ACR
 ├── docker/                      Dockerfiles for the API and processor
 ├── docs/                        workload identity explained
 └── scripts/                     optional automation (see above)

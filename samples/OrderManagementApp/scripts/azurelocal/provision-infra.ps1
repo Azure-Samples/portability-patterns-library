@@ -1,16 +1,15 @@
 <#
 .SYNOPSIS
-    Provisions the connected Azure Local platform for the demo: resource group, Premium container
+    Provisions the connected Azure Local platform for the sample: resource group, Premium container
     registry, AKS admin group, AKS logical network and an AKS enabled by Arc cluster.
 
 .DESCRIPTION
-    Targets an Azure Local instance that is connected to public Azure. Everything the application
-    owns lives in one resource group,
-    'bcd-azurelocal' by default, separate from the resource group that holds the Azure Local
-    instance and its custom location.
+    Targets an Azure Local instance that is connected to public Azure. The Azure resources are
+    declared in infra/azurelocal/platform.bicep; this script resolves the values the template needs
+    from the existing Azure Local instance, deploys it, and fetches the cluster credentials.
 
-    CLI driven because AKS Arc is an extension resource on a connected cluster, and
-    'az aksarc create' orchestrates that.
+    Everything the application owns lives in one resource group, 'bcd-azurelocal' by default,
+    separate from the resource group that holds the Azure Local instance and its custom location.
 
     The registry is Premium because scripts/azurelocal/connected-registry.ps1 runs an ACR connected
     registry inside the cluster, so images and Recipes stay pullable when the Azure link drops.
@@ -23,17 +22,23 @@
     in-cluster Keycloak with tokens from the cluster's own ServiceAccount issuer, which needs no
     Azure round trip.
 
+    -WhatIf runs an Azure what-if of the template instead of deploying it, and changes nothing.
+
 .EXAMPLE
     ./scripts/azurelocal/provision-infra.ps1 -RegistryName <acr-name>
+
+.EXAMPLE
+    # Preview what the template would change on an existing site.
+    ./scripts/azurelocal/provision-infra.ps1 -RegistryName <acr-name> -WhatIf
 #>
-[CmdletBinding()]
+[CmdletBinding(SupportsShouldProcess)]
 param(
     [string]$SubscriptionId = '<subscription-id>',
 
     [ValidatePattern('^[a-z0-9]{5,50}$')]
     [string]$RegistryName = '<acr-name>',
 
-    # Holds every resource this demo creates. The Azure Local instance lives elsewhere.
+    # Holds every resource this script creates. The Azure Local instance lives elsewhere.
     [string]$ResourceGroup = 'bcd-azurelocal',
     [string]$Location = 'eastus',
 
@@ -66,6 +71,9 @@ param(
     [string]$KubernetesVersion = '1.33.5',
 
     [string]$AdminGroupName = 'azurelocal-aks-admins',
+
+    # Public key installed on the nodes. Generated when missing.
+    [string]$SshPublicKeyPath = (Join-Path $HOME '.ssh/id_rsa.pub'),
 
     [string]$KubeContext = 'bcd-aksarc'
 )
@@ -101,6 +109,7 @@ function Invoke-AzProbe {
     return $text
 }
 
+$parametersFile = $null
 try {
     if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
         throw "The az CLI is not on PATH."
@@ -136,56 +145,21 @@ try {
             Write-Host "    $provider registered" -ForegroundColor DarkGray
             continue
         }
-        Write-Host "    registering $provider ($state)" -ForegroundColor DarkGray
-        Invoke-Checked "az provider register $provider" {
-            az provider register --namespace $provider --wait --output none
-        }
-    }
-
-    Write-Host "==> Ensuring resource group '$ResourceGroup'" -ForegroundColor Cyan
-    Invoke-Checked 'az group create' {
-        az group create --name $ResourceGroup --location $Location --output none
-    }
-
-    # ------------------------------------------------------------------------------------------
-    # Premium registry with a dedicated data endpoint: both are prerequisites of connected registry.
-    # ------------------------------------------------------------------------------------------
-    Write-Host "==> Ensuring container registry '$RegistryName' (Premium)" -ForegroundColor Cyan
-    $registryLoginServer = Invoke-AzProbe @('acr', 'show', '--name', $RegistryName, '--resource-group', $ResourceGroup, '--query', 'loginServer', '--output', 'tsv')
-    if (-not $registryLoginServer) {
-        $available = Invoke-AzProbe @('acr', 'check-name', '--name', $RegistryName, '--query', 'nameAvailable', '--output', 'tsv')
-        if ($available -ne 'true') {
-            throw "Registry name '$RegistryName' is not available. Pass a different -RegistryName."
-        }
-        Invoke-Checked 'az acr create' {
-            az acr create --name $RegistryName --resource-group $ResourceGroup `
-                --sku Premium --location $Location --output none
-        }
-        $registryLoginServer = az acr show --name $RegistryName --resource-group $ResourceGroup --query loginServer --output tsv
-    }
-    else {
-        $sku = az acr show --name $RegistryName --resource-group $ResourceGroup --query sku.name --output tsv
-        if ($sku -ne 'Premium') {
-            Write-Host "    upgrading SKU $sku -> Premium" -ForegroundColor DarkGray
-            Invoke-Checked 'az acr update --sku' { az acr update --name $RegistryName --sku Premium --output none }
-        }
-    }
-    Write-Host "    $registryLoginServer" -ForegroundColor DarkGray
-
-    $dataEndpoint = az acr show --name $RegistryName --query dataEndpointEnabled --output tsv
-    if ($dataEndpoint -ne 'true') {
-        Write-Host "    enabling dedicated data endpoint" -ForegroundColor DarkGray
-        Invoke-Checked 'az acr update --data-endpoint-enabled' {
-            az acr update --name $RegistryName --data-endpoint-enabled true --output none
+        if ($PSCmdlet.ShouldProcess($provider, 'Register resource provider')) {
+            Write-Host "    registering $provider ($state)" -ForegroundColor DarkGray
+            Invoke-Checked "az provider register $provider" {
+                az provider register --namespace $provider --wait --output none
+            }
         }
     }
 
     # ------------------------------------------------------------------------------------------
     # Entra group granted cluster-admin through AKS Arc. Not needed offline (admin kubeconfig is).
+    # Entra objects are outside ARM, so the group is created here rather than in the template.
     # ------------------------------------------------------------------------------------------
     Write-Host "==> Ensuring Entra group '$AdminGroupName'" -ForegroundColor Cyan
     $adminGroupId = Invoke-AzProbe @('ad', 'group', 'list', '--display-name', $AdminGroupName, '--query', '[0].id', '--output', 'tsv')
-    if (-not $adminGroupId) {
+    if (-not $adminGroupId -and $PSCmdlet.ShouldProcess($AdminGroupName, 'Create Entra group')) {
         $adminGroupId = az ad group create --display-name $AdminGroupName --mail-nickname $AdminGroupName --query id --output tsv
         if ($LASTEXITCODE -ne 0 -or -not $adminGroupId) {
             throw "Could not create Entra group '$AdminGroupName'. Create it (or ask a tenant admin) and re-run."
@@ -194,9 +168,9 @@ try {
     Write-Host "    $adminGroupId" -ForegroundColor DarkGray
 
     $userId = az ad signed-in-user show --query id --output tsv
-    if ($LASTEXITCODE -eq 0 -and $userId) {
+    if ($adminGroupId -and $LASTEXITCODE -eq 0 -and $userId) {
         $isMember = Invoke-AzProbe @('ad', 'group', 'member', 'check', '--group', $adminGroupId, '--member-id', $userId, '--query', 'value', '--output', 'tsv')
-        if ($isMember -ne 'true') {
+        if ($isMember -ne 'true' -and $PSCmdlet.ShouldProcess($AdminGroupName, 'Add the signed-in user')) {
             Write-Host "    adding signed-in user to the group" -ForegroundColor DarkGray
             Invoke-Checked 'az ad group member add' {
                 az ad group member add --group $adminGroupId --member-id $userId --output none
@@ -205,7 +179,7 @@ try {
     }
 
     # ------------------------------------------------------------------------------------------
-    # AKS logical network on the same VM switch as the infrastructure network.
+    # Values the template needs from the existing Azure Local instance.
     # ------------------------------------------------------------------------------------------
     Write-Host "==> Resolving custom location '$CustomLocationName'" -ForegroundColor Cyan
     $customLocationId = Invoke-AzProbe @('customlocation', 'show', '--resource-group', $PlatformResourceGroup, '--name', $CustomLocationName, '--query', 'id', '--output', 'tsv')
@@ -214,67 +188,76 @@ try {
     }
     Write-Host "    $customLocationId" -ForegroundColor DarkGray
 
-    Write-Host "==> Ensuring logical network '$LogicalNetworkName'" -ForegroundColor Cyan
-    $logicalNetworkId = Invoke-AzProbe @('stack-hci-vm', 'network', 'lnet', 'show', '--resource-group', $ResourceGroup, '--name', $LogicalNetworkName, '--query', 'id', '--output', 'tsv')
-    if (-not $logicalNetworkId) {
-        $vmSwitchName = Invoke-AzProbe @('stack-hci-vm', 'network', 'lnet', 'show', '--resource-group', $PlatformResourceGroup, '--name', $InfraLogicalNetworkName, '--query', 'properties.vmSwitchName', '--output', 'tsv')
-        if (-not $vmSwitchName) {
-            throw "Could not read the VM switch name from logical network '$InfraLogicalNetworkName'."
-        }
-        Write-Host "    VM switch: $vmSwitchName" -ForegroundColor DarkGray
-
-        $lnetArgs = @(
-            'stack-hci-vm', 'network', 'lnet', 'create',
-            '--resource-group', $ResourceGroup,
-            '--location', $Location,
-            '--custom-location', $customLocationId,
-            '--name', $LogicalNetworkName,
-            # az.cmd routes arguments through cmd.exe, which chokes on the parentheses in names like
-            # 'ConvergedSwitch(compute_management_storage)' unless they are quoted.
-            '--vm-switch-name', ('"{0}"' -f $vmSwitchName),
-            '--ip-allocation-method', 'Static',
-            '--address-prefixes', $AddressPrefix,
-            '--gateway', $Gateway,
-            '--ip-pool-start', $IpPoolStart,
-            '--ip-pool-end', $IpPoolEnd,
-            '--vlan', $Vlan,
-            '--dns-servers'
-        ) + $DnsServers
-        Invoke-Checked 'az stack-hci-vm network lnet create' { az @lnetArgs --output none }
-        $logicalNetworkId = az stack-hci-vm network lnet show --resource-group $ResourceGroup --name $LogicalNetworkName --query id --output tsv
+    Write-Host "==> Reading the VM switch from logical network '$InfraLogicalNetworkName'" -ForegroundColor Cyan
+    $vmSwitchName = Invoke-AzProbe @('stack-hci-vm', 'network', 'lnet', 'show', '--resource-group', $PlatformResourceGroup, '--name', $InfraLogicalNetworkName, '--query', 'properties.vmSwitchName', '--output', 'tsv')
+    if (-not $vmSwitchName) {
+        throw "Could not read the VM switch name from logical network '$InfraLogicalNetworkName'."
     }
-    Write-Host "    $logicalNetworkId" -ForegroundColor DarkGray
+    Write-Host "    $vmSwitchName" -ForegroundColor DarkGray
 
-    # ------------------------------------------------------------------------------------------
-    # AKS enabled by Arc cluster.
-    # ------------------------------------------------------------------------------------------
-    $existingCluster = Invoke-AzProbe @('aksarc', 'show', '--name', $ClusterName, '--resource-group', $ResourceGroup, '--query', 'properties.provisioningState', '--output', 'tsv')
-    if (-not $existingCluster) {
-        Write-Host "==> Creating AKS Arc cluster '$ClusterName' (this takes 20-40 minutes)" -ForegroundColor Cyan
-        $createArgs = @(
-            'aksarc', 'create',
-            '--name', $ClusterName,
-            '--resource-group', $ResourceGroup,
-            '--location', $Location,
-            '--custom-location', $customLocationId,
-            '--vnet-ids', $logicalNetworkId,
-            '--control-plane-ip', $ControlPlaneIp,
-            '--control-plane-count', $ControlPlaneCount,
-            '--control-plane-vm-size', $ControlPlaneVmSize,
-            '--node-count', $NodeCount,
-            '--node-vm-size', $NodeVmSize,
-            '--kubernetes-version', $KubernetesVersion,
-            '--aad-admin-group-object-ids', $adminGroupId,
-            '--generate-ssh-keys'
-        )
-        Invoke-Checked 'az aksarc create' { az @createArgs --output none }
-    }
-    else {
-        Write-Host "==> Cluster '$ClusterName' already exists ($existingCluster)" -ForegroundColor DarkGray
-        if ($existingCluster -ne 'Succeeded') {
-            throw "Cluster '$ClusterName' is in state '$existingCluster'. Resolve that before continuing."
+    if (-not (Test-Path $SshPublicKeyPath)) {
+        if (-not $SshPublicKeyPath.EndsWith('.pub')) { throw "-SshPublicKeyPath must point to a .pub file." }
+        if ($PSCmdlet.ShouldProcess($SshPublicKeyPath, 'Generate SSH key pair')) {
+            Write-Host "==> Generating SSH key pair $SshPublicKeyPath" -ForegroundColor Cyan
+            New-Item -ItemType Directory -Force -Path (Split-Path $SshPublicKeyPath) | Out-Null
+            Invoke-Checked 'ssh-keygen' { ssh-keygen -t rsa -b 4096 -N '""' -q -f ($SshPublicKeyPath -replace '\.pub$', '') }
         }
     }
+    $sshPublicKey = if (Test-Path $SshPublicKeyPath) { (Get-Content $SshPublicKeyPath -Raw).Trim() } else { '<generated>' }
+
+    # A parameters file keeps az.cmd and cmd.exe away from values such as switch names with
+    # parentheses, and carries the arrays.
+    $parameters = [ordered]@{
+        location           = $Location
+        resourceGroupName  = $ResourceGroup
+        registryName       = $RegistryName
+        customLocationId   = $customLocationId
+        vmSwitchName       = $vmSwitchName
+        logicalNetworkName = $LogicalNetworkName
+        addressPrefix      = $AddressPrefix
+        gateway            = $Gateway
+        dnsServers         = @($DnsServers)
+        ipPoolStart        = $IpPoolStart
+        ipPoolEnd          = $IpPoolEnd
+        vlan               = $Vlan
+        clusterName        = $ClusterName
+        controlPlaneIp     = $ControlPlaneIp
+        controlPlaneCount  = $ControlPlaneCount
+        controlPlaneVmSize = $ControlPlaneVmSize
+        nodeCount          = $NodeCount
+        nodeVmSize         = $NodeVmSize
+        kubernetesVersion  = $KubernetesVersion
+        sshPublicKey       = $sshPublicKey
+        adminGroupObjectIds = @($adminGroupId | Where-Object { $_ })
+    }
+    $parametersDocument = [ordered]@{
+        '$schema'      = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'
+        contentVersion = '1.0.0.0'
+        parameters     = [ordered]@{}
+    }
+    foreach ($key in $parameters.Keys) { $parametersDocument.parameters[$key] = @{ value = $parameters[$key] } }
+    $parametersFile = Join-Path ([IO.Path]::GetTempPath()) "oms-azurelocal-platform-$PID.json"
+    # A temporary input, written even under -WhatIf so the what-if can read it.
+    $parametersDocument | ConvertTo-Json -Depth 10 | Set-Content -Path $parametersFile -Encoding utf8 -WhatIf:$false
+
+    $template = 'infra/azurelocal/platform.bicep'
+    $deploymentName = 'oms-azurelocal-platform'
+
+    if (-not $PSCmdlet.ShouldProcess("$ResourceGroup ($template)", 'Deploy the Azure Local platform')) {
+        Write-Host "==> What-if of $template" -ForegroundColor Cyan
+        Invoke-Checked 'az deployment sub what-if' {
+            az deployment sub what-if --name $deploymentName --location $Location `
+                --template-file $template --parameters "@$parametersFile" --result-format FullResourcePayloads
+        }
+        return
+    }
+
+    Write-Host "==> Deploying $template (a new cluster takes 20-40 minutes)" -ForegroundColor Cyan
+    $outputsJson = az deployment sub create --name $deploymentName --location $Location `
+        --template-file $template --parameters "@$parametersFile" --query properties.outputs --output json
+    if ($LASTEXITCODE -ne 0) { throw 'az deployment sub create failed.' }
+    $outputs = $outputsJson | ConvertFrom-Json
+    $registryLoginServer = $outputs.registryLoginServer.value
 
     Write-Host "==> Fetching admin credentials as context '$KubeContext'" -ForegroundColor Cyan
     Invoke-Checked 'az aksarc get-credentials' {
@@ -301,5 +284,6 @@ try {
     Write-Host "  2. ./scripts/azurelocal/connected-registry.ps1 -RegistryName $RegistryName -KubeContext $KubeContext"
 }
 finally {
+    if ($parametersFile) { Remove-Item $parametersFile -Force -ErrorAction SilentlyContinue -WhatIf:$false }
     Pop-Location
 }
