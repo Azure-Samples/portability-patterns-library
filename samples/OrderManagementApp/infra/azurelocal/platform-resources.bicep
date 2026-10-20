@@ -20,6 +20,9 @@ param nodeVmSize string
 param kubernetesVersion string
 param sshPublicKey string
 param adminGroupObjectIds array
+param loadBalancerName string
+param loadBalancerAddresses string
+param kubernetesRuntimeObjectId string
 param tags object
 
 // Premium with a dedicated data endpoint: both are prerequisites of an ACR connected registry.
@@ -97,9 +100,19 @@ resource connectedCluster 'Microsoft.Kubernetes/connectedClusters@2024-12-01-pre
   }
   properties: {
     agentPublicKeyCertificate: ''
+    distribution: 'aks_workload'
+    infrastructure: 'azure_stack_hci'
     aadProfile: {
       enableAzureRBAC: false
       adminGroupObjectIDs: adminGroupObjectIds
+    }
+    securityProfile: {
+      workloadIdentity: {
+        enabled: false
+      }
+    }
+    oidcIssuerProfile: {
+      enabled: false
     }
   }
 }
@@ -162,6 +175,48 @@ resource provisionedCluster 'Microsoft.HybridContainerService/provisionedCluster
       }
     }
   }
+}
+
+// Arc load balancer: the arcnetworking extension (MetalLB) plus an address range it answers ARP for.
+// The ingress controller's Service takes its address from this range.
+var useLoadBalancer = !empty(loadBalancerAddresses)
+
+resource arcNetworking 'Microsoft.KubernetesConfiguration/extensions@2023-05-01' = if (useLoadBalancer) {
+  name: 'arcnetworking'
+  scope: connectedCluster
+  identity: {
+    type: 'SystemAssigned'
+  }
+  properties: {
+    extensionType: 'microsoft.arcnetworking'
+    autoUpgradeMinorVersion: true
+    releaseTrain: 'Stable'
+    scope: {
+      cluster: {
+        releaseNamespace: 'kube-system'
+      }
+    }
+    configurationSettings: {
+      k8sRuntimeFpaObjectId: kubernetesRuntimeObjectId
+    }
+  }
+  dependsOn: [
+    provisionedCluster
+  ]
+}
+
+resource loadBalancer 'Microsoft.KubernetesRuntime/loadBalancers@2024-03-01' = if (useLoadBalancer) {
+  name: loadBalancerName
+  scope: connectedCluster
+  properties: {
+    addresses: [
+      loadBalancerAddresses
+    ]
+    advertiseMode: 'ARP'
+  }
+  dependsOn: [
+    arcNetworking
+  ]
 }
 
 output registryLoginServer string = registry.properties.loginServer

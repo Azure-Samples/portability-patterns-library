@@ -1,17 +1,17 @@
 <#
 .SYNOPSIS
     Gives applications on the Azure Local cluster an HTTPS address on the site network: an Arc
-    load balancer, an NGINX ingress controller and a TLS certificate from a site CA.
+    NGINX ingress controller on the Arc load balancer, and a TLS certificate from a site CA.
 
 .DESCRIPTION
     Platform layer, like provision-infra.ps1. Applications then only declare ports; the Recipe Pack
     tells the containers Recipe to publish them through this ingress (see
     recipe-packs/azure-local.bicep at the repository root), so deploy/app.bicep is the same as in Azure.
 
-      1. Registers Microsoft.KubernetesRuntime and enables the AKS Arc load balancer (MetalLB,
-         ARP mode) with the address range -Addresses, outside the AKS logical network pool.
-      2. Syncs the ingress-nginx images into the connected registry and installs the controller
-         from there, on the fixed address -IngressIp, so it keeps serving if Azure is unreachable.
+      1. The Arc load balancer (MetalLB, ARP mode) comes from infra/azurelocal/platform.bicep, with
+         its address range outside the AKS logical network pool.
+      2. Installs the ingress-nginx controller from the connected registry, on the fixed address
+         -IngressIp from that range, so it keeps serving if Azure is unreachable.
       3. Issues a TLS certificate for -IngressIp and -HostNames from a site CA kept in the
          cluster, into Secret -TlsSecretName in the application namespace. Browsers need HTTPS:
          MSAL.js only runs in a secure context.
@@ -20,21 +20,16 @@
     whose root domain-joined machines already trust). Machines outside the domain trust it once
     with the command printed at the end. Idempotent.
 
-    Prerequisites: scripts/azurelocal/import-images.ps1 (ingress-nginx images in the cloud registry) and
-    scripts/azurelocal/connected-registry.ps1.
+    Prerequisites: scripts/azurelocal/provision-infra.ps1 (load balancer),
+    scripts/azurelocal/import-images.ps1 (ingress-nginx images in the cloud registry) and
+    scripts/azurelocal/connected-registry.ps1 (which syncs them into the cluster).
 
 .EXAMPLE
     ./scripts/azurelocal/provision-ingress.ps1
 #>
 [CmdletBinding()]
 param(
-    [string]$ResourceGroup = 'bcd-azurelocal',
-    # The Premium ACR the connected registry syncs from; usually set as Common.RegistryName in settings.json.
-    [string]$RegistryName = '<acr-name>',
-    [string]$ClusterName = 'bcd-aksarc',
     [string]$KubeContext = 'bcd-aksarc',
-    [string]$LoadBalancerName = 'bcd-lb',
-    [string]$Addresses = '192.168.44.200-192.168.44.210',
     [string]$IngressIp = '192.168.44.200',
     [string[]]$HostNames = @('orders.azurelocal.lab'),
     [string]$IngressNamespace = 'ingress-nginx',
@@ -84,36 +79,8 @@ data:
 
 try {
     # ------------------------------------------------------------------------------------------
-    # 1. Load balancer
+    # 1. Ingress controller, pulled from the connected registry
     # ------------------------------------------------------------------------------------------
-    Write-Host "==> Arc load balancer '$LoadBalancerName' ($Addresses, ARP)" -ForegroundColor Cyan
-    $state = az provider show --namespace Microsoft.KubernetesRuntime --query registrationState -o tsv
-    if ($state -ne 'Registered') {
-        Invoke-Checked 'az provider register' { az provider register --namespace Microsoft.KubernetesRuntime --wait --only-show-errors }
-    }
-    $clusterId = az connectedk8s show -g $ResourceGroup -n $ClusterName --query id -o tsv
-    if (-not $clusterId) { throw "Connected cluster '$ClusterName' not found in '$ResourceGroup'." }
-
-    $existing = az k8s-runtime load-balancer list --resource-uri $clusterId --query "[?name=='$LoadBalancerName'].name" -o tsv 2>$null
-    if (-not $existing) {
-        Invoke-Checked 'az k8s-runtime load-balancer enable' {
-            az k8s-runtime load-balancer enable --resource-uri $clusterId --only-show-errors -o none
-        }
-        Invoke-Checked 'az k8s-runtime load-balancer create' {
-            az k8s-runtime load-balancer create --load-balancer-name $LoadBalancerName --resource-uri $clusterId `
-                --addresses $Addresses --advertise-mode ARP --only-show-errors -o none
-        }
-    }
-
-    # ------------------------------------------------------------------------------------------
-    # 2. Ingress controller, pulled from the connected registry
-    # ------------------------------------------------------------------------------------------
-    Write-Host "==> Syncing ingress-nginx images to the connected registry" -ForegroundColor Cyan
-    ./scripts/azurelocal/connected-registry.ps1 -KubeContext $KubeContext `
-        -ResourceGroup $ResourceGroup -RegistryName $RegistryName `
-        -Repositories @('ingress-nginx/controller', 'ingress-nginx/kube-webhook-certgen') |
-        Where-Object { $_ -match '^==>' }
-
     Write-Host "==> Installing ingress-nginx $ChartVersion on $IngressIp" -ForegroundColor Cyan
     Invoke-Checked 'helm repo add' { helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx --force-update | Out-Null }
     $values = Join-Path ([IO.Path]::GetTempPath()) "ingress-nginx-$([guid]::NewGuid().ToString('N')).yaml"
@@ -160,7 +127,7 @@ controller:
     if ($assigned -ne $IngressIp) { throw "The ingress controller got address '$assigned', expected $IngressIp." }
 
     # ------------------------------------------------------------------------------------------
-    # 3. Site CA and the application's TLS certificate
+    # 2. Site CA and the application's TLS certificate
     # ------------------------------------------------------------------------------------------
     Write-Host "==> TLS certificate for https://$IngressIp ($($HostNames -join ', '))" -ForegroundColor Cyan
     $caCertPem = Get-SecretData $IngressNamespace $CaSecretName 'tls.crt'

@@ -33,13 +33,16 @@
       "RegistryName": "<acr-name>"
     },
     "Cluster": {
+      "AzureLocalResourceGroup": "<azure-local-resource-group>",
       "CustomLocationName": "<azure-local-custom-location>",
+      "VmSwitchName": "<vm-switch-name>",
       "AddressPrefix": "192.168.44.0/24",
       "Gateway": "192.168.44.1",
       "DnsServers": [ "192.168.44.10" ],
       "IpPoolStart": "192.168.44.121",
       "IpPoolEnd": "192.168.44.180",
-      "ControlPlaneIp": "192.168.44.120"
+      "ControlPlaneIp": "192.168.44.120",
+      "LoadBalancerAddresses": "192.168.44.200-192.168.44.210"
     },
     "Images": {
       "Mode": "Mirror",
@@ -56,7 +59,6 @@
       "AllowInClusterIssuer": true
     },
     "Ingress": {
-      "Addresses": "192.168.44.200-192.168.44.210",
       "IngressIp": "192.168.44.200"
     },
     "Identity": {

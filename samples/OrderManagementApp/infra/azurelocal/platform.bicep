@@ -1,14 +1,16 @@
 // Platform infrastructure for the Order Management sample on Azure Local.
 //
-// Creates the Azure resources the application deployment assumes already exist:
+// Creates the Azure and Entra resources the application deployment assumes already exist:
 //
 //   * Azure Container Registry (Premium, dedicated data endpoint), the source an ACR connected
 //     registry inside the cluster syncs from, so images and Recipes stay pullable offline.
 //   * A logical network for the AKS nodes on the Azure Local instance.
-//   * An AKS enabled by Arc cluster on that logical network.
+//   * An AKS enabled by Arc cluster on that logical network, administered by an Entra group.
+//   * The Arc load balancer (MetalLB, ARP mode) that gives the ingress an address on the site network.
 //
-// Everything else the site needs runs inside the cluster or already exists (the connected registry,
-// Keycloak, ingress, Radius, Active Directory), so it is set up by scripts, not by this template.
+// The ACR connected registry has its own template, connected-registry.bicep. Everything else the
+// site needs runs inside the cluster or already exists (Keycloak, the ingress controller, Radius,
+// Active Directory), so it is set up by scripts.
 //
 // The Azure Local instance and its custom location must already exist; they come from your Azure
 // Local deployment. Based on Microsoft's AKS Arc Bicep templates:
@@ -22,6 +24,8 @@
 
 targetScope = 'subscription'
 
+extension microsoftGraphV1
+
 @description('Azure region of the resource group and resources. Must be a region the Azure Local instance is registered in.')
 param location string
 
@@ -33,11 +37,20 @@ param resourceGroupName string = 'bcd-azurelocal'
 @maxLength(50)
 param registryName string
 
-@description('Resource ID of the custom location created with the Azure Local instance.')
-param customLocationId string
+@description('Resource group holding the Azure Local instance and its custom location.')
+param azureLocalResourceGroup string
 
-@description('Virtual switch on the Azure Local hosts that the AKS nodes attach to, for example ConvergedSwitch(compute_management_storage).')
-param vmSwitchName string
+@description('Name of the custom location created with the Azure Local instance.')
+param customLocationName string
+
+@description('''
+Virtual switch on the Azure Local hosts that the AKS nodes attach to, for example
+ConvergedSwitch(compute_management_storage). Leave empty to copy it from switchSourceLogicalNetworkName.
+''')
+param vmSwitchName string = ''
+
+@description('Existing logical network in azureLocalResourceGroup whose virtual switch the AKS nodes use, when vmSwitchName is empty.')
+param switchSourceLogicalNetworkName string = ''
 
 @description('Name of the logical network for the AKS nodes.')
 param logicalNetworkName string = 'bcd-aks-lnet'
@@ -90,13 +103,60 @@ param kubernetesVersion string
 @description('SSH public key for the nodes, used for troubleshooting and log collection.')
 param sshPublicKey string
 
-@description('Entra group object IDs granted cluster-admin while the site is connected. Offline, use the admin kubeconfig instead.')
-param adminGroupObjectIds array = []
+@description('Entra security group granted cluster-admin while the site is connected. Offline, use the admin kubeconfig instead.')
+param adminGroupName string = 'azurelocal-aks-admins'
 
-@description('Tags applied to every resource.')
+@description('Object IDs added to the admin group, typically the person deploying. Existing members are kept.')
+param adminGroupMemberIds array = []
+
+@description('Name of the Arc load balancer.')
+param loadBalancerName string = 'bcd-lb'
+
+@description('''
+Address range the load balancer hands out on the site network, for example
+192.168.44.200-192.168.44.210. Must be outside the node IP pool. Empty skips the load balancer.
+''')
+param loadBalancerAddresses string = ''
+
+@description('Tags applied to every Azure resource.')
 param tags object = {
   application: 'order-management'
   managedBy: 'radius'
+}
+
+// Values that come from the existing Azure Local instance.
+resource customLocation 'Microsoft.ExtendedLocation/customLocations@2021-08-15' existing = {
+  name: customLocationName
+  scope: resourceGroup(azureLocalResourceGroup)
+}
+
+resource switchSourceLogicalNetwork 'Microsoft.AzureStackHCI/logicalNetworks@2024-01-01' existing = if (empty(vmSwitchName)) {
+  name: switchSourceLogicalNetworkName
+  scope: resourceGroup(azureLocalResourceGroup)
+}
+
+#disable-next-line BCP318
+var effectiveVmSwitchName = empty(vmSwitchName) ? switchSourceLogicalNetwork.properties.vmSwitchName : vmSwitchName
+
+// Entra objects. A group created outside Bicep is adopted by setting its uniqueName once; see
+// https://learn.microsoft.com/graph/templates/bicep/how-to-reference-existing-resources
+resource adminGroup 'Microsoft.Graph/groups@v1.0' = {
+  uniqueName: adminGroupName
+  displayName: adminGroupName
+  description: 'Cluster administrators of the AKS Arc cluster ${clusterName} while the site is connected.'
+  mailEnabled: false
+  mailNickname: adminGroupName
+  securityEnabled: true
+  members: {
+    relationships: adminGroupMemberIds
+    relationshipSemantics: 'append'
+  }
+}
+
+// Microsoft's "Kubernetes Runtime RP" app. The Arc load balancer extension needs its object ID in
+// this tenant to grant it access.
+resource kubernetesRuntimeRp 'Microsoft.Graph/servicePrincipals@v1.0' existing = {
+  appId: '087fca6e-4606-4d41-b3f6-5ebdf75b8b4c'
 }
 
 resource platformResourceGroup 'Microsoft.Resources/resourceGroups@2022-09-01' = {
@@ -111,8 +171,8 @@ module platform 'platform-resources.bicep' = {
   params: {
     location: location
     registryName: registryName
-    customLocationId: customLocationId
-    vmSwitchName: vmSwitchName
+    customLocationId: customLocation.id
+    vmSwitchName: effectiveVmSwitchName
     logicalNetworkName: logicalNetworkName
     addressPrefix: addressPrefix
     gateway: gateway
@@ -128,7 +188,12 @@ module platform 'platform-resources.bicep' = {
     nodeVmSize: nodeVmSize
     kubernetesVersion: kubernetesVersion
     sshPublicKey: sshPublicKey
-    adminGroupObjectIds: adminGroupObjectIds
+    adminGroupObjectIds: [
+      adminGroup.id
+    ]
+    loadBalancerName: loadBalancerName
+    loadBalancerAddresses: loadBalancerAddresses
+    kubernetesRuntimeObjectId: kubernetesRuntimeRp.id
     tags: tags
   }
 }
@@ -142,3 +207,4 @@ output registryLoginServer string = platform.outputs.registryLoginServer
 output registryName string = platform.outputs.registryName
 output clusterName string = platform.outputs.clusterName
 output logicalNetworkId string = platform.outputs.logicalNetworkId
+output adminGroupId string = adminGroup.id

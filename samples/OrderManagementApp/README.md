@@ -156,39 +156,51 @@ app itself is only what's in [deploy/](./deploy).
 | Azure Container Registry for images and Recipes, with AcrPull for the cluster | same template |
 | A user-assigned managed identity with a federated credential for the app's service account | same template |
 | Radius on the cluster, with an Azure credential so Recipes can create Azure resources | `rad install kubernetes --set global.azureWorkloadIdentity.enabled=true`, then `rad credential register azure wi` |
-| Entra app registrations for the API and the browser app | [configure-app-identity.ps1](./scripts/azure/configure-app-identity.ps1) |
+| Entra app registrations for the API and the browser app, with app roles and assignments | [infra/azure/app-identity.bicep](./infra/azure/app-identity.bicep) (Microsoft Graph Bicep) |
 | Ingress with a public HTTPS name | [provision-ingress.ps1](./scripts/azure/provision-ingress.ps1) |
 
-Deploy the template at subscription scope; it needs Owner or User Access Administrator, because it
-assigns roles:
+Deploy both templates at subscription scope. The platform needs Owner or User Access Administrator,
+because it assigns roles; the app registrations need the right to register apps in Entra ID:
 
 ```powershell
 az deployment sub create --location <region> --template-file infra/azure/platform.bicep `
     -p location=<region> registryName=<globally-unique-acr-name>
+az deployment sub create --location <region> --template-file infra/azure/app-identity.bicep `
+    -p spaOrigins='["https://<host>"]' ownerObjectIds='["<your object id>"]'
 ```
 
 ### Azure Local
 
 | Need | Why | In this sample |
 |---|---|---|
-| AKS enabled by Arc, on a logical network of the Azure Local instance | runs the app and the Recipes | [infra/azurelocal/platform.bicep](./infra/azurelocal/platform.bicep) |
-| A registry the cluster can pull from without Azure | pods restarted during an outage must find their images, and Radius its Recipes | ACR (Premium, from the same template) + **ACR connected registry** inside the cluster ([connected-registry.ps1](./scripts/azurelocal/connected-registry.ps1)) |
+| AKS enabled by Arc, on a logical network of the Azure Local instance, with an Entra admin group | runs the app and the Recipes | [infra/azurelocal/platform.bicep](./infra/azurelocal/platform.bicep) |
+| A registry the cluster can pull from without Azure | pods restarted during an outage must find their images, and Radius its Recipes | ACR (Premium, from the same template) + **ACR connected registry** inside the cluster ([infra/azurelocal/connected-registry.bicep](./infra/azurelocal/connected-registry.bicep)) |
 | Radius | deploys the app | installed from the local registry, so it starts offline |
 | An identity provider on site | sign-in and service tokens without Entra | **Keycloak**, federated to Active Directory over LDAPS and trusting the cluster's token issuer |
 | Active Directory | users and groups | the domain the Azure Local instance already uses; Keycloak needs a read-only bind account |
-| Ingress | users reach the app over HTTPS | Arc load balancer + NGINX ingress |
+| Ingress | users reach the app over HTTPS | Arc load balancer (from the platform template) + NGINX ingress ([provision-ingress.ps1](./scripts/azurelocal/provision-ingress.ps1)) |
 
-The template creates the Azure resources only: the registry, the logical network and the cluster.
-It needs the Azure Local instance's custom location and virtual switch, and is based on
-[Microsoft's AKS Arc Bicep templates](https://github.com/Azure/aksArc/tree/main/deploymentTemplates/aksarc-bicep-azlocal/Cluster).
-Everything else on the list runs inside the cluster or already exists, so scripts set it up.
+The two templates create every Azure and Entra resource: the registry, logical network, cluster and
+its admin group, the Arc load balancer, and the connected registry with its tokens. The platform
+template finds the custom location and virtual switch of your Azure Local instance by name, and is
+based on [Microsoft's AKS Arc Bicep templates](https://github.com/Azure/aksArc/tree/main/deploymentTemplates/aksarc-bicep-azlocal/Cluster).
+What's left runs inside the cluster or already exists (Keycloak, the ingress controller, Radius,
+Active Directory), so scripts set it up. So does anything that is an action rather than a resource:
+importing images, and generating token passwords.
 
 ```powershell
 az deployment sub create --location <region> --template-file infra/azurelocal/platform.bicep `
-    -p location=<region> registryName=<acr-name> customLocationId=<id> vmSwitchName=<switch> `
-       addressPrefix=<cidr> gateway=<ip> dnsServers='["<ad-dns-ip>"]' ipPoolStart=<ip> ipPoolEnd=<ip> `
-       controlPlaneIp=<ip> kubernetesVersion=<version> sshPublicKey="<key>"
+    -p location=<region> registryName=<acr-name> azureLocalResourceGroup=<rg> customLocationName=<name> `
+       vmSwitchName=<switch> addressPrefix=<cidr> gateway=<ip> dnsServers='["<ad-dns-ip>"]' `
+       ipPoolStart=<ip> ipPoolEnd=<ip> controlPlaneIp=<ip> kubernetesVersion=<version> `
+       sshPublicKey="<key>" loadBalancerAddresses=<first-ip>-<last-ip>
 ```
+
+[connected-registry.bicep](./infra/azurelocal/connected-registry.bicep) can't be deployed on its
+own in one pass: its Arc extension needs a sync password, which only exists once the connected
+registry does. [connected-registry.ps1](./scripts/azurelocal/connected-registry.ps1) deploys it,
+generates the password, deploys it again with the connection string, and writes the cluster's pull
+secrets.
 
 **When the site loses its link to Azure:** running pods, pod restarts, token exchange, directory
 lookups and `kubectl` with the admin kubeconfig keep working. Pushing new images, Azure management of
@@ -434,8 +446,9 @@ The sample uses the library's shared [recipes/](../../recipes/) and
 │   └── recipe-registry-credentials.bicep  Radius credentials for a private Recipe registry
 ├── infra/                       one-time platform prerequisites, not part of the app
 │   ├── azure/                      platform.bicep: AKS, ACR, managed identity
-│   └── azurelocal/                 platform.bicep: AKS Arc cluster, logical network, ACR
-├── docker/                      Dockerfiles for the API and processor
+│   │                               app-identity.bicep: Entra app registrations
+│   └── azurelocal/                 platform.bicep: AKS Arc, logical network, ACR, load balancer
+│                                   connected-registry.bicep: ACR connected registry├── docker/                      Dockerfiles for the API and processor
 ├── docs/                        workload identity explained
 └── scripts/                     optional automation (see above)
 ```

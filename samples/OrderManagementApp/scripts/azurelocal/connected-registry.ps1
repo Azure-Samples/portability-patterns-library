@@ -11,17 +11,21 @@
     control plane pull from that address, so a pod restarted while Azure is unreachable still finds
     its image.
 
-    This script:
-      1. Creates a client scope map and token with read access to the synced repositories.
-      2. Creates the connected registry (or adds missing repositories to an existing one).
-      3. Installs the Arc extension, which brings cert-manager and distributes the registry's CA
-         to every node so kubelet trusts it.
-      4. Stores the client token as image pull secret '<PullSecretName>' in every namespace that
+    The Azure resources are declared in infra/azurelocal/connected-registry.bicep: the client and sync
+    scope maps and tokens, the connected registry and its Arc extension. This script:
+      1. Deploys the template. Tokens are only created when missing: redeploying one would delete
+         its passwords.
+      2. On first install, generates the sync password and deploys the template again with the
+         connection string, which installs the Arc extension. The extension brings cert-manager and
+         distributes the registry's CA to every node so kubelet trusts it.
+      3. Stores the client token as image pull secret '<PullSecretName>' in every namespace that
          pulls from the registry, and the registry CA as ConfigMap '<CaConfigMapName>' in the
          application namespace for deploy.ps1 to hand to the Radius control plane.
 
-    Idempotent. Token passwords and the sync connection string are only regenerated when they are
-    not already in place, since regenerating them breaks whatever is using the old value.
+    -Repositories is the complete list the connected registry syncs: repositories left out are
+    removed from its scope.
+    Idempotent. Token passwords and the sync connection string are only generated when they are not
+    already in place, since regenerating them breaks whatever is using the old value.
 
 .EXAMPLE
     ./scripts/azurelocal/connected-registry.ps1 -RegistryName <acr-name> -KubeContext bcd-aksarc
@@ -63,6 +67,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 function Invoke-Checked {
     param(
@@ -117,127 +122,79 @@ try {
     $registryLoginServer = az acr show --name $RegistryName --resource-group $ResourceGroup --query loginServer --output tsv
     if ($LASTEXITCODE -ne 0 -or -not $registryLoginServer) { throw "Registry '$RegistryName' not found in '$ResourceGroup'." }
 
-    # ------------------------------------------------------------------------------------------
-    # Client token: what kubelet and Radius authenticate to the connected registry with.
-    # ------------------------------------------------------------------------------------------
-    Write-Host "==> Ensuring client scope map and token '$ClientTokenName'" -ForegroundColor Cyan
-    $repositoryArgs = @()
-    foreach ($repository in $Repositories) {
-        $repositoryArgs += @('--repository', $repository, 'content/read', 'metadata/read')
-    }
+    # Use the cluster's default StorageClass for the connected registry volume.
+    $storageClass = kubectl get storageclass --context $KubeContext -o json | ConvertFrom-Json |
+        Select-Object -ExpandProperty items |
+        Where-Object { $_.metadata.annotations.'storageclass.kubernetes.io/is-default-class' -eq 'true' } |
+        Select-Object -First 1 -ExpandProperty metadata | Select-Object -ExpandProperty name
+    if (-not $storageClass) { throw 'The cluster has no default StorageClass for the connected registry volume.' }
 
-    $existingScopeMap = Invoke-AzProbe @('acr', 'scope-map', 'show', '--name', $ClientTokenName, '--registry', $RegistryName, '--query', 'actions', '--output', 'json')
-    if (-not $existingScopeMap) {
-        Invoke-Checked 'az acr scope-map create' {
-            az acr scope-map create --name $ClientTokenName --registry $RegistryName @repositoryArgs `
-                --description 'Read access for in-cluster pulls from the Azure Local connected registry' --output none
+    $template = Join-Path $repoRoot 'infra/azurelocal/connected-registry.bicep'
+    $tokenExists = { param($name) [bool](Invoke-AzProbe @('acr', 'token', 'show', '--name', $name, '--registry', $RegistryName, '--query', 'name', '--output', 'tsv')) }
+
+    # Parameters go through a file: it carries the repository list and, on first install, the
+    # connection string, which must not appear on a command line.
+    function Deploy-ConnectedRegistry([string]$ConnectionString) {
+        $parameters = [ordered]@{
+            registryName          = $RegistryName
+            connectedRegistryName = $ConnectedRegistryName
+            clusterName           = $ClusterName
+            repositories          = @($Repositories)
+            clientTokenName       = $ClientTokenName
+            createClientToken     = -not (& $tokenExists $ClientTokenName)
+            createSyncToken       = -not (& $tokenExists $ConnectedRegistryName)
+            syncConnectionString  = $ConnectionString
+            extensionName         = $ExtensionName
+            serviceClusterIp      = $ServiceClusterIp
+            storageClassName      = $storageClass
+            storageRequest        = $StorageRequest
         }
-    }
-    else {
-        $actions = @($existingScopeMap | ConvertFrom-Json)
-        $missing = @($Repositories | Where-Object { $actions -notcontains "repositories/$_/content/read" })
-        if ($missing.Count -gt 0) {
-            $addArgs = @()
-            foreach ($repository in $missing) { $addArgs += @('--add-repository', $repository, 'content/read', 'metadata/read') }
-            Write-Host "    adding $($missing.Count) repositories to the scope map" -ForegroundColor DarkGray
-            Invoke-Checked 'az acr scope-map update' {
-                az acr scope-map update --name $ClientTokenName --registry $RegistryName @addArgs --output none
+        $document = [ordered]@{
+            '$schema'      = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'
+            contentVersion = '1.0.0.0'
+            parameters     = [ordered]@{}
+        }
+        foreach ($key in $parameters.Keys) { $document.parameters[$key] = @{ value = $parameters[$key] } }
+        $file = Join-Path ([System.IO.Path]::GetTempPath()) "oms-connected-registry-$([guid]::NewGuid().ToString('N')).json"
+        try {
+            [System.IO.File]::WriteAllText($file, ($document | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
+            Invoke-Checked 'az deployment group create' {
+                az deployment group create --resource-group $ResourceGroup --name 'oms-connected-registry' `
+                    --template-file $template --parameters "@$file" --output none
             }
         }
+        finally { Remove-Item $file -Force -ErrorAction SilentlyContinue }
     }
 
-    $existingToken = Invoke-AzProbe @('acr', 'token', 'show', '--name', $ClientTokenName, '--registry', $RegistryName, '--query', 'name', '--output', 'tsv')
-    if (-not $existingToken) {
-        # --no-passwords: a password is generated below only if the cluster does not already hold one.
-        Invoke-Checked 'az acr token create' {
-            az acr token create --name $ClientTokenName --registry $RegistryName --scope-map $ClientTokenName --no-passwords --output none
-        }
-    }
+    Write-Host "==> Deploying the connected registry '$ConnectedRegistryName' ($($Repositories.Count) repositories)" -ForegroundColor Cyan
+    Deploy-ConnectedRegistry ''
 
     # ------------------------------------------------------------------------------------------
-    # Connected registry resource in Azure.
-    # ------------------------------------------------------------------------------------------
-    Write-Host "==> Ensuring connected registry '$ConnectedRegistryName' (ReadOnly)" -ForegroundColor Cyan
-    $connectedRegistry = Invoke-AzProbe @('acr', 'connected-registry', 'show', '--name', $ConnectedRegistryName, '--registry', $RegistryName, '--output', 'json')
-    if (-not $connectedRegistry) {
-        # No --sync-schedule: the connected registry then syncs continuously while connected.
-        Invoke-Checked 'az acr connected-registry create' {
-            az acr connected-registry create --name $ConnectedRegistryName --registry $RegistryName `
-                --mode ReadOnly --repository @Repositories --client-tokens $ClientTokenName --yes --output none
-        }
-    }
-    else {
-        $connectedRegistryObject = $connectedRegistry | ConvertFrom-Json
-        # 'az acr token/scope-map show' accept no --ids, so the names come from the resource IDs.
-        $syncTokenName = ($connectedRegistryObject.parent.syncProperties.tokenId -split '/')[-1]
-        $syncScopeMapId = az acr token show --name $syncTokenName --registry $RegistryName --query scopeMapId --output tsv
-        $syncActions = @(az acr scope-map show --name ($syncScopeMapId -split '/')[-1] --registry $RegistryName --query actions --output json | ConvertFrom-Json)
-        $missing = @($Repositories | Where-Object { $syncActions -notcontains "repositories/$_/content/read" })
-        if ($missing.Count -gt 0) {
-            Write-Host "    adding $($missing.Count) repositories to the sync scope" -ForegroundColor DarkGray
-            Invoke-Checked 'az acr connected-registry repo' {
-                az acr connected-registry repo --name $ConnectedRegistryName --registry $RegistryName --add @missing --output none
-            }
-        }
-
-        $clientTokenIds = @($connectedRegistryObject.clientTokenIds)
-        if (-not ($clientTokenIds | Where-Object { $_ -like "*/tokens/$ClientTokenName" })) {
-            Invoke-Checked 'az acr connected-registry update --add-client-tokens' {
-                az acr connected-registry update --name $ConnectedRegistryName --registry $RegistryName `
-                    --add-client-tokens $ClientTokenName --output none
-            }
-        }
-    }
-
-    # ------------------------------------------------------------------------------------------
-    # Arc extension. The sync token password is only regenerated on first install: doing it again
-    # would disconnect a running instance until the extension is updated with the new value.
+    # Arc extension. The sync password is only generated on first install: doing it again would
+    # disconnect a running instance until the extension is updated with the new value.
     # ------------------------------------------------------------------------------------------
     Write-Host "==> Ensuring Arc extension '$ExtensionName' on '$ClusterName'" -ForegroundColor Cyan
-    $extensionState = Invoke-AzProbe @('k8s-extension', 'show', '--name', $ExtensionName, '--cluster-name', $ClusterName,
-        '--resource-group', $ResourceGroup, '--cluster-type', 'connectedClusters', '--query', 'provisioningState', '--output', 'tsv')
+    $clusterId = "/subscriptions/$(az account show --query id -o tsv)/resourceGroups/$ResourceGroup/providers/Microsoft.Kubernetes/connectedClusters/$ClusterName"
+    $extensionUrl = "https://management.azure.com$clusterId/providers/Microsoft.KubernetesConfiguration/extensions/${ExtensionName}?api-version=2023-05-01"
+    $extensionState = Invoke-AzProbe @('rest', '--method', 'get', '--url', $extensionUrl, '--query', 'properties.provisioningState', '--output', 'tsv')
 
     if ($extensionState -ne 'Succeeded') {
         if ($extensionState) {
             Write-Host "    existing extension is '$extensionState'; reinstalling" -ForegroundColor Yellow
-            Invoke-Checked 'az k8s-extension delete' {
-                az k8s-extension delete --name $ExtensionName --cluster-name $ClusterName --resource-group $ResourceGroup `
-                    --cluster-type connectedClusters --yes --output none
-            }
+            Invoke-Checked 'delete Arc extension' { az rest --method delete --url $extensionUrl --output none }
+            do { Start-Sleep -Seconds 15 } while (Invoke-AzProbe @('rest', '--method', 'get', '--url', $extensionUrl, '--query', 'name', '--output', 'tsv'))
         }
 
         $connectionString = az acr connected-registry get-settings --name $ConnectedRegistryName --registry $RegistryName `
             --parent-protocol https --generate-password 1 --query ACR_REGISTRY_CONNECTION_STRING --output tsv --yes
         if ($LASTEXITCODE -ne 0 -or -not $connectionString) { throw 'Could not generate the connected registry connection string.' }
-
-        $protectedFile = Join-Path ([System.IO.Path]::GetTempPath()) "bcd-cr-protected-$([guid]::NewGuid().ToString('N')).json"
-        $temporaryFiles += $protectedFile
-        [System.IO.File]::WriteAllText($protectedFile, (@{ connectionString = $connectionString.Trim() } | ConvertTo-Json),
-            [System.Text.UTF8Encoding]::new($false))
+        Write-Host "    installing (storage class $storageClass, ClusterIP $ServiceClusterIp)" -ForegroundColor DarkGray
+        Deploy-ConnectedRegistry $connectionString.Trim()
         $connectionString = $null
-
-        # Use the cluster's default StorageClass rather than guessing its name.
-        $storageClass = kubectl get storageclass --context $KubeContext -o json | ConvertFrom-Json |
-            Select-Object -ExpandProperty items |
-            Where-Object { $_.metadata.annotations.'storageclass.kubernetes.io/is-default-class' -eq 'true' } |
-            Select-Object -First 1 -ExpandProperty metadata | Select-Object -ExpandProperty name
-        if (-not $storageClass) { throw 'The cluster has no default StorageClass for the connected registry volume.' }
-        Write-Host "    storage class: $storageClass, ClusterIP: $ServiceClusterIp" -ForegroundColor DarkGray
-
-        Invoke-Checked 'az k8s-extension create' {
-            az k8s-extension create --name $ExtensionName --cluster-name $ClusterName --resource-group $ResourceGroup `
-                --cluster-type connectedClusters --extension-type Microsoft.ContainerRegistry.ConnectedRegistry `
-                --config "service.clusterIP=$ServiceClusterIp" `
-                --config "pvc.storageClassName=$storageClass" `
-                --config "pvc.storageRequest=$StorageRequest" `
-                --config-protected-file $protectedFile `
-                --auto-upgrade-minor-version true --output none
-        }
     }
     else {
         Write-Host "    already installed" -ForegroundColor DarkGray
     }
-
     Write-Host "==> Waiting for the connected registry to come online" -ForegroundColor Cyan
     $deadline = (Get-Date).AddMinutes(15)
     do {

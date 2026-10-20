@@ -4,27 +4,17 @@
     scripts/azurelocal/configure-app-identity.ps1, producing the same names and claims.
 
 .DESCRIPTION
-    Creates or updates, through Microsoft Graph:
+    The registrations are declared in infra/azure/app-identity.bicep (Microsoft Graph Bicep):
 
-      oms-api   API app registration: identifier URI api://<appId>, delegated scope
-                       'access_as_user', app roles Orders.Read and Orders.Create, v2 tokens
-      oms-spa   SPA app registration: redirect URIs -SpaOrigins, permission to the API scope
-      assignments      Orders.Create (and Orders.Read) for the signed-in user, plus any groups in
-                       -ReaderGroupIds / -WriterGroupIds
+      oms-api      API app registration: identifier URI api://<appId>, delegated scope
+                   'access_as_user', app roles Orders.Read and Orders.Create, v2 tokens
+      oms-spa      SPA app registration: redirect URIs -SpaOrigins, permission to the API scope
+      assignments  Orders.Create and Orders.Read for the signed-in user, plus any groups in
+                   -ReaderGroupIds / -WriterGroupIds
 
-    Idempotent. App registrations are directory objects, not Azure resources, so they cannot live in
-    a resource group or be created by a Radius Recipe without granting the Radius identity Graph
-    permissions; this is the one-time platform step that does it instead.
-
-    Security baseline applied to both registrations on every run:
-      * single tenant (AzureADMyOrg), optional service management reference, purpose notes, the
-        signed-in user as owner
-      * no credentials at all: the SPA is a public client using auth code + PKCE, the API only
-        validates tokens
-      * implicit grant off, public-client fallback off, HTTPS redirect URIs only, no wildcards
-      * identifier URI api://<appId>, v2 access tokens
-      * app instance property lock, so no other tenant can add credentials to the service principals
-      * user assignment required on the API: only users or groups granted an app role get tokens
+    This script checks the inputs, adopts registrations created before (by setting their
+    uniqueName once and keeping their scope and role IDs, which Entra won't let change), and
+    deploys the template. Idempotent.
 
 .PARAMETER ServiceManagementReference
     Some tenants require new app registrations to reference a service record. Supply it if creation
@@ -45,10 +35,13 @@ param(
     [string[]]$WriterGroupIds = @(),
     [switch]$SkipSignedInUserAssignment,
     [string]$ServiceManagementReference,
-    [string]$Notes = 'Order Management sample: one app definition deployed to Azure and Azure Local. https://github.com/Azure-Samples/portability-patterns-library/tree/main/samples/OrderManagementApp'
+
+    # Region recorded for the deployment; the registrations themselves are tenant-wide.
+    [string]$Location = 'eastus2'
 )
 
 $ErrorActionPreference = 'Stop'
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $graph = 'https://graph.microsoft.com/v1.0'
 
 # HTTPS only. Plain http is allowed for localhost alone, as Entra itself permits.
@@ -59,161 +52,86 @@ foreach ($origin in $SpaOrigins) {
     }
 }
 
-function Invoke-Graph {
-    param([string]$Method, [string]$Path, $Body)
-
-    $arguments = @('rest', '--method', $Method, '--url', "$graph$Path", '--headers', 'Content-Type=application/json', '--only-show-errors')
-    $bodyFile = $null
-    if ($null -ne $Body) {
-        # Passed through a file: inline JSON does not survive az.cmd's argument parsing on Windows.
-        $bodyFile = New-TemporaryFile
-        [IO.File]::WriteAllText($bodyFile, (ConvertTo-Json -InputObject $Body -Depth 10), [Text.UTF8Encoding]::new($false))
-        $arguments += @('--body', "@$bodyFile")
-    }
-    try {
-        $output = az @arguments
-        if ($LASTEXITCODE -ne 0) { throw "Graph $Method $Path failed." }
-        if ($output) { return ($output | Out-String | ConvertFrom-Json) }
-    }
-    finally {
-        if ($bodyFile) { Remove-Item $bodyFile -ErrorAction SilentlyContinue }
-    }
-}
-
+# Query parameters go through --url-parameters: az.cmd hands the URL to cmd.exe, which splits it at '&'.
 function Get-Application([string]$DisplayName) {
-    $filter = [uri]::EscapeDataString("displayName eq '$DisplayName'")
-    @((Invoke-Graph GET "/applications?`$filter=$filter").value) | Select-Object -First 1
+    $apps = az rest --method get --url "$graph/applications" `
+        --url-parameters "`$filter=displayName eq '$DisplayName'" '$select=id,uniqueName,displayName,api,appRoles,passwordCredentials,keyCredentials' `
+        --query value --output json | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0) { throw "Looking up application '$DisplayName' failed." }
+    @($apps) | Select-Object -First 1
 }
 
-function New-Application([string]$DisplayName) {
-    $body = @{ displayName = $DisplayName; signInAudience = 'AzureADMyOrg' }
-    if ($ServiceManagementReference) { $body.serviceManagementReference = $ServiceManagementReference }
-    Invoke-Graph POST '/applications' $body
-}
+$temporaryFiles = @()
+try {
+    $me = az ad signed-in-user show --query id --output tsv
+    if ($LASTEXITCODE -ne 0 -or -not $me) { throw 'Sign in with az login as a user first.' }
 
-# Re-applied on every run so drift (a portal edit, an older registration) is corrected.
-function Set-SfiBaseline($Application) {
-    $body = @{
-        signInAudience                    = 'AzureADMyOrg'
-        notes                             = $Notes
-        isFallbackPublicClient            = $false
-        web                               = @{ implicitGrantSettings = @{ enableAccessTokenIssuance = $false; enableIdTokenIssuance = $false } }
-        servicePrincipalLockConfiguration = @{ isEnabled = $true; allProperties = $true }
+    $ids = @{}
+    foreach ($name in $ApiAppName, $SpaAppName) {
+        $app = Get-Application $name
+        if (-not $app) { continue }
+
+        if (@($app.passwordCredentials).Count -or @($app.keyCredentials).Count) {
+            throw "'$name' holds secrets or certificates; this app needs none. Remove them first."
+        }
+
+        # The template finds a registration by its uniqueName, which can be set once and never changed.
+        if (-not $app.uniqueName) {
+            Write-Host "==> Adopting existing app registration '$name'" -ForegroundColor Cyan
+            $body = New-TemporaryFile; $temporaryFiles += $body
+            Set-Content -Path $body -Value (@{ uniqueName = $name } | ConvertTo-Json -Compress) -Encoding ascii
+            az rest --method patch --url "$graph/applications/$($app.id)" --headers 'Content-Type=application/json' --body "@$body" --output none
+            if ($LASTEXITCODE -ne 0) { throw "Setting uniqueName on '$name' failed." }
+        }
+
+        if ($name -eq $ApiAppName) {
+            $scope = @($app.api.oauth2PermissionScopes | Where-Object value -eq $ApiScopeName) | Select-Object -First 1
+            if ($scope) { $ids.scopeId = $scope.id }
+            $read = @($app.appRoles | Where-Object value -eq 'Orders.Read') | Select-Object -First 1
+            if ($read) { $ids.readRoleId = $read.id }
+            $create = @($app.appRoles | Where-Object value -eq 'Orders.Create') | Select-Object -First 1
+            if ($create) { $ids.createRoleId = $create.id }
+        }
     }
-    if ($ServiceManagementReference) { $body.serviceManagementReference = $ServiceManagementReference }
-    Invoke-Graph PATCH "/applications/$($Application.id)" $body | Out-Null
 
-    $credentials = Invoke-Graph GET "/applications/$($Application.id)?`$select=passwordCredentials,keyCredentials"
-    if (@($credentials.passwordCredentials).Count -or @($credentials.keyCredentials).Count) {
-        throw "'$($Application.displayName)' holds secrets or certificates; this app needs none. Remove them first."
+    $assignments = @()
+    if (-not $SkipSignedInUserAssignment) {
+        $assignments += @{ principalId = $me; role = 'Orders.Read' }, @{ principalId = $me; role = 'Orders.Create' }
     }
+    $assignments += @($ReaderGroupIds | ForEach-Object { @{ principalId = $_; role = 'Orders.Read' } })
+    $assignments += @($WriterGroupIds | ForEach-Object { @{ principalId = $_; role = 'Orders.Create' } })
 
-    $owners = @((Invoke-Graph GET "/applications/$($Application.id)/owners?`$select=id").value.id)
-    if ($owners -notcontains $script:me.id) {
-        Invoke-Graph POST "/applications/$($Application.id)/owners/`$ref" @{ '@odata.id' = "$graph/directoryObjects/$($script:me.id)" } | Out-Null
+    $parameters = [ordered]@{
+        apiAppName                 = $ApiAppName
+        spaAppName                 = $SpaAppName
+        apiScopeName               = $ApiScopeName
+        spaOrigins                 = @($SpaOrigins)
+        ownerObjectIds             = @($me)
+        roleAssignments            = @($assignments)
+        serviceManagementReference = [string]$ServiceManagementReference
     }
-}
-
-function Get-ServicePrincipal([string]$AppId) {
-    $filter = [uri]::EscapeDataString("appId eq '$AppId'")
-    $sp = @((Invoke-Graph GET "/servicePrincipals?`$filter=$filter").value) | Select-Object -First 1
-    if (-not $sp) { $sp = Invoke-Graph POST '/servicePrincipals' @{ appId = $AppId } }
-    return $sp
-}
-
-# Stable IDs keep re-runs from replacing the scope and roles, which would break existing assignments.
-function Get-StableId([string]$Seed) {
-    $hash = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($Seed))
-    [guid]::new([byte[]]$hash[0..15]).ToString()
-}
-
-$tenantId = az account show --query tenantId -o tsv
-$script:me = Invoke-Graph GET '/me?$select=id,userPrincipalName'
-Write-Host "==> Tenant $tenantId (owner $($script:me.userPrincipalName))" -ForegroundColor Cyan
-
-Write-Host "==> API app registration '$ApiAppName'" -ForegroundColor Cyan
-$api = Get-Application $ApiAppName
-if (-not $api) { $api = New-Application $ApiAppName }
-Set-SfiBaseline $api
-
-$scopeId = Get-StableId "$($api.appId)/scope/$ApiScopeName"
-$roles = @(
-    @{ value = 'Orders.Read'; displayName = 'Read orders'; description = 'View own orders' }
-    @{ value = 'Orders.Create'; displayName = 'Create orders'; description = 'Place orders' }
-) | ForEach-Object {
-    @{
-        id                 = Get-StableId "$($api.appId)/role/$($_.value)"
-        value              = $_.value
-        displayName        = $_.displayName
-        description        = $_.description
-        allowedMemberTypes = @('User')
-        isEnabled          = $true
+    foreach ($key in $ids.Keys) { $parameters[$key] = $ids[$key] }
+    $document = [ordered]@{
+        '$schema'      = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'
+        contentVersion = '1.0.0.0'
+        parameters     = [ordered]@{}
     }
+    foreach ($key in $parameters.Keys) { $document.parameters[$key] = @{ value = $parameters[$key] } }
+    $parametersFile = New-TemporaryFile; $temporaryFiles += $parametersFile
+    [IO.File]::WriteAllText($parametersFile, ($document | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
+
+    Write-Host "==> Deploying the app registrations '$ApiAppName' and '$SpaAppName' ($($SpaOrigins -join ', '))" -ForegroundColor Cyan
+    $outputsJson = az deployment sub create --name "oms-app-identity-$ApiAppName" --location $Location `
+        --template-file (Join-Path $repoRoot 'infra/azure/app-identity.bicep') --parameters "@$parametersFile" `
+        --query properties.outputs --output json
+    if ($LASTEXITCODE -ne 0) { throw 'az deployment sub create failed.' }
+    $outputs = $outputsJson | ConvertFrom-Json
+
+    Write-Host "`nAuthority     : https://login.microsoftonline.com/$($outputs.tenantId.value)" -ForegroundColor Green
+    Write-Host "API appId     : $($outputs.apiAppId.value)"
+    Write-Host "SPA appId     : $($outputs.spaAppId.value)"
+    Write-Host "API scope     : $($outputs.apiScope.value)"
 }
-
-# A scope must exist before anything can be pre-authorized for it, so the API is updated in two passes.
-Invoke-Graph PATCH "/applications/$($api.id)" @{
-    identifierUris = @("api://$($api.appId)")
-    appRoles       = $roles
-    api            = @{
-        requestedAccessTokenVersion = 2
-        oauth2PermissionScopes      = @(@{
-                id                      = $scopeId
-                value                   = $ApiScopeName
-                type                    = 'User'
-                isEnabled               = $true
-                adminConsentDisplayName = 'Access the orders API'
-                adminConsentDescription = 'Lets the app call the orders API as the signed-in user.'
-                userConsentDisplayName  = 'Access the orders API'
-                userConsentDescription  = 'Lets the app call the orders API on your behalf.'
-            })
-    }
-} | Out-Null
-$apiSp = Get-ServicePrincipal $api.appId
-# Only users or groups holding an app role can obtain tokens for the API.
-Invoke-Graph PATCH "/servicePrincipals/$($apiSp.id)" @{ appRoleAssignmentRequired = $true; notes = $Notes } | Out-Null
-Write-Host "    appId $($api.appId), scope api://$($api.appId)/$ApiScopeName" -ForegroundColor DarkGray
-
-Write-Host "==> SPA app registration '$SpaAppName' ($($SpaOrigins -join ', '))" -ForegroundColor Cyan
-$spa = Get-Application $SpaAppName
-if (-not $spa) { $spa = New-Application $SpaAppName }
-Set-SfiBaseline $spa
-Invoke-Graph PATCH "/applications/$($spa.id)" @{
-    spa                    = @{ redirectUris = @($SpaOrigins | ForEach-Object { "$_/" }) }
-    requiredResourceAccess = @(@{
-            resourceAppId  = $api.appId
-            resourceAccess = @(@{ id = $scopeId; type = 'Scope' })
-        })
-} | Out-Null
-Get-ServicePrincipal $spa.appId | Out-Null
-Write-Host "    appId $($spa.appId)" -ForegroundColor DarkGray
-
-# Pre-authorizing the SPA spares users a consent prompt, as an admin-consented Entra app would.
-$preAuthorized = @(@{ appId = $spa.appId; delegatedPermissionIds = @($scopeId) })
-Invoke-Graph PATCH "/applications/$($api.id)" @{
-    api = @{ preAuthorizedApplications = $preAuthorized }
-} | Out-Null
-
-Write-Host "==> App role assignments" -ForegroundColor Cyan
-$existing = @((Invoke-Graph GET "/servicePrincipals/$($apiSp.id)/appRoleAssignedTo").value)
-function Grant-Role([string]$PrincipalId, [string]$RoleValue, [string]$Label) {
-    $roleId = ($roles | Where-Object value -eq $RoleValue).id
-    if (-not ($existing | Where-Object { $_.principalId -eq $PrincipalId -and $_.appRoleId -eq $roleId })) {
-        Invoke-Graph POST "/servicePrincipals/$($apiSp.id)/appRoleAssignedTo" @{
-            principalId = $PrincipalId; resourceId = $apiSp.id; appRoleId = $roleId
-        } | Out-Null
-    }
-    Write-Host "    $Label -> $RoleValue" -ForegroundColor DarkGray
+finally {
+    foreach ($file in $temporaryFiles) { Remove-Item $file -ErrorAction SilentlyContinue }
 }
-
-if (-not $SkipSignedInUserAssignment) {
-    Grant-Role $script:me.id 'Orders.Read' $script:me.userPrincipalName
-    Grant-Role $script:me.id 'Orders.Create' $script:me.userPrincipalName
-}
-foreach ($group in $ReaderGroupIds) { Grant-Role $group 'Orders.Read' "group $group" }
-foreach ($group in $WriterGroupIds) { Grant-Role $group 'Orders.Create' "group $group" }
-
-Write-Host "`nAuthority     : https://login.microsoftonline.com/$tenantId" -ForegroundColor Green
-Write-Host "API appId     : $($api.appId)"
-Write-Host "SPA appId     : $($spa.appId)"
-Write-Host "API scope     : api://$($api.appId)/$ApiScopeName"
