@@ -46,28 +46,28 @@ the site is cut off from Azure.
 
 ## Portability patterns in this sample
 
-How the sample applies each portability pattern on each platform. **Same on both** is what doesn't
-change between them: that part is the portable contract.
+How the sample applies each portability pattern on each platform. **Portable contract** is what the
+app and its definitions rely on, which stays the same while the platform underneath changes.
 
 <table>
-<thead><tr><th>Pattern</th><th>Aspect</th><th>Azure</th><th>Azure Local</th><th>Same on both</th></tr></thead>
+<thead><tr><th>Pattern</th><th>Aspect</th><th>Azure</th><th>Azure Local</th><th>Portable contract</th></tr></thead>
 <tbody>
 <tr><td rowspan="2"><b>Separate application intent from environment</b></td><td>Deployment</td><td><a href="../../recipe-packs/azure.bicep">azure.bicep</a> Recipe Pack maps each type to an Azure service</td><td><a href="../../recipe-packs/azure-local.bicep">azure-local.bicep</a> Recipe Pack maps each type to a container</td><td><a href="./deploy/app.bicep">app.bicep</a>: one app definition</td></tr>
 <tr><td>Code</td><td>Service Bus and Blob Storage SDK clients</td><td>RabbitMQ client; Blob Storage SDK against Azurite</td><td><code>IMessagePublisher</code>, <code>IArchiveStore</code>, <code>IOrderStore</code>; the implementation is picked at startup (<a href="./src/OrderManagement.Shared/DependencyInjection/ServiceCollectionExtensions.cs">ServiceCollectionExtensions.cs</a>)</td></tr>
 <tr><td rowspan="4"><b>Standardized container platform</b></td><td>Cluster</td><td>AKS</td><td>AKS enabled by Arc, on a logical network of the Azure Local instance</td><td>container images; manifests from the shared <a href="../../recipes/kubernetes/kubernetes-containers.bicep">container Recipe</a></td></tr>
 <tr><td>Registry</td><td>Azure Container Registry</td><td>ACR connected registry inside the cluster, synced while connected (<a href="./infra/azurelocal/connected-registry.bicep">connected-registry.bicep</a>)</td><td>images and Recipes pushed to one ACR</td></tr>
 <tr><td>Load balancer and ingress</td><td>Azure Load Balancer; managed NGINX (app routing)</td><td>Arc load balancer (MetalLB); NGINX ingress</td><td>Service of type LoadBalancer; Ingress</td></tr>
-<tr><td>Cluster access</td><td>Entra ID with Azure RBAC</td><td>Entra while connected; admin kubeconfig (certificate) when offline</td><td><code>kubectl</code></td></tr>
+<tr><td>Cluster access</td><td>Entra ID with Azure RBAC</td><td>Entra while connected; admin kubeconfig (certificate) when offline</td><td>the standard Kubernetes API; operators use the same tools on both</td></tr>
 <tr><td rowspan="2"><b>Portable database engine</b></td><td>Engine</td><td>Azure SQL Database</td><td>SQL Server 2022 container</td><td><code>Radius.Data/sqlServerDatabases</code> type; T-SQL; <code>Microsoft.Data.SqlClient</code></td></tr>
-<tr><td>Sign-in</td><td>Entra (Workload ID); the app's managed identity is the admin</td><td>Windows (Kerberos) against the site's Active Directory</td><td><code>IOrderStore</code></td></tr>
+<tr><td>Sign-in</td><td>Entra (Workload ID); the app's managed identity is the admin</td><td>Windows (Kerberos) against the site's Active Directory</td><td>no password in the app: it uses whichever identity the platform mounts, a workload identity token or a Kerberos keytab</td></tr>
 <tr><td rowspan="2"><b>Portable messaging</b></td><td>Broker</td><td>Azure Service Bus queue</td><td>RabbitMQ container</td><td><code>Portability.Messaging/messageQueues</code> type; idempotent consumer (<code>MERGE</code>)</td></tr>
-<tr><td>Sign-in</td><td>Entra (Workload ID)</td><td>Kubernetes service account token exchanged at Keycloak (OAuth 2.0)</td><td><code>IMessagePublisher</code> / <code>IMessageSubscriber</code></td></tr>
+<tr><td>Sign-in</td><td>Entra (Workload ID)</td><td>Kubernetes service account token exchanged at Keycloak (OAuth 2.0)</td><td>no password in the app: the pod's token from the platform, exchanged for an access token by the issuer the connection names</td></tr>
 <tr><td><b>Classified, abstracted object storage</b></td><td>Store</td><td>Azure Blob Storage, with Workload ID</td><td>Azurite (development emulator)</td><td>flat-file use, one JSON per order, behind <code>IArchiveStore</code>; endpoint and credentials injected</td></tr>
 <tr><td rowspan="2"><b>Portable workload and user identities</b></td><td>Users</td><td>Microsoft Entra ID</td><td>Keycloak, federated to Active Directory</td><td>OpenID Connect with MSAL.js and Microsoft.Identity.Web; <code>roles</code>, <code>scp</code> and <code>oid</code> claims</td></tr>
-<tr><td>Workloads</td><td>Entra Workload ID (federated credential)</td><td>Kubernetes service account token projection</td><td>no secrets in the app definition</td></tr>
+<tr><td>Workloads</td><td>Entra Workload ID (federated credential)</td><td>Kubernetes service account token projection</td><td>the platform mounts a short-lived token into the pod; the app definition holds no credentials</td></tr>
 <tr><td><b>Identity estate as code</b></td><td>Definitions</td><td>Entra app registrations, roles and assignments in <a href="./infra/azure/app-identity.bicep">app-identity.bicep</a></td><td>Keycloak realm, clients and role mappings generated by <a href="./scripts/azurelocal/keycloak.ps1">keycloak.ps1</a> and imported</td><td>app roles <code>Orders.Read</code>, <code>Orders.Create</code>; scope <code>access_as_user</code></td></tr>
 <tr><td><b>Platform as code</b></td><td>Templates</td><td><a href="./infra/azure/">infra/azure/</a>: AKS, ACR, managed identity</td><td><a href="./infra/azurelocal/">infra/azurelocal/</a>: AKS Arc, logical network, ACR, load balancer, connected registry</td><td>Bicep, deployed with <code>az deployment sub create</code></td></tr>
-<tr><td><b>Observability</b></td><td>Telemetry</td><td>not covered</td><td>not covered</td><td>console logs</td></tr>
+<tr><td><b>Observability</b></td><td>Telemetry</td><td>not covered</td><td>not covered</td><td>not covered; would be OpenTelemetry to a configurable backend</td></tr>
 </tbody>
 </table>
 
