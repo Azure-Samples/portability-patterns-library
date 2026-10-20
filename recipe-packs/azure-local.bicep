@@ -10,8 +10,8 @@
 //   * The connected registry always serves HTTPS with a private CA. Give that CA to the Radius
 //     control plane and leave plainHttp false.
 //
-// Identity: Keycloak in the cluster federates the cluster's own ServiceAccount
-// issuer and binds Active Directory, so token exchange never leaves the site.
+// Identity: an identity provider on site (Keycloak in the samples) trusts the cluster's own
+// ServiceAccount issuer, so token exchange never leaves the site.
 
 extension radius
 
@@ -48,16 +48,19 @@ param azuriteTag string = '3.35.0'
 @description('Existing image pull secret in the application namespace for the connected registry.')
 param imagePullSecretName string = ''
 
-@description('Issuer URL of the in-cluster Keycloak realm. Setting this switches the queue to token authentication.')
+@description('Issuer URL of the on-site identity provider, for example a Keycloak realm. Setting this switches the queue to token authentication.')
 param oauthIssuer string = ''
 
-@description('Existing Secret in the application namespace holding the Keycloak CA under `ca.crt`.')
+@description('Token endpoint of that identity provider. Empty uses the Keycloak path under oauthIssuer.')
+param oauthTokenEndpoint string = ''
+
+@description('Existing Secret in the application namespace holding the identity provider CA under `ca.crt`.')
 param oauthCaSecretName string = ''
 
-@description('Keycloak client the workloads authenticate as.')
+@description('Client at the identity provider that the workloads authenticate as.')
 param oauthClientId string = ''
 
-@description('Kubernetes service account Keycloak trusts for that client; must match the client federated subject.')
+@description('Kubernetes service account the identity provider trusts for that client; must match its federated subject.')
 param serviceAccountName string = ''
 
 @description('Ingress class that publishes containers with ports on the site network. Empty keeps them cluster-internal.')
@@ -66,8 +69,8 @@ param ingressClassName string = ''
 @description('TLS Secret in the application namespace that the ingress serves.')
 param ingressTlsSecretName string = ''
 
-// With Keycloak, every container runs as the trusted service account and gets a token minted for
-// the realm plus the realm's CA, which is all the queue needs to authenticate without a password.
+// With an identity provider, every container runs as the trusted service account and gets a token
+// minted for the issuer plus its CA, which is all the queue needs to authenticate without a password.
 var containerIdentityParameters = empty(oauthIssuer) ? {} : {
   serviceAccountName: serviceAccountName
   identityTokenAudience: oauthIssuer
@@ -76,6 +79,7 @@ var containerIdentityParameters = empty(oauthIssuer) ? {} : {
 
 var queueOAuthParameters = empty(oauthIssuer) ? {} : {
   oauthIssuer: oauthIssuer
+  oauthTokenEndpoint: oauthTokenEndpoint
   oauthCaSecretName: oauthCaSecretName
   oauthClientId: oauthClientId
 }

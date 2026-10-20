@@ -2,7 +2,7 @@
 //
 // The same Resource Type is backed by a SQL Server container on Azure Local. Switching environments changes the Recipe, never the application.
 //
-// The Entra ID admin is set to the application's managed identity, so the API and processor obtain an
+// The Entra ID admin is set to the application's managed identity, so the application obtains an
 // access token through Workload Identity and connect without a password. The SQL administrator
 // login is still created because the Resource Type requires it and it provides a break-glass path.
 
