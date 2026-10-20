@@ -13,7 +13,7 @@
 // schema but not yet supported. Use a scoped ACR token rather than enabling the ACR admin user:
 //
 //   az acr token create --registry <acr> --name recipe-puller \
-//       --repository recipes/containers content/read --output json
+//       --repository recipes/kubernetes-containers content/read --output json
 //
 // (one --repository per Recipe under recipes/ at the repository root)
 //

@@ -58,7 +58,7 @@ param(
         'ingress-nginx/controller', 'ingress-nginx/kube-webhook-certgen',
         'oms/api', 'oms/processor',
         'recipes/rabbitmq-queue', 'recipes/azurite-objectstorage', 'recipes/mssql-database',
-        'recipes/containers', 'radius-project/kube-recipes/secrets'
+        'recipes/kubernetes-containers', 'radius-project/kube-recipes/secrets'
     )
 )
 

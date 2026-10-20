@@ -123,7 +123,7 @@ resource azureLocalRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
       }
       'Radius.Compute/containers': {
         kind: 'bicep'
-        source: '${registry}/recipes/containers:${tag}'
+        source: '${registry}/recipes/kubernetes-containers:${tag}'
         plainHttp: plainHttp
         parameters: union({
           imagePullSecretName: imagePullSecretName

@@ -32,7 +32,7 @@
 .EXAMPLE
     # Private registry: supply a scoped ACR token so the Radius control plane can pull Recipes.
     #   az acr token create --registry mycr --name bcd-recipe-puller `
-    #       --repository recipes/containers content/read --expiration-in-days 30
+    #       --repository recipes/kubernetes-containers content/read --expiration-in-days 30
     ./scripts/azure/deploy.ps1 `
         -Registry mycr.azurecr.io `
         -SubscriptionId <sub-id> `

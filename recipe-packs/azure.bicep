@@ -72,10 +72,10 @@ resource azureRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
   properties: {
     recipes: {
       // Local build of the stock Kubernetes container Recipe that adds identity, registry and
-      // ingress settings chosen by the platform (see recipes/containers/kubernetes/deployment).
+      // ingress settings chosen by the platform (see recipes/kubernetes/kubernetes-containers.bicep).
       'Radius.Compute/containers': {
         kind: 'bicep'
-        source: '${registry}/recipes/containers:${tag}'
+        source: '${registry}/recipes/kubernetes-containers:${tag}'
         parameters: union(containerIdentityParameters, containerIngressParameters)
       }
       'Radius.Security/secrets': {

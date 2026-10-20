@@ -15,7 +15,7 @@ Samples share the Radius Recipes and Recipe Packs at the repository root:
 
 | Folder | What it holds |
 |---|---|
-| [`recipes/`](./recipes) | One Recipe per resource and platform, as `<capability>/<platform>/<implementation>/`: for example `message-queue/azure/service-bus` and `message-queue/azure-local/rabbitmq`. |
+| [`recipes/`](./recipes) | One Recipe per resource and platform, as `<capability>/<platform>/<implementation>/`: for example `message-queue/azure/service-bus` and `message-queue/azure-local/rabbitmq`. `recipes/kubernetes/` holds the container Recipe both platforms use, adapted from the Radius Kubernetes Recipe. |
 | [`recipe-packs/`](./recipe-packs) | One Recipe Pack per platform (`azure.bicep`, `azure-local.bicep`), choosing the Recipe for each resource type. |
 
 ## Getting started

@@ -16,7 +16,7 @@
 
 .PARAMETER Platform
     Which platform's Recipes to publish: 'azure', 'azure-local' or 'all'. The shared Kubernetes
-    Recipes (recipes/*/kubernetes) are always published with it.
+    Recipes (recipes/kubernetes) are always published with it.
 
 .EXAMPLE
     ./scripts/publish-recipes.ps1 -Registry myregistry.azurecr.io -Platform azure

@@ -107,7 +107,7 @@ sample uses them as they are.
 | Queue | [servicebus-queue.bicep](../../recipes/message-queue/azure/service-bus/servicebus-queue.bicep) | [rabbitmq-queue.bicep](../../recipes/message-queue/azure-local/rabbitmq/rabbitmq-queue.bicep) |
 | Object storage | [blob-objectstorage.bicep](../../recipes/object-storage/azure/blob-storage/blob-objectstorage.bicep) | [azurite-objectstorage.bicep](../../recipes/object-storage/azure-local/azurite/azurite-objectstorage.bicep) |
 | SQL | [azuresql-database.bicep](../../recipes/sql-database/azure/azure-sql/azuresql-database.bicep) | [mssql-database.bicep](../../recipes/sql-database/azure-local/sql-server/mssql-database.bicep) |
-| Containers | [containers.bicep](../../recipes/containers/kubernetes/deployment/containers.bicep) (shared) | same |
+| Containers | [kubernetes-containers.bicep](../../recipes/kubernetes/kubernetes-containers.bicep) (shared) | same |
 
 ### 4. Bind them per platform with a Recipe Pack and an Environment
 
@@ -382,7 +382,7 @@ Radius injects these into the API and the processor from their connections. The 
 ## Known gaps
 
 - The sample ships its own build of the stock Kubernetes container Recipe
-  ([containers.bicep](../../recipes/containers/kubernetes/deployment/containers.bicep)) so the platform can set service
+  ([kubernetes-containers.bicep](../../recipes/kubernetes/kubernetes-containers.bicep)) so the platform can set service
   accounts, pull secrets, identity tokens and ingress. Upstream support is tracked in
   radius-project/resource-types-contrib#143.
 - The Azure SQL Recipe allows access from all Azure services. Use a private endpoint for production.
