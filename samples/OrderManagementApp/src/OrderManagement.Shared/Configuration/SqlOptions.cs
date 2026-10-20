@@ -8,9 +8,14 @@ namespace OrderManagement.Shared.Configuration;
 /// Settings for the <c>sql</c> connection, backed by the built-in
 /// <c>Radius.Data/sqlServerDatabases</c> Resource Type.
 ///
-/// On Azure Local this resolves to a SQL Server container authenticated with a SQL login. On Azure it
-/// resolves to Azure SQL Database with Entra-only authentication, and the application acquires an
-/// Entra ID access token through Workload Identity instead.
+/// The platform decides how the application authenticates, in this order:
+/// <list type="number">
+/// <item>Azure: an Entra workload identity is attached, so the application connects to Azure SQL
+/// Database with an Entra ID access token.</item>
+/// <item>Azure Local with Active Directory: a Kerberos client keytab is attached, so the application
+/// connects to the SQL Server container with integrated (Kerberos) authentication.</item>
+/// <item>Otherwise: the SQL login the connection carries.</item>
+/// </list>
 /// </summary>
 public sealed class SqlOptions
 {
@@ -33,12 +38,21 @@ public sealed class SqlOptions
     /// </summary>
     public bool HasWorkloadIdentity { get; init; }
 
+    /// <summary>True when the platform attached a Kerberos client keytab to the pod.</summary>
+    public bool HasKerberosIdentity { get; init; }
+
+    /// <summary>
+    /// True when the application authenticates as its Active Directory account through Kerberos
+    /// rather than with a SQL login.
+    /// </summary>
+    public bool UseKerberos => !HasWorkloadIdentity && HasKerberosIdentity;
+
     /// <summary>
     /// True when the application authenticates to SQL with an Entra ID token obtained through
     /// Workload Identity rather than a SQL login.
     /// </summary>
     public bool UseEntraId => HasWorkloadIdentity ||
-        (string.IsNullOrWhiteSpace(Password) && string.IsNullOrWhiteSpace(PasswordFile));
+        (!HasKerberosIdentity && string.IsNullOrWhiteSpace(Password) && string.IsNullOrWhiteSpace(PasswordFile));
 
     /// <summary>
     /// Reads the password as it stands now. Called for every connection so a credential that was
@@ -62,7 +76,8 @@ public sealed class SqlOptions
             Username = values.Get("username"),
             Password = values.Get("password"),
             PasswordFile = values.Get("passwordFile"),
-            HasWorkloadIdentity = AzureCredentialFactory.HasWorkloadIdentity
+            HasWorkloadIdentity = AzureCredentialFactory.HasWorkloadIdentity,
+            HasKerberosIdentity = KerberosIdentity.IsAvailable
         };
     }
 
@@ -90,6 +105,14 @@ public sealed class SqlOptions
         {
             // No credentials in the connection string. The access token is attached per-connection
             // from the Workload Identity federated credential.
+            return builder.ConnectionString;
+        }
+
+        if (UseKerberos)
+        {
+            // Tickets come from the client keytab; SQL Server maps them to the account's Windows login.
+            builder.IntegratedSecurity = true;
+            builder.TrustServerCertificate = true;
             return builder.ConnectionString;
         }
 

@@ -22,6 +22,11 @@ RUN dotnet publish src/OrderManagement.Processor/OrderManagement.Processor.cspro
 
 FROM ${BASE_REGISTRY}/dotnet/runtime:9.0 AS runtime
 WORKDIR /app
+# GSSAPI lets SqlClient use integrated (Kerberos) authentication where the platform mounts a keytab,
+# as on Azure Local with Active Directory. Unused elsewhere.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgssapi-krb5-2 \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app ./
 
 # Run as a non-root user; required by most cluster admission policies.

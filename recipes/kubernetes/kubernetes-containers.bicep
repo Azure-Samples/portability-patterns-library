@@ -17,7 +17,7 @@ param ingressAnnotations object = {}
 
 // LOCAL ADDITION. How a workload proves its identity and pulls its images is also a platform
 // decision. The Recipe Pack sets these once per environment and every container gets them, so the
-// application definition never mentions service accounts, pull secrets or certificate authorities.
+// application definition never mentions service accounts, pull secrets, volumes or certificates.
 @description('Kubernetes ServiceAccount the pods run as. Empty uses the namespace default.')
 param serviceAccountName string = ''
 
@@ -28,17 +28,17 @@ param azureWorkloadIdentity bool = false
 param imagePullSecretName string = ''
 
 @description('''
-Audience of a ServiceAccount token projected at /var/run/secrets/identity/token, for exchange at an
-in-cluster identity provider. Empty projects no token.
+Extra pod volumes, as Kubernetes volume objects, added to every pod. The Recipe Pack uses these to
+hand the platform's identity material to the application: a projected ServiceAccount token, a CA
+certificate, a Kerberos keytab and so on. The Recipe doesn't interpret them.
 ''')
-param identityTokenAudience string = ''
+param platformPodVolumes array = []
 
-@description('''
-Existing Secret holding the identity provider's certificate authority under `ca.crt`. Mounted at
-/etc/identity-ca and set as SSL_CERT_FILE, so the application trusts the provider without any trust
-code of its own. Empty mounts nothing.
-''')
-param identityCaSecretName string = ''
+@description('Volume mounts, as Kubernetes volumeMount objects, added to every container. Usually mount platformPodVolumes.')
+param containerVolumeMounts array = []
+
+@description('Environment variables, as Kubernetes EnvVar objects, added to every container.')
+param containerEnv array = []
 
 extension kubernetes with {
   kubeConfig: ''
@@ -104,58 +104,10 @@ var platformImagePullSecrets = platformOptions.?imagePullSecrets ?? (empty(image
   { name: imagePullSecretName }
 ])
 
-// Identity material from the Recipe Pack, added to every container.
-var identityTokenMountPath = '/var/run/secrets/identity'
-var identityCaMountPath = '/etc/identity-ca'
-var platformVolumes = concat(
-  empty(identityTokenAudience) ? [] : [
-    {
-      name: 'identity-token'
-      projected: {
-        sources: [
-          {
-            serviceAccountToken: {
-              audience: identityTokenAudience
-              expirationSeconds: 600
-              path: 'token'
-            }
-          }
-        ]
-      }
-    }
-  ],
-  empty(identityCaSecretName) ? [] : [
-    {
-      name: 'identity-ca'
-      secret: {
-        secretName: identityCaSecretName
-      }
-    }
-  ]
-)
-var platformVolumeMounts = concat(
-  empty(identityTokenAudience) ? [] : [
-    {
-      name: 'identity-token'
-      mountPath: identityTokenMountPath
-      readOnly: true
-    }
-  ],
-  empty(identityCaSecretName) ? [] : [
-    {
-      name: 'identity-ca'
-      mountPath: identityCaMountPath
-      readOnly: true
-    }
-  ]
-)
-var platformEnvVars = empty(identityCaSecretName) ? [] : [
-  {
-    name: 'SSL_CERT_FILE'
-    value: '${identityCaMountPath}/ca.crt'
-  }
-]
-
+// Extra volumes, mounts and environment from the Recipe Pack, added to every pod and container.
+var platformVolumes = platformPodVolumes
+var platformVolumeMounts = containerVolumeMounts
+var platformEnvVars = containerEnv
 // Extract connection data from linked resources (merged with resource properties)
 var resourceConnections = context.resource.?connections ?? {}
 var connectionDefinitions = context.resource.properties.?connections ?? {}
@@ -344,7 +296,7 @@ var containerSpecs = reduce(containerItems, [], (acc, item) => concat(acc, [{
     length(secretNameEnvFrom) > 0 ? {
       envFrom: secretNameEnvFrom
     } : {},
-    // Add volume mounts, plus the platform's identity mounts
+    // Add volume mounts, plus the platform's mounts
     (contains(item.value, 'volumeMounts') || length(platformVolumeMounts) > 0) ? {
       volumeMounts: concat(
         reduce(item.value.?volumeMounts ?? [], [], (vmAcc, vm) => concat(vmAcc, [{

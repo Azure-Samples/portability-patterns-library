@@ -9,8 +9,8 @@ using Microsoft.Extensions.Logging;
 namespace OrderManagement.Shared.Persistence;
 
 /// <summary>
-/// Opens connections to either a containerized SQL Server (SQL login) or Azure SQL Database (Entra
-/// ID access token obtained through Workload Identity). Shared by every SQL-backed store.
+/// Opens connections to Azure SQL Database (Entra ID access token obtained through Workload Identity)
+/// or to a containerized SQL Server (Kerberos or SQL login). Shared by every SQL-backed store.
 /// </summary>
 public sealed class SqlConnectionFactory
 {
@@ -29,6 +29,10 @@ public sealed class SqlConnectionFactory
                 "Using Entra ID authentication for SQL host {Host} through workload identity",
                 options.Host);
             _credential = AzureCredentialFactory.Create();
+        }
+        else if (options.UseKerberos)
+        {
+            _logger.LogInformation("Using Kerberos authentication for SQL host {Host}", options.Host);
         }
         else
         {

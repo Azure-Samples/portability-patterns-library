@@ -38,7 +38,7 @@ flowchart LR
 | Object storage | Azure Blob Storage | Azurite container |
 | SQL | Azure SQL Database | SQL Server container |
 | User sign-in | Microsoft Entra ID | Keycloak, federated to the site's Active Directory |
-| How the app authenticates to services | Entra Workload ID (no secrets) | Keycloak token for the queue; Recipe-issued credentials for storage and SQL |
+| How the app authenticates to services | Entra Workload ID (no secrets) | Keycloak token for the queue; Kerberos (Active Directory) for SQL; Recipe-issued credentials for storage |
 | Images and Recipes | Azure Container Registry | ACR connected registry inside the cluster |
 
 The Azure Local column runs nothing in Azure at runtime. That is what lets the app keep working when
@@ -128,7 +128,7 @@ differs between platforms. An **Environment** is a deployment target that points
 | | [Azure pack](../../recipe-packs/azure.bicep) | [Azure Local pack](../../recipe-packs/azure-local.bicep) |
 |---|---|---|
 | Recipes from | your ACR | the connected registry in the cluster |
-| Pod identity | service account + Entra Workload ID label | service account + Keycloak token and CA |
+| Pod identity | service account + Entra Workload ID label | service account + Keycloak token and CA; Kerberos keytab for SQL |
 | Image pulls | AcrPull on the cluster | image pull secret |
 | Radius's stock secrets Recipe | from ghcr.io | mirrored into ACR and synced into the cluster |
 | Environment | [azure.bicep](./deploy/environments/azure.bicep): also names the subscription and resource group for PaaS resources | [azurelocal.bicep](./deploy/environments/azurelocal.bicep): no Azure settings |
@@ -221,7 +221,7 @@ no platform switch:
 |---|---|---|---|
 | Queue | Entra Workload ID: the pod's Kubernetes token is exchanged for an Entra token for Service Bus | the pod's Kubernetes token is exchanged at Keycloak for a token RabbitMQ accepts | [ServiceCollectionExtensions.cs](./src/OrderManagement.Shared/DependencyInjection/ServiceCollectionExtensions.cs): OAuth when the connection has `oauth*` values |
 | Object storage | Entra Workload ID | Azurite connection string, issued by the Recipe | [ArchiveOptions.cs](./src/OrderManagement.Shared/Configuration/ArchiveOptions.cs): managed identity when there is no connection string |
-| SQL | Entra Workload ID; the app's managed identity is the database admin | `sa` login; password from the Kubernetes Secret `oms-sql-admin` | [SqlOptions.cs](./src/OrderManagement.Shared/Configuration/SqlOptions.cs): Entra when the pod has a workload identity or there is no password |
+| SQL | Entra Workload ID; the app's managed identity is the database admin | Kerberos as the app's AD account, from a keytab the platform mounts; the `sa` login only when no keytab is configured | [SqlOptions.cs](./src/OrderManagement.Shared/Configuration/SqlOptions.cs): Entra with a workload identity, else Kerberos with a keytab, else the SQL login |
 
 - **Azure:** [AzureCredentialFactory.cs](./src/OrderManagement.Shared/Identity/AzureCredentialFactory.cs)
   uses `WorkloadIdentityCredential`. The Recipe Pack gives the pods the `oms-workload-identity`
@@ -233,6 +233,11 @@ no platform switch:
   password. Keycloak trusts the cluster's token issuer, the same way Entra trusts it through the
   federated credential. The Recipe Pack projects the token at `/var/run/secrets/identity/token`
   and mounts Keycloak's CA certificate.
+- **Azure Local, SQL:** the Recipe Pack mounts a Kerberos client keytab for the app's AD account
+  and `krb5.conf`, and sets `KRB5_CLIENT_KTNAME`. Kerberos gets tickets from the keytab on its
+  own, so the app connects with `Integrated Security=true` and holds no SQL password. SQL Server
+  accepts the ticket with its own keytab and maps it to the app's Windows login, which the SQL
+  Recipe creates. See [Connect your Active Directory](#connect-your-active-directory).
 
 Every step runs inside the site, so this keeps working without Azure. The full walkthrough,
 including decoded tokens and troubleshooting, is in
@@ -309,9 +314,39 @@ member signs in, or straight away with *User federation* → *active-directory* 
 *group-mapper* → *Sync LDAP groups to Keycloak*. On Azure, the matching step is assigning the app
 role to an Entra group.
 
+### 4. Let the app sign in to SQL Server with Kerberos
+
+SQL Server on Linux, including the container, accepts Active Directory logins through Kerberos
+([Microsoft's guide](https://learn.microsoft.com/sql/linux/containers/tutorial-adutil)). The app then
+signs in as its own AD account instead of with a SQL password. Kerberos needs only the domain
+controller, which is on site, so this keeps working without Azure.
+
+| In AD | Purpose |
+|---|---|
+| `svc-oms-sql` with SPNs `MSSQLSvc/ordersdb.oms-azurelocal.svc.cluster.local:1433` and `MSSQLSvc/ordersdb.oms-azurelocal.svc.cluster.local` | SQL Server's service account; clients request tickets for these names. The host is the SQL Recipe's Service, `<resource name>.<namespace>.svc.cluster.local` |
+| `svc-oms-app` | the app's account; becomes the SQL login `AZURELOCAL\svc-oms-app` |
+| AES encryption only on both (`Set-ADUser -KerberosEncryptionType AES128,AES256`) | the keytabs carry AES keys |
+| A PTR record for every domain controller (reverse DNS) | SQL Server on Linux resolves each controller's address back to its name before it looks an account up; without it, logins fail with "untrusted domain" |
+
+| In the app namespace | Keys | Used by |
+|---|---|---|
+| ConfigMap `oms-krb5` | `krb5.conf`: the realm and its domain controller, with `.svc.cluster.local` mapped to the realm; `kdc-address` and `kdc-hostnames`: the controller's IP and its names (FQDN, DNS domain, short domain name), which the SQL Recipe pins in the pod's hosts file because SQL Server on Linux resolves the short domain name as a host | SQL Server and the app |
+| Secret `oms-sql-kerberos` | `mssql.keytab` (keys for `svc-oms-sql` and both SPNs), `account` | SQL Server |
+| Secret `oms-app-kerberos` | `client.keytab` (keys for `svc-oms-app`), `login` | the app's pods |
+
+When these exist, the Azure Local Recipe Pack passes them to the Recipes:
+- **SQL Recipe:** configures SQL Server's keytab, then creates the Windows login and adds it to
+  `dbcreator`, so the app can create its database.
+- **Container Recipe:** gets the client keytab, `krb5.conf` and the Kerberos environment variables as
+  plain volumes, mounts and environment variables from the pack, and adds them to every pod. The
+  Recipe itself knows nothing about Kerberos.
+
+Without them, SQL falls back to the `sa` login.
+
 [ad-setup.ps1](./scripts/azurelocal/ad-setup.ps1) does steps 1 and 2 in one go, plus a test user,
 when the domain controller is a Hyper-V VM on the machine you run it from (it uses PowerShell
-Direct).
+Direct). It also does step 4. To redo only step 4 without touching Keycloak, run it with
+`-KerberosOnly`, then redeploy.
 
 ## Deploy it by hand
 
@@ -388,13 +423,15 @@ Radius injects these into the API and the processor from their connections. The 
 | `CONNECTION_ARCHIVE_ENDPOINT` / `_CONTAINERNAME` | processor | blob endpoint and container |
 | `CONNECTION_ARCHIVE_CONNECTIONSTRING` | processor | Azure Local (Azurite) only |
 | `CONNECTION_SQL_HOST` / `_PORT` / `_DATABASE` | both | |
-| `CONNECTION_SQL_USERNAME` / `_PASSWORD` | both | ignored when the pod has an Entra workload identity |
+| `CONNECTION_SQL_USERNAME` / `_PASSWORD` | both | ignored when the pod has an Entra workload identity or a Kerberos keytab |
 
 ## Known gaps
 
 - The sample ships its own build of the stock Kubernetes container Recipe
   ([kubernetes-containers.bicep](../../recipes/kubernetes/kubernetes-containers.bicep)) so the platform can set service
-  accounts, pull secrets, identity tokens and ingress. Upstream support is tracked in
+  accounts, pull secrets, ingress, and extra volumes, mounts and environment variables. Each
+  platform scenario (identity provider token and CA, Kerberos keytab) is defined in the Recipe Pack
+  with those generic inputs, so the Recipe never changes for a new scenario. Upstream support is tracked in
   radius-project/resource-types-contrib#143.
 - The Azure SQL Recipe allows access from all Azure services. Use a private endpoint for production.
 - Radius 0.60 cannot delete the role assignments the Azure Recipes create, so deleting the app on

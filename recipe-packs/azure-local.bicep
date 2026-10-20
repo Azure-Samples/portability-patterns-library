@@ -63,25 +63,124 @@ param oauthClientId string = ''
 @description('Kubernetes service account the identity provider trusts for that client; must match its federated subject.')
 param serviceAccountName string = ''
 
+@description('''
+Existing ConfigMap in the application namespace holding `krb5.conf` for the site's Active Directory.
+Together with the two keytab Secrets below it switches SQL to Kerberos (integrated) authentication.
+''')
+param kerberosConfigMapName string = ''
+
+@description('Existing Secret holding the application account keytab under `client.keytab`, mounted into every container.')
+param kerberosClientKeytabSecretName string = ''
+
+@description('Existing Secret holding the SQL Server service account keytab under `mssql.keytab`.')
+param sqlKerberosKeytabSecretName string = ''
+
+@description('AD account (sAMAccountName) SQL Server uses for Kerberos.')
+param sqlKerberosAccount string = ''
+
+@description('Comma-separated Windows logins (DOMAIN\\name) SQL Server creates for the application.')
+param sqlWindowsLogins string = ''
+
+@description('Domain controller address SQL Server pins in its hosts file, so it can resolve the domain short name.')
+param kerberosDirectoryAddress string = ''
+
+@description('Comma-separated names for kerberosDirectoryAddress: controller FQDN, DNS domain, short domain name.')
+param kerberosDirectoryHostNames string = ''
+
 @description('Ingress class that publishes containers with ports on the site network. Empty keeps them cluster-internal.')
 param ingressClassName string = ''
 
 @description('TLS Secret in the application namespace that the ingress serves.')
 param ingressTlsSecretName string = ''
 
-// With an identity provider, every container runs as the trusted service account and gets a token
-// minted for the issuer plus its CA, which is all the queue needs to authenticate without a password.
-var containerIdentityParameters = empty(oauthIssuer) ? {} : {
-  serviceAccountName: serviceAccountName
-  identityTokenAudience: oauthIssuer
-  identityCaSecretName: oauthCaSecretName
-}
+// Each platform scenario below is expressed as plain Kubernetes volumes, mounts and environment
+// variables for the generic container Recipe. A site that doesn't use a scenario leaves its
+// parameters empty, and the containers get nothing extra.
 
+// Identity provider (for example Keycloak): every container runs as the trusted service account,
+// gets a ServiceAccount token minted for the issuer, and trusts the issuer's CA. That is all the
+// queue needs to authenticate without a password.
+var useIdentityProvider = !empty(oauthIssuer)
+var identityTokenPath = '/var/run/secrets/identity/token'
+var identityProviderVolumes = !useIdentityProvider ? [] : concat([
+  {
+    name: 'identity-token'
+    projected: {
+      sources: [
+        {
+          serviceAccountToken: {
+            audience: oauthIssuer
+            expirationSeconds: 600
+            path: 'token'
+          }
+        }
+      ]
+    }
+  }
+], empty(oauthCaSecretName) ? [] : [
+  {
+    name: 'identity-ca'
+    secret: { secretName: oauthCaSecretName }
+  }
+])
+var identityProviderMounts = !useIdentityProvider ? [] : concat([
+  { name: 'identity-token', mountPath: '/var/run/secrets/identity', readOnly: true }
+], empty(oauthCaSecretName) ? [] : [
+  { name: 'identity-ca', mountPath: '/etc/identity-ca', readOnly: true }
+])
+// .NET and most runtimes read SSL_CERT_FILE, so the application trusts the issuer with no code.
+var identityProviderEnv = !useIdentityProvider || empty(oauthCaSecretName) ? [] : [
+  { name: 'SSL_CERT_FILE', value: '/etc/identity-ca/ca.crt' }
+]
+
+// Active Directory (Kerberos): every container gets krb5.conf and the application account's keytab.
+// MIT Kerberos acquires tickets from the keytab on its own, so the application signs in to SQL
+// Server with integrated authentication and holds no password.
+var useKerberos = !empty(kerberosConfigMapName) && !empty(kerberosClientKeytabSecretName) && !empty(sqlKerberosKeytabSecretName)
+var kerberosVolumes = !useKerberos ? [] : [
+  {
+    name: 'krb5-config'
+    configMap: { name: kerberosConfigMapName }
+  }
+  {
+    name: 'krb5-keytab'
+    secret: { secretName: kerberosClientKeytabSecretName }
+  }
+]
+var kerberosMounts = !useKerberos ? [] : [
+  { name: 'krb5-config', mountPath: '/etc/krb5', readOnly: true }
+  { name: 'krb5-keytab', mountPath: '/etc/krb5-keytab', readOnly: true }
+]
+// The ticket cache stays in memory so nothing is written to the container file system.
+var kerberosEnv = !useKerberos ? [] : [
+  { name: 'KRB5_CONFIG', value: '/etc/krb5/krb5.conf' }
+  { name: 'KRB5_CLIENT_KTNAME', value: 'FILE:/etc/krb5-keytab/client.keytab' }
+  { name: 'KRB5CCNAME', value: 'MEMORY:' }
+]
+
+var containerPlatformParameters = union(
+  useIdentityProvider ? { serviceAccountName: serviceAccountName } : {},
+  {
+    platformPodVolumes: concat(identityProviderVolumes, kerberosVolumes)
+    containerVolumeMounts: concat(identityProviderMounts, kerberosMounts)
+    containerEnv: concat(identityProviderEnv, kerberosEnv)
+  }
+)
+
+var sqlKerberosParameters = !useKerberos ? {} : {
+  kerberosConfigMapName: kerberosConfigMapName
+  kerberosKeytabSecretName: sqlKerberosKeytabSecretName
+  kerberosAccount: sqlKerberosAccount
+  windowsLogins: sqlWindowsLogins
+  directoryHostAddress: kerberosDirectoryAddress
+  directoryHostNames: kerberosDirectoryHostNames
+}
 var queueOAuthParameters = empty(oauthIssuer) ? {} : {
   oauthIssuer: oauthIssuer
   oauthTokenEndpoint: oauthTokenEndpoint
   oauthCaSecretName: oauthCaSecretName
   oauthClientId: oauthClientId
+  oauthAssertionFile: identityTokenPath
 }
 
 resource azureLocalRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
@@ -114,12 +213,12 @@ resource azureLocalRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
         kind: 'bicep'
         source: '${registry}/recipes/mssql-database:${tag}'
         plainHttp: plainHttp
-        parameters: {
+        parameters: union({
           imageRegistry: registry
           imageRepository: 'mssql/server'
           tag: sqlServerTag
           imagePullSecretName: imagePullSecretName
-        }
+        }, sqlKerberosParameters)
       }
       'Radius.Compute/containers': {
         kind: 'bicep'
@@ -129,7 +228,7 @@ resource azureLocalRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
           imagePullSecretName: imagePullSecretName
           ingressClassName: ingressClassName
           ingressTlsSecretName: ingressTlsSecretName
-        }, containerIdentityParameters)
+        }, containerPlatformParameters)
       }
       'Radius.Security/secrets': {
         kind: 'bicep'

@@ -23,6 +23,11 @@ RUN dotnet publish src/OrderManagement.Api/OrderManagement.Api.csproj -c Release
 # The API hosts the orders API and the browser app, so it needs the ASP.NET Core runtime.
 FROM ${BASE_REGISTRY}/dotnet/aspnet:9.0 AS runtime
 WORKDIR /app
+# GSSAPI lets SqlClient use integrated (Kerberos) authentication where the platform mounts a keytab,
+# as on Azure Local with Active Directory. Unused elsewhere.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgssapi-krb5-2 \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app ./
 EXPOSE 8080
 
