@@ -156,7 +156,7 @@ resource federatedCredential 'Microsoft.ManagedIdentity/userAssignedIdentities/f
 
 // Declarative equivalent of `az aks update --attach-acr`: lets the kubelet pull application images.
 // This covers image pulls only. Recipe pulls are performed by the Radius control plane and are
-// configured separately through deploy/registry-auth.bicep.
+// configured separately through deploy/recipe-registry-credentials.bicep.
 resource acrPullAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: registry
   name: guid(registry.id, cluster.id, acrPullRoleId)

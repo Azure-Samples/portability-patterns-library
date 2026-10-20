@@ -21,7 +21,7 @@ private registry. Leave empty when the registry allows anonymous pull.
 Passed as a plain string rather than an `existing` resource reference on purpose: a conditional
 `existing` resource is still resolved by the Radius deployment engine even when its condition is
 false, which fails with "Unable to fetch resource reference from callback" before the settings
-resource has been created. See deploy/registry-auth.bicep for the deployment order.
+resource has been created. See deploy/recipe-registry-credentials.bicep for the deployment order.
 ''')
 param bicepSettingsId string = ''
 

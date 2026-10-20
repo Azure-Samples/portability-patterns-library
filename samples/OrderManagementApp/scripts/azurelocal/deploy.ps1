@@ -447,7 +447,7 @@ try {
     }
     $temporaryFiles += $registryAuthParameters
     Invoke-Checked 'rad deploy registry auth' {
-        rad deploy deploy/registry-auth.bicep `
+        rad deploy deploy/recipe-registry-credentials.bicep `
             --workspace $WorkspaceName --group $ResourceGroup --environment $EnvironmentName `
             --parameters "@$registryAuthParameters"
     }

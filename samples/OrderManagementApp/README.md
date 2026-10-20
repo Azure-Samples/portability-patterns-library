@@ -370,7 +370,7 @@ rad deploy deploy/app.bicep -e oms-azurelocal -p apiImage=... -p processorImage=
 
 For Azure, use `recipe-packs/azure.bicep` and `deploy/environments/azure.bicep` instead. When Recipes come
 from a private registry (always on Azure Local), Radius also needs pull credentials: see
-[deploy/registry-auth.bicep](./deploy/registry-auth.bicep).
+[deploy/recipe-registry-credentials.bicep](./deploy/recipe-registry-credentials.bicep).
 
 ## Optional: the automation we used
 
@@ -400,7 +400,7 @@ The sample uses the library's shared [recipes/](../../recipes/) and
 ├── deploy/                      what to deploy (Bicep)
 │   ├── app.bicep                   the application, same on both platforms
 │   ├── environments/               one per platform; each points at a Recipe Pack
-│   ├── registry-auth.bicep         Radius credentials for a private Recipe registry
+│   ├── recipe-registry-credentials.bicep  Radius credentials for a private Recipe registry
 │   └── infra/                      Azure platform (AKS, ACR, identities)
 ├── docker/                      Dockerfiles for the API and processor
 ├── docs/                        workload identity explained
