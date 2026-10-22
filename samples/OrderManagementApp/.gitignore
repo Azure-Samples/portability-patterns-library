@@ -30,7 +30,8 @@ scripts/settings.json
 NuGet.Config
 
 ## Local HTTPS certificate for compose.yaml (dotnet dev-certs export)
-local/certs/
+local/certs/*
+!local/certs/.gitkeep
 
 ## Azure Developer CLI environments (azd env)
 .azure/
