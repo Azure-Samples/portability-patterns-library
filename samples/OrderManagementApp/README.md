@@ -64,6 +64,9 @@ dotnet dev-certs https --export-path local/certs/localhost.crt --format Pem --no
 docker compose up --build
 ```
 
+On Linux and macOS, also run `chmod 644 local/certs/localhost.*` before `docker compose up`, so the
+Keycloak container can read the certificate.
+
 Open http://localhost:8080 and sign in as `demo`, password `demo`. Stop it with `docker compose down`.
 
 ### On Azure

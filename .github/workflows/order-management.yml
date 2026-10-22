@@ -75,8 +75,8 @@ jobs:
       - name: Start the app with docker compose
         run: |
           dotnet dev-certs https --export-path local/certs/localhost.crt --format Pem --no-password
-          # Keycloak's container user must be able to read the key.
-          chmod 644 local/certs/localhost.key
+          # Keycloak's container user must be able to read the certificate and key.
+          chmod 644 local/certs/localhost.*
           docker compose up --build --detach --wait --wait-timeout 600
 
       - name: Check the app answers and sign-in is wired up
