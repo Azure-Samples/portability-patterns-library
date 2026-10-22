@@ -26,23 +26,13 @@
     The controller's network settings and DNS forwarders are left untouched and the directory
     service is not restarted: LDAP is told to reload its certificate instead.
 
-    The script talks to the controller in one of two ways:
-      -VmName        PowerShell Direct, from the Hyper-V host that runs the controller as a VM.
-      -ComputerName  PowerShell remoting (WinRM), from any machine that can reach the controller,
-                     or 'localhost' when you run it on the controller itself.
-    If you'd rather not run it, make the same objects with the Active Directory PowerShell module
-    instead; docs/authentication.md lists them under "Connect your Active Directory".
+    Everything runs over PowerShell Direct, so run it on the Hyper-V host that runs the domain
+    controller VM. If your controller is elsewhere, make the same objects with the Active Directory
+    PowerShell module instead; the sample README lists them under "Connect your Active Directory".
 
     The script is safe to re-run. Re-running resets the passwords of the accounts it manages and
     rewrites the Secrets. Use -KerberosOnly to redo only the SQL Kerberos part, which leaves the
     Keycloak bind account untouched.
-
-.PARAMETER VmName
-    Name of the domain controller VM, when this runs on its Hyper-V host (PowerShell Direct).
-
-.PARAMETER ComputerName
-    Name of the domain controller, reached over PowerShell remoting. Use 'localhost' when this runs
-    on the controller itself. Takes precedence over -VmName.
 
 .PARAMETER DomainAdminCredential
     Domain administrator of the controller's domain. Prompted for when omitted.
@@ -65,16 +55,10 @@
     # Elevated, on the Hyper-V host that runs the domain controller VM.
     ./scripts/infra/azurelocal/ad-setup.ps1 -VmName DC01 -DomainName azurelocal.lab -NetbiosName AZURELOCAL `
         -KubeContext bcd-aksarc
-
-.EXAMPLE
-    # On the domain controller itself, or on any machine that can reach it over WinRM.
-    ./scripts/infra/azurelocal/ad-setup.ps1 -ComputerName localhost -DomainName contoso.local -NetbiosName CONTOSO `
-        -KubeContext my-aksarc
 #>
 [CmdletBinding()]
 param(
     [string]$VmName = 'DC01',
-    [string]$ComputerName,
     [string]$DomainName = 'azurelocal.lab',
     [string]$NetbiosName = 'AZURELOCAL',
     [string]$OuName = 'OMS',
@@ -227,7 +211,8 @@ function Test-GuestCredential {
     param([Parameter(Mandatory = $true)][pscredential]$Credential)
 
     try {
-        $null = Invoke-Guest -Credential $Credential -ScriptBlock { $env:COMPUTERNAME } -ErrorAction Stop
+        $null = Invoke-Command -VMName $VmName -Credential $Credential -ErrorAction Stop `
+            -ScriptBlock { $env:COMPUTERNAME }
         return $null
     }
     catch { return $_.Exception.Message }
@@ -261,9 +246,10 @@ function Wait-GuestReady {
             $invalidCredentialCount++
             if ($invalidCredentialCount -ge $invalidCredentialGrace) {
                 throw @"
-'$target' rejected the password for '$($Credential.UserName -join "', '")'.
-The controller is reachable, so this is the password, not the connection.
-Check the account and password, then re-run.
+'$VmName' rejected the password for '$($Credential.UserName -join "', '")'.
+The guest is reachable over PowerShell Direct, so this is the password, not the VM.
+Confirm it by unlocking the console, then re-run:
+  vmconnect.exe localhost $VmName
 "@
             }
         }
@@ -271,7 +257,7 @@ Check the account and password, then re-run.
         Start-Sleep -Seconds 10
     }
 
-    throw "Timed out waiting $TimeoutMinutes minutes for $What on '$target'. Last error: $lastError"
+    throw "Timed out waiting $TimeoutMinutes minutes for $What on '$VmName'. Last error: $lastError"
 }
 
 function Invoke-Guest {
@@ -281,39 +267,35 @@ function Invoke-Guest {
         [object[]]$ArgumentList = @()
     )
 
-    $connection = if ($ComputerName) { @{ ComputerName = $ComputerName } } else { @{ VMName = $VmName } }
-    Invoke-Command @connection -Credential $Credential -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
+    Invoke-Command -VMName $VmName -Credential $Credential -ScriptBlock $ScriptBlock `
+        -ArgumentList $ArgumentList
 }
 
 
 try {
-    $target = if ($ComputerName) { $ComputerName } else { $VmName }
+    if (-not (Test-Elevated)) {
+        throw 'Hyper-V and PowerShell Direct both need an elevated session. Re-run as Administrator.'
+    }
 
-    if (-not $ComputerName) {
-        if (-not (Test-Elevated)) {
-            throw 'Hyper-V and PowerShell Direct both need an elevated session. Re-run as Administrator, or use -ComputerName.'
-        }
+    if (-not (Get-Command Get-VM -ErrorAction SilentlyContinue)) {
+        throw "The Hyper-V PowerShell module is not available. Enable the 'Microsoft-Hyper-V-Management-PowerShell' feature."
+    }
 
-        if (-not (Get-Command Get-VM -ErrorAction SilentlyContinue)) {
-            throw "The Hyper-V PowerShell module is not available. Enable the 'Microsoft-Hyper-V-Management-PowerShell' feature, or use -ComputerName."
-        }
-
-        $vm = Get-VM -Name $VmName -ErrorAction SilentlyContinue
-        if (-not $vm) {
-            throw "No VM named '$VmName' on this host. Run this on the Hyper-V host that runs the domain controller, or use -ComputerName."
-        }
-        if ($vm.State -ne 'Running') {
-            throw "'$VmName' is $($vm.State). Start the domain controller first."
-        }
+    $vm = Get-VM -Name $VmName -ErrorAction SilentlyContinue
+    if (-not $vm) {
+        throw "No VM named '$VmName' on this host. Run this on the Hyper-V host that runs the domain controller."
+    }
+    if ($vm.State -ne 'Running') {
+        throw "'$VmName' is $($vm.State). Start the domain controller first."
     }
 
     if (-not $DomainAdminCredential) {
         $DomainAdminCredential = Get-Credential -UserName "$NetbiosName\Administrator" `
-            -Message "Domain administrator of '$DomainName' on '$target'"
+            -Message "Domain administrator of '$DomainName' on '$VmName'"
     }
     $domainCredential = $DomainAdminCredential
 
-    Write-Host "==> Connecting to '$target' $(if ($ComputerName) { 'over PowerShell remoting' } else { 'over PowerShell Direct' })" -ForegroundColor Cyan
+    Write-Host "==> Waiting for PowerShell Direct on '$VmName'" -ForegroundColor Cyan
     $null = Wait-GuestReady -Credential $domainCredential -TimeoutMinutes 5 -What 'the domain administrator account'
 
     # NTLM falls back to the local SAM when the domain prefix does not resolve, so a credential
@@ -322,7 +304,7 @@ try {
             (Get-CimInstance -ClassName Win32_ComputerSystem).DomainRole
         })
     if ($domainRole -lt 4) {
-        throw "'$target' is not a domain controller (DomainRole $domainRole)."
+        throw "'$VmName' is not a domain controller (DomainRole $domainRole)."
     }
 
     Write-Host "==> Waiting for the directory to accept requests" -ForegroundColor Cyan
@@ -667,7 +649,7 @@ try {
     }
 
     Write-Host "`n================ Domain controller ready ================" -ForegroundColor Green
-    Write-Host "Connected to  : $target"
+    Write-Host "VM            : $VmName"
     Write-Host "Domain        : $($created.DnsRoot) ($NetbiosName)"
     Write-Host "Controller    : $($created.DcFqdn)"
     Write-Host "Search base   : $($created.BaseDn)"
