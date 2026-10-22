@@ -27,7 +27,7 @@
     The name of the kubeconfig context to use for Radius CLI commands.
 
 .EXAMPLE
-    $context = ./scripts/azure/ensure-radius-context.ps1 -ClusterName bcd-aks
+    $context = ./scripts/lib/ensure-radius-context.ps1 -ClusterName bcd-aks
 #>
 [CmdletBinding()]
 param(

@@ -11,12 +11,14 @@ obj/
 **/appsettings.Local.json
 *.env
 .env
+# Placeholder site values for the Keycloak realm; no secrets.
+!infra/azurelocal/keycloak/realm-settings.env
 
 ## IDE
 .vs/
 .idea/
 
-## Site CA written by scripts/azurelocal/provision-ingress.ps1 for trusting on client machines
+## Site CA written by scripts/infra/azurelocal/provision-ingress.ps1 for trusting on client machines
 bcd-site-ca.crt
 bcd-azure-ca.crt
 oms-identity-ca.crt
@@ -26,3 +28,9 @@ scripts/settings.json
 
 # Machine-local package source, used where nuget.org is unreachable
 NuGet.Config
+
+## Local HTTPS certificate for compose.yaml (dotnet dev-certs export)
+local/certs/
+
+## Azure Developer CLI environments (azd env)
+.azure/

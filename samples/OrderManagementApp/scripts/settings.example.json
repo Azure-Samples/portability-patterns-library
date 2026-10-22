@@ -52,17 +52,14 @@
     "Keycloak": {
       "AdServer": "<domain-controller-fqdn>",
       "AdDomain": "<ad-domain>",
+      "SpaOrigin": "https://192.168.44.200",
       "Registry": "10.96.0.50",
-      "ImagePullSecretName": "azurelocal-registry",
       "ImagePullSecretSourceNamespace": "oms-azurelocal",
       "WorkloadNamespace": "oms-azurelocal",
       "AllowInClusterIssuer": true
     },
     "Ingress": {
       "IngressIp": "192.168.44.200"
-    },
-    "Identity": {
-      "SpaOrigins": [ "https://192.168.44.200" ]
     },
     "Deploy": {}
   }

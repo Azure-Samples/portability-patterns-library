@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "location": { "value": "${AZURE_LOCATION}" },
+    "resourceGroupName": { "value": "rg-${AZURE_ENV_NAME}" },
+    "clusterName": { "value": "aks-${AZURE_ENV_NAME}" },
+    "nodeVmSize": { "value": "${AKS_NODE_VM_SIZE=Standard_D4s_v7}" },
+    "clusterAdminObjectIds": { "value": [ "${AZURE_PRINCIPAL_ID}" ] }
+  }
+}

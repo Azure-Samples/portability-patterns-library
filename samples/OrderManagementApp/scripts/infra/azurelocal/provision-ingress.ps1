@@ -11,7 +11,8 @@
       1. The Arc load balancer (MetalLB, ARP mode) comes from infra/azurelocal/platform.bicep, with
          its address range outside the AKS logical network pool.
       2. Installs the ingress-nginx controller from the connected registry, on the fixed address
-         -IngressIp from that range, so it keeps serving if Azure is unreachable.
+         -IngressIp from that range, so it keeps serving if Azure is unreachable. The Helm values
+         are in infra/azurelocal/ingress-nginx/values.yaml; this script sets only the site values.
       3. Issues a TLS certificate for -IngressIp and -HostNames from a site CA kept in the
          cluster, into Secret -TlsSecretName in the application namespace. Browsers need HTTPS:
          MSAL.js only runs in a secure context.
@@ -20,12 +21,12 @@
     whose root domain-joined machines already trust). Machines outside the domain trust it once
     with the command printed at the end. Idempotent.
 
-    Prerequisites: scripts/azurelocal/provision-infra.ps1 (load balancer),
-    scripts/azurelocal/import-images.ps1 (ingress-nginx images in the cloud registry) and
-    scripts/azurelocal/connected-registry.ps1 (which syncs them into the cluster).
+    Prerequisites: scripts/infra/azurelocal/provision-infra.ps1 (load balancer),
+    scripts/infra/azurelocal/import-images.ps1 (ingress-nginx images in the cloud registry) and
+    scripts/infra/azurelocal/connected-registry.ps1 (which syncs them into the cluster).
 
 .EXAMPLE
-    ./scripts/azurelocal/provision-ingress.ps1
+    ./scripts/infra/azurelocal/provision-ingress.ps1
 #>
 [CmdletBinding()]
 param(
@@ -48,7 +49,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
 Push-Location $repoRoot
 
 function Invoke-Checked([string]$What, [scriptblock]$Command) {
@@ -83,44 +84,24 @@ try {
     # ------------------------------------------------------------------------------------------
     Write-Host "==> Installing ingress-nginx $ChartVersion on $IngressIp" -ForegroundColor Cyan
     Invoke-Checked 'helm repo add' { helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx --force-update | Out-Null }
-    $values = Join-Path ([IO.Path]::GetTempPath()) "ingress-nginx-$([guid]::NewGuid().ToString('N')).yaml"
-    @"
-imagePullSecrets:
-  - name: $PullSecretName
-controller:
-  image:
-    registry: $PullRegistry
-    image: ingress-nginx/controller
-    tag: $ControllerTag
-    digest: ""
-  ingressClassResource:
-    name: $IngressClassName
-    default: false
-  # Browsers send no SNI for https://<ip>, so the catch-all server must present the site certificate.
-  extraArgs:
-    default-ssl-certificate: $ApplicationNamespace/$TlsSecretName
-  service:
-    type: LoadBalancer
-    # MetalLB refuses a Service that also sets spec.loadBalancerIP, so the address goes here only.
-    annotations:
-      metallb.io/loadBalancerIPs: $IngressIp
-  admissionWebhooks:
-    patch:
-      image:
-        registry: $PullRegistry
-        image: ingress-nginx/kube-webhook-certgen
-        tag: $WebhookCertgenTag
-        digest: ""
-"@ | Set-Content -Path $values -Encoding utf8
-    try {
-        # Kubelet retries the pull until the connected registry has the images, hence the long wait.
-        Invoke-Checked 'helm upgrade --install ingress-nginx' {
-            helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx --version $ChartVersion `
-                --namespace $IngressNamespace --create-namespace --kube-context $KubeContext `
-                --values $values --wait --timeout 20m
-        }
+    # infra/azurelocal/ingress-nginx/values.yaml holds the settings; only the site values are set here.
+    $values = Join-Path $repoRoot 'infra/azurelocal/ingress-nginx/values.yaml'
+    $siteValues = @(
+        '--set', "imagePullSecrets[0].name=$PullSecretName",
+        '--set', "controller.image.registry=$PullRegistry",
+        '--set', "controller.image.tag=$ControllerTag",
+        '--set', "controller.ingressClassResource.name=$IngressClassName",
+        '--set', "controller.extraArgs.default-ssl-certificate=$ApplicationNamespace/$TlsSecretName",
+        '--set', "controller.service.annotations.metallb\.io/loadBalancerIPs=$IngressIp",
+        '--set', "controller.admissionWebhooks.patch.image.registry=$PullRegistry",
+        '--set', "controller.admissionWebhooks.patch.image.tag=$WebhookCertgenTag"
+    )
+    # Kubelet retries the pull until the connected registry has the images, hence the long wait.
+    Invoke-Checked 'helm upgrade --install ingress-nginx' {
+        helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx --version $ChartVersion `
+            --namespace $IngressNamespace --create-namespace --kube-context $KubeContext `
+            --values $values @siteValues --wait --timeout 20m
     }
-    finally { Remove-Item $values -ErrorAction SilentlyContinue }
 
     $assigned = kubectl get service ingress-nginx-controller -n $IngressNamespace --context $KubeContext `
         -o 'jsonpath={.status.loadBalancer.ingress[0].ip}'

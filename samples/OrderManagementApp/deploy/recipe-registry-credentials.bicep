@@ -25,7 +25,7 @@
 //   2. rad deploy deploy/recipe-registry-credentials.bicep -e oms-azure                  (this file)
 //   3. rad deploy deploy/environments/azure.bicep -p bicepSettingsId=<output of step 2>
 //
-// scripts/azure/deploy.ps1 and scripts/azurelocal/deploy.ps1 perform all three automatically.
+// scripts/deploy/azure.ps1 and scripts/deploy/azurelocal.ps1 perform all three automatically.
 
 extension radius
 

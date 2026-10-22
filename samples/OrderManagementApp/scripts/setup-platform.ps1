@@ -9,25 +9,23 @@
     the cluster already exists.
 
     Azure
-      Cluster   azure/provision-infra.ps1             AKS, ACR, workload identity, Radius
-      Ingress   azure/provision-ingress.ps1           managed NGINX, DNS name, certificate issuer
-      Identity  azure/configure-app-identity.ps1      Entra app registrations and roles
+      Cluster   infra/azure/provision-infra.ps1              AKS, ACR, workload identity, Radius
+      Ingress   infra/azure/provision-ingress.ps1            managed NGINX, DNS name, certificate issuer
+      Identity  infra/azure/configure-app-identity.ps1       Entra app registrations and roles
 
     AzureLocal
-      Cluster   azurelocal/provision-infra.ps1        AKS Arc cluster, ACR
-      Images    azurelocal/import-images.ps1          third-party images mirrored into the ACR
-      Registry  azurelocal/connected-registry.ps1     in-cluster registry that keeps serving offline
-      Keycloak  azurelocal/keycloak.ps1               on-site token issuer federated to Active Directory
-      Ingress   azurelocal/provision-ingress.ps1      load balancer, NGINX, site CA certificate
-      Identity  azurelocal/configure-app-identity.ps1 Keycloak clients, AD group -> role mapping
-
+      Cluster   infra/azurelocal/provision-infra.ps1         AKS Arc cluster, ACR, load balancer
+      Images    infra/azurelocal/import-images.ps1           third-party images mirrored into the ACR
+      Registry  infra/azurelocal/connected-registry.ps1      in-cluster registry that keeps serving offline
+      Keycloak  infra/azurelocal/keycloak.ps1                on-site sign-in and token issuer, federated to Active Directory
+      Ingress   infra/azurelocal/provision-ingress.ps1       NGINX ingress, site CA certificate
     Values come from the target's section of scripts/settings.json (see settings.example.json):
     'Common' goes to every step that takes the parameter, a section named after the step to that
     step only. Keep secrets out of it; the scripts read those from Kubernetes Secrets.
 
     Azure Local expects a Keycloak bind account for the site's Active Directory in the Secret
     identity/oms-ad-bind and the directory's CA in identity/oms-ad-ca. Create them by hand (see
-    the sample README) or with azurelocal/ad-setup.ps1.
+    the sample README) or with infra/azurelocal/ad-setup.ps1.
 
 .EXAMPLE
     ./scripts/setup-platform.ps1 -Target AzureLocal
@@ -52,19 +50,18 @@ $ErrorActionPreference = 'Stop'
 
 $steps = if ($Target -eq 'Azure') {
     [ordered]@{
-        Cluster  = 'azure/provision-infra.ps1'
-        Ingress  = 'azure/provision-ingress.ps1'
-        Identity = 'azure/configure-app-identity.ps1'
+        Cluster  = 'infra/azure/provision-infra.ps1'
+        Ingress  = 'infra/azure/provision-ingress.ps1'
+        Identity = 'infra/azure/configure-app-identity.ps1'
     }
 }
 else {
     [ordered]@{
-        Cluster  = 'azurelocal/provision-infra.ps1'
-        Images   = 'azurelocal/import-images.ps1'
-        Registry = 'azurelocal/connected-registry.ps1'
-        Keycloak = 'azurelocal/keycloak.ps1'
-        Ingress  = 'azurelocal/provision-ingress.ps1'
-        Identity = 'azurelocal/configure-app-identity.ps1'
+        Cluster  = 'infra/azurelocal/provision-infra.ps1'
+        Images   = 'infra/azurelocal/import-images.ps1'
+        Registry = 'infra/azurelocal/connected-registry.ps1'
+        Keycloak = 'infra/azurelocal/keycloak.ps1'
+        Ingress  = 'infra/azurelocal/provision-ingress.ps1'
     }
 }
 

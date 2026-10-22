@@ -3,7 +3,7 @@
     Deploys the Order Management sample to an AKS cluster backed by Azure PaaS.
 
 .DESCRIPTION
-    Assumes ./scripts/azure/provision-infra.ps1 has already created the workload identity and
+    Assumes ./scripts/infra/azure/provision-infra.ps1 has already created the workload identity and
     configured the Radius Azure credential.
 
     Three different things are called a "resource group" here. They are not interchangeable:
@@ -22,7 +22,7 @@
 .EXAMPLE
     # Single resource group: application infrastructure alongside the cluster. Simplest to clean up.
     # No SQL password: Azure SQL is created with Entra-only authentication.
-    ./scripts/azure/deploy.ps1 `
+    ./scripts/deploy/azure.ps1 `
         -Registry mycr.azurecr.io `
         -SubscriptionId 00000000-0000-0000-0000-000000000000 `
         -AppInfraResourceGroup bcd-infra `
@@ -32,7 +32,7 @@
     # Private registry: supply a scoped ACR token so the Radius control plane can pull Recipes.
     #   az acr token create --registry mycr --name bcd-recipe-puller `
     #       --repository recipes/kubernetes-containers content/read --expiration-in-days 30
-    ./scripts/azure/deploy.ps1 `
+    ./scripts/deploy/azure.ps1 `
         -Registry mycr.azurecr.io `
         -SubscriptionId <sub-id> `
         -AppInfraResourceGroup bcd-infra `
@@ -95,12 +95,12 @@ param(
     # public FQDN, so a different region works at the cost of latency and cross-region egress.
     [string]$SqlLocation,
 
-    # Entra app registrations for user sign-in, as created by scripts/azure/configure-app-identity.ps1.
+    # Entra app registrations for user sign-in, as created by scripts/infra/azure/configure-app-identity.ps1.
     [string]$OrdersApiAppName = 'oms-api',
     [string]$OrdersSpaAppName = 'oms-spa',
     [int]$UiLocalPort = 5090,
 
-    # Managed ingress from scripts/azure/provision-ingress.ps1.
+    # Managed ingress from scripts/infra/azure/provision-ingress.ps1.
     [string]$IngressClassName = 'webapprouting.kubernetes.azure.com',
     [string]$IngressCertIssuer = 'letsencrypt',
 
@@ -110,7 +110,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 . (Join-Path $repoRoot 'scripts/lib/recipes.ps1')
 Push-Location $repoRoot
 
@@ -194,7 +194,7 @@ try {
     # a token minted by provision-infra.ps1, which expires (24h by default) and does not exist at
     # all on a machine that never ran it, such as a CI agent. See ensure-radius-context.ps1.
     if ($UseEntraAuthentication) {
-        $KubeContext = ./scripts/azure/ensure-radius-context.ps1 `
+        $KubeContext = ./scripts/lib/ensure-radius-context.ps1 `
             -ClusterName $ClusterName `
             -TokenHours $RadiusCliTokenHours
     }
@@ -264,7 +264,7 @@ try {
     }
 
     Write-Host "==> Publishing Azure Recipes" -ForegroundColor Cyan
-    ./scripts/publish-recipes.ps1 -Registry $Registry -Platform azure
+    ./scripts/deploy/publish-recipes.ps1 -Registry $Registry -Platform azure
 
     # `rad deploy` always needs an environment to deploy into, including for the Recipe Pack that
     # the real environment depends on.
@@ -276,7 +276,7 @@ try {
     Write-Host "==> Deploying Recipe Pack" -ForegroundColor Cyan
     if (-not $SqlLocation) { $SqlLocation = $Location }
 
-    # Published through the managed ingress when scripts/azure/provision-ingress.ps1 has set it up.
+    # Published through the managed ingress when scripts/infra/azure/provision-ingress.ps1 has set it up.
     $dnsLabel = kubectl get service nginx -n app-routing-system --context $KubeContext --ignore-not-found `
         -o 'jsonpath={.metadata.annotations.service\.beta\.kubernetes\.io/azure-dns-label-name}' 2>$null
     $ingressHost = if ($dnsLabel) { "$dnsLabel.$Location.cloudapp.azure.com" } else { '' }
@@ -391,7 +391,7 @@ try {
         Write-Host "==> User sign-in through Entra ID (API $apiAppId, SPA $spaAppId)" -ForegroundColor Cyan
     }
     else {
-        Write-Warning "App registrations '$OrdersApiAppName'/'$OrdersSpaAppName' not found; the orders app will have no sign-in. Run scripts/azure/configure-app-identity.ps1."
+        Write-Warning "App registrations '$OrdersApiAppName'/'$OrdersSpaAppName' not found; the orders app will have no sign-in. Run scripts/infra/azure/configure-app-identity.ps1."
     }
 
     # The same parameters as on Azure Local: everything platform-specific is in the Recipe Pack.

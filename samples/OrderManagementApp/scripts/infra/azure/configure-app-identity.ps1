@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
-    Registers the orders app with Microsoft Entra ID: the Entra counterpart of
-    scripts/azurelocal/configure-app-identity.ps1, producing the same names and claims.
+    Registers the orders app with Microsoft Entra ID: the Entra counterpart of the Keycloak
+    realm in infra/azurelocal/keycloak/realm.json, producing the same names and claims.
 
 .DESCRIPTION
     The registrations are declared in infra/azure/app-identity.bicep (Microsoft Graph Bicep):
@@ -21,7 +21,7 @@
     fails with a policy error.
 
 .EXAMPLE
-    ./scripts/azure/configure-app-identity.ps1 -SpaOrigins https://bcd-orders.eastus2.cloudapp.azure.com
+    ./scripts/infra/azure/configure-app-identity.ps1 -SpaOrigins https://bcd-orders.eastus2.cloudapp.azure.com
 #>
 [CmdletBinding()]
 param(
@@ -41,7 +41,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
 $graph = 'https://graph.microsoft.com/v1.0'
 
 # HTTPS only. Plain http is allowed for localhost alone, as Entra itself permits.

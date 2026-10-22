@@ -6,7 +6,7 @@
 // Service Bus, whether object storage is Azurite or Azure Blob Storage, and whether SQL is a
 // container or Azure SQL Database.
 //
-// Deployed by scripts/azure/deploy.ps1 (environment oms-azure) and scripts/azurelocal/deploy.ps1
+// Deployed by scripts/deploy/azure.ps1 (environment oms-azure) and scripts/deploy/azurelocal.ps1
 // (environment oms-azurelocal) with the same parameters: image references, the app's sign-in
 // settings, and a SQL password.
 

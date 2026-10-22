@@ -13,7 +13,7 @@
 //
 // Apps created outside Bicep are adopted by setting their uniqueName once; see
 // https://learn.microsoft.com/graph/templates/bicep/how-to-reference-existing-resources
-// scripts/azure/configure-app-identity.ps1 does that, keeps existing scope and role IDs, and deploys this.
+// scripts/infra/azure/configure-app-identity.ps1 does that, keeps existing scope and role IDs, and deploys this.
 //
 //   az deployment sub create --location <region> --template-file infra/azure/app-identity.bicep `
 //     --parameters spaOrigins='["https://<host>"]' ownerObjectIds='["<your object id>"]'

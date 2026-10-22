@@ -35,26 +35,22 @@
 .PARAMETER Registry
     Login server of the target registry, for example 'myacr.azurecr.io'.
 
+.PARAMETER ImageList
+    The list of what to transfer. Defaults to infra/azurelocal/images.txt, which also says what each
+    entry is for and which versions must match.
+
 .PARAMETER Platform
     Platform to select from multi-platform images. The cluster nodes decide this, not this machine.
 
-.PARAMETER RadiusVersion
-    Tag of the Radius control-plane images. Must match the rad CLI version used to install Radius.
-
-.PARAMETER IncludeContour
-    Also transfer the Contour ingress images. Not needed by this application: it exposes no
-    gateways or routes, and scripts/azurelocal/deploy.ps1 installs Radius with
-    --skip-contour-install. Adds two images.
-
 .EXAMPLE
     # Azure Local: server-side copy into the cloud ACR the connected registry syncs from.
-    ./scripts/azurelocal/import-images.ps1 -Mode Mirror -Registry myacr.azurecr.io
+    ./scripts/infra/azurelocal/import-images.ps1 -Mode Mirror -Registry myacr.azurecr.io
 
 .EXAMPLE
     # No internet path from the target: on a machine with internet access...
-    ./scripts/azurelocal/import-images.ps1 -Mode Export -Path D:\oms-images
+    ./scripts/infra/azurelocal/import-images.ps1 -Mode Export -Path D:\oms-images
     # ...then, after moving the folder, on the target side:
-    ./scripts/azurelocal/import-images.ps1 -Mode Import -Path D:\oms-images -Registry myacr.azurecr.io
+    ./scripts/infra/azurelocal/import-images.ps1 -Mode Import -Path D:\oms-images -Registry myacr.azurecr.io
 #>
 [CmdletBinding()]
 param(
@@ -66,25 +62,12 @@ param(
 
     [string]$Path,
 
-    [string]$RadiusVersion = '0.60',
-
-    # Tag of Radius's stock Kubernetes Recipes on ghcr.io; must match radiusRecipeTag in the Recipe Pack.
-    [string]$RadiusRecipeTag = 'latest',
-
-    [string]$RabbitMqTag = '4-management-alpine',
-    [string]$SqlServerTag = '2022-latest',
-    [string]$AzuriteTag = '3.35.0',
-    [string]$DotnetTag = '9.0',
-    [string]$KeycloakTag = '26.8',
-    [string]$PostgresTag = '17-alpine',
-    [string]$IngressNginxTag = 'v1.15.1',
-    [string]$WebhookCertgenTag = 'v1.6.9',
+    # Images and Recipes to transfer: <source> <target> [artifact] per line.
+    [string]$ImageList,
 
     # Multi-platform images must be narrowed to one platform: an archive holding a bare index
     # cannot be pushed after 'docker load', which reports 'does not provide any platform'.
-    [string]$Platform = 'linux/amd64',
-
-    [switch]$IncludeContour
+    [string]$Platform = 'linux/amd64'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -101,60 +84,22 @@ function Invoke-Checked {
     }
 }
 
-# Source is the public reference; Target is the repository and tag inside the local registry.
-#
-# The Radius control-plane images must land at FLAT repository names. `rad install kubernetes
-# --set global.imageRegistry=<registry>` pulls them as <registry>/ucpd, <registry>/controller and
-# so on, with no radius-project path segment.
-$images = @(
-    # --- Radius control plane ---------------------------------------------------------------
-    @{ Source = "ghcr.io/radius-project/ucpd:$RadiusVersion";              Target = "ucpd:$RadiusVersion" }
-    @{ Source = "ghcr.io/radius-project/controller:$RadiusVersion";        Target = "controller:$RadiusVersion" }
-    @{ Source = "ghcr.io/radius-project/applications-rp:$RadiusVersion";   Target = "applications-rp:$RadiusVersion" }
-    @{ Source = "ghcr.io/radius-project/dynamic-rp:$RadiusVersion";        Target = "dynamic-rp:$RadiusVersion" }
-    @{ Source = "ghcr.io/radius-project/deployment-engine:$RadiusVersion"; Target = "deployment-engine:$RadiusVersion" }
-    @{ Source = "ghcr.io/radius-project/dashboard:$RadiusVersion";         Target = "dashboard:$RadiusVersion" }
-    @{ Source = "ghcr.io/radius-project/bicep:$RadiusVersion";             Target = "bicep:$RadiusVersion" }
-
-    # Run by the 'radius-api-readiness' post-install Helm hook. Without it 'rad install kubernetes'
-    # reports 'resource Job/radius-system/radius-api-readiness not ready' even though every control
-    # plane pod is running.
-    @{ Source = "ghcr.io/radius-project/pre-upgrade:$RadiusVersion";       Target = "pre-upgrade:$RadiusVersion" }
-
-    # --- Backing services deployed by the Recipes -------------------------------------------
-    # Repository paths match the imageRepository values in recipe-packs/azure-local.bicep.
-    @{ Source = "mcr.microsoft.com/mssql/server:$SqlServerTag";            Target = "mssql/server:$SqlServerTag" }
-    @{ Source = "mcr.microsoft.com/azure-storage/azurite:$AzuriteTag";     Target = "azure-storage/azurite:$AzuriteTag" }
-    @{ Source = "docker.io/library/rabbitmq:$RabbitMqTag";                 Target = "rabbitmq:$RabbitMqTag" }
-
-    # --- Identity -----------------------------------------------------------------------------
-    # Deployed by scripts/azurelocal/keycloak.ps1 as the token issuer that fronts Active Directory.
-    @{ Source = "quay.io/keycloak/keycloak:$KeycloakTag";                  Target = "keycloak/keycloak:$KeycloakTag" }
-    @{ Source = "docker.io/library/postgres:$PostgresTag";                 Target = "postgres:$PostgresTag" }
-
-    # --- Ingress -------------------------------------------------------------------------------
-    # Deployed by scripts/azurelocal/provision-ingress.ps1 so users reach the app over HTTPS.
-    @{ Source = "registry.k8s.io/ingress-nginx/controller:$IngressNginxTag";            Target = "ingress-nginx/controller:$IngressNginxTag" }
-    @{ Source = "registry.k8s.io/ingress-nginx/kube-webhook-certgen:$WebhookCertgenTag"; Target = "ingress-nginx/kube-webhook-certgen:$WebhookCertgenTag" }
-
-    # --- Base images for building the API and processor -------------------------------------
-    # Needed only where `docker build` runs. Referenced through the BASE_REGISTRY build argument
-    # in docker/Dockerfile.*.
-    @{ Source = "mcr.microsoft.com/dotnet/sdk:$DotnetTag";                 Target = "dotnet/sdk:$DotnetTag" }
-    @{ Source = "mcr.microsoft.com/dotnet/runtime:$DotnetTag";             Target = "dotnet/runtime:$DotnetTag" }
-    @{ Source = "mcr.microsoft.com/dotnet/aspnet:$DotnetTag";              Target = "dotnet/aspnet:$DotnetTag" }
-)
-
-if ($IncludeContour) {
-    $images += @{ Source = 'ghcr.io/projectcontour/contour:v1.32.0'; Target = 'projectcontour/contour:v1.32.0' }
-    $images += @{ Source = 'docker.io/envoyproxy/envoy:v1.34.1';     Target = 'envoyproxy/envoy:v1.34.1' }
+if (-not $ImageList) {
+    $ImageList = Join-Path $PSScriptRoot '../../../infra/azurelocal/images.txt'
 }
 
-# Radius's stock Recipes, kept at the same path under the target registry. Bicep artifacts, not images.
-$recipeArtifacts = @(
-    @{ Source = "ghcr.io/radius-project/kube-recipes/secrets:$RadiusRecipeTag"; Target = "radius-project/kube-recipes/secrets:$RadiusRecipeTag" }
-)
+# Each line: <source> <target repository:tag> [artifact]. Artifacts are OCI artifacts such as Radius's
+# stock Recipes, which docker cannot move.
+$images = @()
+$recipeArtifacts = @()
+foreach ($line in Get-Content $ImageList) {
+    $fields = ($line -replace '#.*$', '').Trim() -split '\s+'
+    if (-not $fields[0]) { continue }
+    if ($fields.Count -lt 2) { throw "'$ImageList': '$line' needs a source and a target." }
 
+    $entry = @{ Source = $fields[0]; Target = $fields[1] }
+    if ($fields[2] -eq 'artifact') { $recipeArtifacts += $entry } else { $images += $entry }
+}
 # docker cannot move non-image artifacts, so outside Mirror mode the copy is left to oras.
 function Write-RecipeArtifactHint {
     param([string]$TargetRegistry = '<registry>')
@@ -246,8 +191,6 @@ switch ($Mode) {
         # have to re-derive it, and records the versions the payload was built for.
         $manifest = @{
             createdUtc     = (Get-Date).ToUniversalTime().ToString('o')
-            radiusVersion  = $RadiusVersion
-            includeContour = [bool]$IncludeContour
             images         = @($images | ForEach-Object {
                 @{ source = $_.Source; target = $_.Target; archive = (Get-ArchiveName -Target $_.Target) }
             })
@@ -271,10 +214,6 @@ switch ($Mode) {
 
         $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
         Write-Host "==> Loading $($manifest.images.Count) images exported $($manifest.createdUtc)" -ForegroundColor Cyan
-
-        if ($manifest.radiusVersion -ne $RadiusVersion) {
-            Write-Warning "Payload was built for Radius $($manifest.radiusVersion) but -RadiusVersion is $RadiusVersion."
-        }
 
         foreach ($image in $manifest.images) {
             $archive = Join-Path $Path $image.archive

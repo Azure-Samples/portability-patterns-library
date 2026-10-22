@@ -4,7 +4,7 @@
     enabled by infra/azure/platform-resources.bicep) with an Azure DNS name and a Let's Encrypt certificate.
 
 .DESCRIPTION
-    Platform layer, the Azure counterpart of scripts/azurelocal/provision-ingress.ps1. Applications
+    Platform layer, the Azure counterpart of scripts/infra/azurelocal/provision-ingress.ps1. Applications
     only declare ports; the Recipe Pack tells the containers Recipe to publish them through this
     ingress (see recipe-packs/azure.bicep at the repository root), so deploy/app.bicep is the same as on Azure Local.
 
@@ -14,13 +14,13 @@
          policy blocks inbound internet traffic (Let's Encrypt cannot reach the challenge); trust the
          CA printed at the end on the machines that open the app.
 
-    Idempotent. Run after scripts/azure/provision-infra.ps1.
+    Idempotent. Run after scripts/infra/azure/provision-infra.ps1.
 
 .EXAMPLE
-    ./scripts/azure/provision-ingress.ps1 -DnsLabel bcd-orders-demo
+    ./scripts/infra/azure/provision-ingress.ps1 -DnsLabel bcd-orders-demo
 
 .EXAMPLE
-    ./scripts/azure/provision-ingress.ps1 -DnsLabel bcd-orders-demo -PrivateCa
+    ./scripts/infra/azure/provision-ingress.ps1 -DnsLabel bcd-orders-demo -PrivateCa
 #>
 [CmdletBinding()]
 param(
@@ -147,14 +147,14 @@ spec:
     }
     $caPem = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(
             (kubectl get secret $PrivateIssuerName -n cert-manager --context $KubeContext -o 'jsonpath={.data.ca\.crt}')))
-    $caFile = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'bcd-azure-ca.crt'
+    $caFile = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path 'bcd-azure-ca.crt'
     [IO.File]::WriteAllText($caFile, $caPem)
     $IssuerName = $PrivateIssuerName
 }
 
 Write-Host "`nIngress ready: https://$fqdn  (class '$IngressClassName', issuer '$IssuerName')" -ForegroundColor Green
 if ($PrivateCa) {
-    Write-Host "Deploy with: ./scripts/azure/deploy.ps1 ... -IngressCertIssuer $IssuerName"
+    Write-Host "Deploy with: ./scripts/deploy/azure.ps1 ... -IngressCertIssuer $IssuerName"
     Write-Host "Trust the CA on client machines (once, shows a confirmation prompt):"
     Write-Host "  Import-Certificate -FilePath $caFile -CertStoreLocation Cert:\CurrentUser\Root"
 }

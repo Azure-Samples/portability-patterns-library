@@ -1,0 +1,135 @@
+# Runs the whole app on your machine, with the same backing services as Azure Local:
+# RabbitMQ for the queue, SQL Server, Azurite for blob storage and Keycloak for sign-in.
+#
+#   docker compose up --build
+#
+# Once, before the first run: Keycloak serves sign-in over HTTPS with the .NET development certificate.
+#   dotnet dev-certs https --trust
+#   dotnet dev-certs https --export-path local/certs/localhost.crt --format Pem --no-password
+#
+# Then open http://localhost:8080 and sign in as demo / demo.
+#
+# The app gets its connections from CONNECTION_* environment variables, the same ones Radius sets
+# from the Recipes' outputs on Azure and Azure Local. Nothing in the app is specific to this file.
+
+name: order-management
+
+x-connections: &connections
+  # The queue: Portability.Messaging/messageQueues
+  CONNECTION_QUEUE_PROVIDER: rabbitmq
+  CONNECTION_QUEUE_ENDPOINT: rabbitmq:5672
+  CONNECTION_QUEUE_QUEUENAME: orders
+  CONNECTION_QUEUE_USERNAME: oms
+  CONNECTION_QUEUE_PASSWORD: ${LOCAL_PASSWORD:-Local-only-Passw0rd}
+  # The database: Radius.Data/sqlServerDatabases
+  CONNECTION_SQL_HOST: sql
+  CONNECTION_SQL_PORT: "1433"
+  CONNECTION_SQL_DATABASE: omsdb
+  CONNECTION_SQL_USERNAME: sa
+  CONNECTION_SQL_PASSWORD: ${LOCAL_PASSWORD:-Local-only-Passw0rd}
+  # Blob storage: Radius.Storage/objectStorage. Azurite's well-known development account.
+  CONNECTION_ARCHIVE_CONTAINERNAME: orders
+  CONNECTION_ARCHIVE_CONNECTIONSTRING: DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    ports:
+      - "8080:8080"
+    environment:
+      <<: *connections
+      # Sign-in, as on Azure Local. The browser reaches Keycloak at localhost:8443 and the API
+      # reaches it at keycloak:8080; the token's issuer is the browser's address in both cases.
+      AzureAd__Authority: https://localhost:8443/realms/oms
+      AzureAd__MetadataAddress: http://keycloak:8080/realms/oms/.well-known/openid-configuration
+      AzureAd__RequireHttpsMetadata: "false"
+      AzureAd__TokenValidationParameters__ValidIssuer: https://localhost:8443/realms/oms
+      AzureAd__ClientId: oms-api
+      AzureAd__Audience: oms-api
+      Spa__Authority: https://localhost:8443/realms/oms
+      Spa__ClientId: oms-spa
+      Spa__ProtocolMode: OIDC
+      Spa__KnownAuthorities: localhost:8443
+      Spa__ApiScope: api://oms-api/access_as_user
+      Spa__IdentityProvider: Keycloak
+      Spa__Environment: Local
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+      sql: { condition: service_healthy }
+      azurite: { condition: service_started }
+      keycloak: { condition: service_healthy }
+
+  processor:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.processor
+    environment:
+      <<: *connections
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+      sql: { condition: service_healthy }
+      azurite: { condition: service_started }
+
+  rabbitmq:
+    image: docker.io/library/rabbitmq:4-management-alpine
+    # Runs as the image's own user, so it can create its data folder on any container engine.
+    user: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: oms
+      RABBITMQ_DEFAULT_PASS: ${LOCAL_PASSWORD:-Local-only-Passw0rd}
+    ports:
+      - "15672:15672"   # management UI
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      retries: 12
+
+  sql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${LOCAL_PASSWORD:-Local-only-Passw0rd}
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1' || exit 1"]
+      interval: 10s
+      retries: 18
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:3.35.0
+    command: azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck
+
+  # The same realm as on Azure Local (infra/azurelocal/keycloak/realm.json), plus a local test user.
+  # Its Active Directory connection points nowhere here; local users don't need it.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8
+    command: ["start-dev", "--import-realm"]
+    ports:
+      - "8443:8443"
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${LOCAL_PASSWORD:-Local-only-Passw0rd}
+      KC_HEALTH_ENABLED: "true"
+      KC_HTTP_MANAGEMENT_SCHEME: http
+      # Tokens carry the browser's address as issuer; calls from other containers still work.
+      KC_HOSTNAME: https://localhost:8443
+      KC_HTTPS_CERTIFICATE_FILE: /opt/keycloak/conf/certs/localhost.crt
+      KC_HTTPS_CERTIFICATE_KEY_FILE: /opt/keycloak/conf/certs/localhost.key
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      # Values for the realm's placeholders.
+      SPA_ORIGIN: http://localhost:8080
+      LDAP_URL: ldap://localhost:389
+      LDAP_USERS_DN: OU=OMS,DC=example,DC=local
+      LDAP_BIND_DN: unused
+      LDAP_BIND_PASSWORD: unused
+      KUBERNETES_ISSUER: https://kubernetes.default.svc.cluster.local
+      WORKLOAD_SUBJECT: unused
+    volumes:
+      - ./infra/azurelocal/keycloak/realm.json:/opt/keycloak/data/import/oms-realm.json:ro
+      - ./local/keycloak-users.json:/opt/keycloak/data/import/oms-users-0.json:ro
+      - ./local/certs:/opt/keycloak/conf/certs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && printf 'GET /health/ready HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      retries: 30

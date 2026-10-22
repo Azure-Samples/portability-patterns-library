@@ -39,7 +39,7 @@
 
 .PARAMETER SkipBindSecret
     Do not write the bind credential and CA certificate into Kubernetes Secrets. By default they
-    are written to the cluster so that scripts/azurelocal/keycloak.ps1 can pick them up without the
+    are written to the cluster so that scripts/infra/azurelocal/keycloak.ps1 can pick them up without the
     passwords being typed or displayed.
 
 .PARAMETER KerberosOnly
@@ -53,7 +53,7 @@
 
 .EXAMPLE
     # Elevated, on the Hyper-V host that runs the domain controller VM.
-    ./scripts/azurelocal/ad-setup.ps1 -VmName DC01 -DomainName azurelocal.lab -NetbiosName AZURELOCAL `
+    ./scripts/infra/azurelocal/ad-setup.ps1 -VmName DC01 -DomainName azurelocal.lab -NetbiosName AZURELOCAL `
         -KubeContext bcd-aksarc
 #>
 [CmdletBinding()]
@@ -90,7 +90,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
 Push-Location $repoRoot
 
 function Test-Elevated {
@@ -663,7 +663,7 @@ try {
     Write-Host "Read them back with:" -ForegroundColor DarkGray
     Write-Host "  kubectl --context $KubeContext -n $SecretNamespace get secret $SecretName -o jsonpath='{.data.bind-password}'"
     Write-Host 'Next, stand up Keycloak (cluster nodes already resolve the domain through this controller):' -ForegroundColor Yellow
-    Write-Host "  ./scripts/azurelocal/keycloak.ps1 -AdServer $($created.DcFqdn) -AdDomain $($created.DnsRoot) -KubeContext $KubeContext -AllowInClusterIssuer ..."
+    Write-Host "  ./scripts/infra/azurelocal/keycloak.ps1 -AdServer $($created.DcFqdn) -AdDomain $($created.DnsRoot) -SpaOrigin https://<app address> -KubeContext $KubeContext -AllowInClusterIssuer ..."
 }
 finally {
     Pop-Location

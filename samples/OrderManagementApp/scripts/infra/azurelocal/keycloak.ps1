@@ -14,9 +14,14 @@
       exchanges it for an access token   ->  the workload presents that token to a backing service
 
     Keycloak gets its users and groups from the domain controller over LDAP, so the directory
-    stays the single source of truth and the same accounts work for the API calls added later.
-    The 'kubernetes' identity provider below is the trust statement that corresponds to a
-    federated identity credential on a managed identity.
+    stays the single source of truth. The 'kubernetes' identity provider in the realm is the trust
+    statement that corresponds to a federated identity credential on a managed identity.
+
+    What gets deployed is in infra/azurelocal/keycloak: keycloak.yaml (Keycloak and PostgreSQL)
+    and realm.json (the 'oms' realm: AD federation, app roles, the sign-in and workload clients).
+    This script does the per-site parts around those files: it creates the Secrets, writes the
+    site values into the keycloak-realm-settings ConfigMap, applies the folder with kustomize, and
+    prepares the app's namespace. The folder's README.md describes the same steps by hand.
 
     Keycloak trusts the cluster's ServiceAccount token issuer. On AKS enabled by Arc that is the
     default in-cluster issuer, which Keycloak can resolve because it runs in the same cluster: pass
@@ -26,18 +31,27 @@
     Host name of the site's domain controller. Under LDAPS this must
     be the name in the controller's certificate, not its address, or the handshake fails.
 
+.PARAMETER SpaOrigin
+    Address users open the app at, such as https://orders.contoso.local. Sign-in redirects back to it.
+
 .PARAMETER Registry
     Registry holding the mirrored Keycloak and PostgreSQL images, normally the in-cluster connected registry.
     Omit to pull from the public registries, which only works where the cluster has internet.
 
 .PARAMETER UseLdaps
     Bind to the directory over LDAPS on 636, which is the default. The certificate comes from the
-    directory's enterprise CA, handed over in the '' Secret. Pass -UseLdaps:$false to fall back to plain LDAP on
+    directory's enterprise CA, handed over in the 'oms-ad-ca' Secret. Pass -UseLdaps:$false to fall back to plain LDAP on
     389, which sends the bind password and every user password across the network in the clear.
 
+.PARAMETER ReimportRealm
+    Delete the 'oms' realm and import realm.json again. Keycloak imports a realm only when it does
+    not exist, so this is how a changed realm.json reaches a running Keycloak. The new realm has new
+    signing keys, so restart the app's pods afterwards or they reject tokens until their key cache
+    refreshes.
+
 .EXAMPLE
-    ./scripts/azurelocal/keycloak.ps1 -AdServer dc01.azurelocal.lab -AdDomain azurelocal.lab `
-        -Registry 10.96.0.50 -AllowInClusterIssuer
+    ./scripts/infra/azurelocal/keycloak.ps1 -AdServer dc01.azurelocal.lab -AdDomain azurelocal.lab `
+        -SpaOrigin https://192.168.44.200 -Registry 10.96.0.50 -AllowInClusterIssuer
 #>
 [CmdletBinding()]
 param(
@@ -45,28 +59,16 @@ param(
     [string]$AdDomain = 'azurelocal.lab',
     [string]$AdOuName = 'OMS',
     [switch]$UseLdaps = $true,
+    [Parameter(Mandatory = $true)][string]$SpaOrigin,
 
     [string]$KubeContext = 'bcd-aksarc',
-    [string]$Namespace = 'identity',
-    [string]$ReleaseName = 'keycloak',
 
     [string]$Registry,
-    [string]$ImagePullSecretName = 'azurelocal-registry',
     [string]$ImagePullSecretSourceNamespace = 'oms-azurelocal',
-    [string]$KeycloakImage = 'keycloak/keycloak:26.8',
-    [string]$PostgresImage = 'postgres:17-alpine',
 
-    [string]$RealmName = 'oms',
-    [string]$WorkloadClientId = 'oms-workloads',
-
-    [string]$BindSecretName = 'oms-ad-bind',
-    [string]$CaSecretName = 'oms-ad-ca',
     [string]$WorkloadNamespace = 'oms-azurelocal',
     [string]$WorkloadServiceAccount = 'oms-workload',
     [string]$WorkloadCaSecretName = 'oms-identity-ca',
-    [string]$IssuerCaSecretName = 'keycloak-ca',
-    [string]$IssuerDiscoveryBinding = 'keycloak-issuer-discovery',
-    [int]$NodePort = 30443,
 
     [switch]$ReimportRealm,
     [switch]$SkipVerify,
@@ -78,7 +80,18 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
+
+# Names fixed by the files in infra/azurelocal/keycloak.
+$Namespace = 'identity'
+$ReleaseName = 'keycloak'
+$RealmName = 'oms'
+$WorkloadClientId = 'oms-workloads'
+$NodePort = 30443
+$ImagePullSecretName = 'azurelocal-registry'
+$BindSecretName = 'oms-ad-bind'
+$CaSecretName = 'oms-ad-ca'
+$IssuerCaSecretName = 'keycloak-ca'
 Push-Location $repoRoot
 
 # Windows PowerShell does not load this assembly by default.
@@ -125,13 +138,6 @@ function New-RandomSecret {
     [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
     # Base64url, so the value survives being pasted into a URL or a header without escaping.
     return [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
-}
-
-function Resolve-Image {
-    param([Parameter(Mandatory = $true)][string]$Image, [Parameter(Mandatory = $true)][string]$PublicHost)
-
-    if ($Registry) { return "$Registry/$Image" }
-    return "$PublicHost/$Image"
 }
 
 # Keycloak presents a certificate nothing here trusts yet, and -SkipCertificateCheck exists only
@@ -247,16 +253,6 @@ externally reachable service-account issuer.
     }
     $clusterCaPem = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($caData))
 
-    # Keycloak fetches the cluster's signing keys itself, authenticating with its own
-    # ServiceAccount token. The API server refuses anonymous callers, so that account needs
-    # permission to read the discovery and JWKS endpoints.
-    Write-Host "==> Granting Keycloak access to the cluster signing keys" -ForegroundColor Cyan
-    kubectl --context $KubeContext create clusterrolebinding $IssuerDiscoveryBinding `
-        --clusterrole=system:service-account-issuer-discovery `
-        --serviceaccount="${Namespace}:default" `
-        --dry-run=client --output yaml | kubectl --context $KubeContext apply -f - | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Could not grant Keycloak issuer discovery access.' }
-
     # ------------------------------------------------------------------------------------------
     # Credentials. Generated once and kept in the cluster, so re-running does not churn them.
     # ------------------------------------------------------------------------------------------
@@ -266,7 +262,7 @@ externally reachable service-account issuer.
         throw @"
 No usable '$BindSecretName' Secret in namespace '$Namespace'.
 Create it with the directory bind account (keys bind-upn, bind-password), or run
-scripts/azurelocal/ad-setup.ps1.
+scripts/infra/azurelocal/ad-setup.ps1.
 "@
     }
 
@@ -288,17 +284,17 @@ scripts/azurelocal/ad-setup.ps1.
     }
 
     # ------------------------------------------------------------------------------------------
-    # The realm. Imported at startup rather than configured afterwards, so the whole trust
-    # relationship is one reviewable document instead of a sequence of admin API calls.
+    # Site values. The realm and the manifests are files in infra/azurelocal/keycloak; what
+    # differs per site goes into the keycloak-realm-settings ConfigMap, and Keycloak fills the
+    # ${...} placeholders in realm.json from it when it imports the realm.
     # ------------------------------------------------------------------------------------------
-    Write-Host "==> Building the '$RealmName' realm" -ForegroundColor Cyan
+    Write-Host "==> Writing the site settings for the '$RealmName' realm" -ForegroundColor Cyan
 
     $ldapPort = if ($UseLdaps) { 636 } else { 389 }
     $ldapScheme = if ($UseLdaps) { 'ldaps' } else { 'ldap' }
     $baseDn = ($AdDomain.Split('.') | ForEach-Object { "DC=$_" }) -join ','
     $usersDn = "OU=$AdOuName,$baseDn"
 
-    $adCaPem = $null
     if ($UseLdaps) {
         # The controller's certificate carries its host name, so an address here fails hostname
         # verification no matter how the trust is set up.
@@ -306,237 +302,25 @@ scripts/azurelocal/ad-setup.ps1.
             throw "-AdServer is the address '$AdServer'. LDAPS validates the controller's host name, so pass its FQDN instead, or pass -UseLdaps:`$false to use plain LDAP."
         }
 
-        $adCaPem = Get-SecretValue -Name $CaSecretName -Key 'ca.crt'
-        if (-not $adCaPem) {
-            throw "Secret '$CaSecretName' is missing from namespace '$Namespace', so the directory's certificate cannot be trusted. Create it with the directory's CA certificate (key ca.crt; scripts/azurelocal/ad-setup.ps1 does this), or pass -UseLdaps:`$false."
+        if (-not (Get-SecretValue -Name $CaSecretName -Key 'ca.crt')) {
+            throw "Secret '$CaSecretName' is missing from namespace '$Namespace', so the directory's certificate cannot be trusted. Create it with the directory's CA certificate (key ca.crt; scripts/infra/azurelocal/ad-setup.ps1 does this), or pass -UseLdaps:`$false."
         }
     }
     else {
         Write-Warning 'Binding over plain LDAP. The bind password and every user password cross the site network in the clear.'
     }
 
-    $realm = [ordered]@{
-        realm                 = $RealmName
-        enabled               = $true
-        # Short lifetimes are affordable because the pod can always mint a fresh ServiceAccount
-        # token and exchange it again without talking to anything outside the site.
-        accessTokenLifespan   = 900
-        ssoSessionIdleTimeout = 1800
-
-        components            = [ordered]@{
-            # The key is the provider type; repeating it inside the entry is rejected on import.
-            'org.keycloak.storage.UserStorageProvider' = @(
-                [ordered]@{
-                    name           = 'active-directory'
-                    providerId     = 'ldap'
-                    config         = [ordered]@{
-                        enabled                 = @('true')
-                        vendor                  = @('ad')
-                        connectionUrl           = @("${ldapScheme}://${AdServer}:${ldapPort}")
-                        bindDn                  = @($bindDn)
-                        bindCredential          = @($bindPassword)
-                        authType                = @('simple')
-                        usersDn                 = @($usersDn)
-                        userObjectClasses       = @('person, organizationalPerson, user')
-                        usernameLDAPAttribute   = @('sAMAccountName')
-                        rdnLDAPAttribute        = @('cn')
-                        uuidLDAPAttribute       = @('objectGUID')
-                        searchScope             = @('2')
-                        # Read only: the directory is authoritative, and Keycloak holding write
-                        # access to it would be a far larger blast radius than this sample needs.
-                        editMode                = @('READ_ONLY')
-                        importEnabled           = @('true')
-                        syncRegistrations       = @('false')
-                        trustEmail              = @('true')
-                        pagination              = @('true')
-                    }
-                    subComponents  = [ordered]@{
-                        # Creating a provider through the console adds these automatically, but a
-                        # realm import does not, and without them every user arrives with a null
-                        # username and the sync fails.
-                        'org.keycloak.storage.ldap.mappers.LDAPStorageMapper' = @(
-                            [ordered]@{
-                                name       = 'username'
-                                providerId = 'user-attribute-ldap-mapper'
-                                config     = [ordered]@{
-                                    'user.model.attribute'        = @('username')
-                                    'ldap.attribute'              = @('sAMAccountName')
-                                    'read.only'                   = @('true')
-                                    'always.read.value.from.ldap' = @('false')
-                                    'is.mandatory.in.ldap'        = @('true')
-                                }
-                            }
-                            [ordered]@{
-                                name       = 'first name'
-                                providerId = 'user-attribute-ldap-mapper'
-                                config     = [ordered]@{
-                                    'user.model.attribute'        = @('firstName')
-                                    'ldap.attribute'              = @('givenName')
-                                    'read.only'                   = @('true')
-                                    'always.read.value.from.ldap' = @('true')
-                                    # Accounts created without a given name would otherwise fail
-                                    # the whole sync rather than import without one.
-                                    'is.mandatory.in.ldap'        = @('false')
-                                }
-                            }
-                            [ordered]@{
-                                name       = 'last name'
-                                providerId = 'user-attribute-ldap-mapper'
-                                config     = [ordered]@{
-                                    'user.model.attribute'        = @('lastName')
-                                    'ldap.attribute'              = @('sn')
-                                    'read.only'                   = @('true')
-                                    'always.read.value.from.ldap' = @('true')
-                                    'is.mandatory.in.ldap'        = @('false')
-                                }
-                            }
-                            [ordered]@{
-                                name       = 'email'
-                                providerId = 'user-attribute-ldap-mapper'
-                                config     = [ordered]@{
-                                    'user.model.attribute'        = @('email')
-                                    'ldap.attribute'              = @('mail')
-                                    'read.only'                   = @('true')
-                                    'always.read.value.from.ldap' = @('true')
-                                    'is.mandatory.in.ldap'        = @('false')
-                                }
-                            }
-                            [ordered]@{
-                                name       = 'creation date'
-                                providerId = 'user-attribute-ldap-mapper'
-                                config     = [ordered]@{
-                                    'user.model.attribute'        = @('createTimestamp')
-                                    'ldap.attribute'              = @('whenCreated')
-                                    'read.only'                   = @('true')
-                                    'always.read.value.from.ldap' = @('true')
-                                    'is.mandatory.in.ldap'        = @('false')
-                                }
-                            }
-                            [ordered]@{
-                                name       = 'modify date'
-                                providerId = 'user-attribute-ldap-mapper'
-                                config     = [ordered]@{
-                                    'user.model.attribute'        = @('modifyTimestamp')
-                                    'ldap.attribute'              = @('whenChanged')
-                                    'read.only'                   = @('true')
-                                    'always.read.value.from.ldap' = @('true')
-                                    'is.mandatory.in.ldap'        = @('false')
-                                }
-                            }
-                            [ordered]@{
-                                # Translates userAccountControl, so a disabled or locked directory
-                                # account cannot sign in through Keycloak.
-                                name       = 'msad-account-controls'
-                                providerId = 'msad-user-account-control-mapper'
-                                config     = [ordered]@{}
-                            }
-                            [ordered]@{
-                                name         = 'group-mapper'
-                                providerId   = 'group-ldap-mapper'
-                                config       = [ordered]@{
-                                    'groups.dn'                 = @($usersDn)
-                                    'group.name.ldap.attribute' = @('cn')
-                                    'group.object.classes'      = @('group')
-                                    'membership.ldap.attribute' = @('member')
-                                    'membership.attribute.type' = @('DN')
-                                    'mode'                      = @('READ_ONLY')
-                                    'user.roles.retrieve.strategy' = @('LOAD_GROUPS_BY_MEMBER_ATTRIBUTE')
-                                }
-                            }
-                        )
-                    }
-                }
-            )
-        }
-
-        identityProviders     = @(
-            # The federated identity credential equivalent. Entra matches a credential on issuer
-            # plus subject and returns a token for the managed identity; this provider is the
-            # issuer half of that statement, and the client below is the subject half.
-            [ordered]@{
-                alias       = 'kubernetes'
-                displayName = 'Kubernetes ServiceAccount tokens'
-                providerId  = 'kubernetes'
-                enabled     = $true
-                storeToken  = $false
-                config      = [ordered]@{
-                    issuer               = $issuer
-                    allowedClockSkew     = '30'
-                    # Kubernetes assertions carry no replay protection, so Keycloak's guidance is
-                    # to keep them short lived rather than attempt to detect reuse.
-                    maxAssertionLifespan = '600'
-                }
-            }
-        )
-
-        clients               = @(
-            # The managed identity equivalent. It holds no secret: the cluster's ServiceAccount
-            # token authenticates it, matched on the issuer and subject below.
-            [ordered]@{
-                clientId                  = $WorkloadClientId
-                enabled                   = $true
-                protocol                  = 'openid-connect'
-                publicClient              = $false
-                clientAuthenticatorType   = 'federated-jwt'
-                standardFlowEnabled       = $false
-                directAccessGrantsEnabled = $false
-                serviceAccountsEnabled    = $true
-                attributes                = [ordered]@{
-                    'jwt.credential.issuer' = 'kubernetes'
-                    'jwt.credential.sub'    = "system:serviceaccount:${WorkloadNamespace}:${WorkloadServiceAccount}"
-                    'access.token.lifespan' = '900'
-                }
-                protocolMappers           = @(
-                    # Backing services reject a token that is not addressed to them, so each one
-                    # has to appear in the audience.
-                    [ordered]@{
-                        name           = 'rabbitmq-audience'
-                        protocol       = 'openid-connect'
-                        protocolMapper = 'oidc-audience-mapper'
-                        config         = [ordered]@{
-                            'included.custom.audience' = 'rabbitmq'
-                            'access.token.claim'       = 'true'
-                        }
-                    }
-                    # RabbitMQ reads its permissions from this claim rather than 'scope', which
-                    # Keycloak derives from client scope names and cannot express as these verbs.
-                    [ordered]@{
-                        name           = 'rabbitmq-permissions'
-                        protocol       = 'openid-connect'
-                        protocolMapper = 'oidc-hardcoded-claim-mapper'
-                        config         = [ordered]@{
-                            'claim.name'         = 'rabbitmq_scopes'
-                            'claim.value'        = 'rabbitmq.configure:*/* rabbitmq.write:*/* rabbitmq.read:*/*'
-                            'jsonType.label'     = 'String'
-                            'access.token.claim' = 'true'
-                        }
-                    }
-                )
-            }
-        )
-
-        groups                = @(
-            [ordered]@{ name = 'oms-app-readers' }
-            [ordered]@{ name = 'oms-app-writers' }
-        )
+    $realmSettings = [ordered]@{
+        LDAP_URL          = "${ldapScheme}://${AdServer}:${ldapPort}"
+        LDAP_USERS_DN     = $usersDn
+        KUBERNETES_ISSUER = $issuer
+        WORKLOAD_SUBJECT  = "system:serviceaccount:${WorkloadNamespace}:$WorkloadServiceAccount"
+        SPA_ORIGIN        = $SpaOrigin.TrimEnd('/')
     }
-
-    $realmJson = $realm | ConvertTo-Json -Depth 20
-
-    # The realm carries the LDAP bind password and the client secret, so it is a Secret rather
-    # than a ConfigMap.
-    $realmSecretManifest = @"
-apiVersion: v1
-kind: Secret
-metadata:
-  name: keycloak-realm
-  namespace: $Namespace
-type: Opaque
-stringData:
-  oms-realm.json: |
-$(($realmJson -split "`n" | ForEach-Object { '    ' + $_ }) -join "`n")
-"@
-    $realmSecretManifest | kubectl --context $KubeContext apply -f - | Out-Null
+    $literals = $realmSettings.GetEnumerator() | ForEach-Object { "--from-literal=$($_.Key)=$($_.Value)" }
+    kubectl --context $KubeContext -n $Namespace create configmap keycloak-realm-settings $literals `
+        --dry-run=client --output yaml | kubectl --context $KubeContext apply -f - | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Could not write the keycloak-realm-settings ConfigMap.' }
 
     $clusterCaManifest = @"
 apiVersion: v1
@@ -551,24 +335,7 @@ $(($clusterCaPem -split "`n" | ForEach-Object { '    ' + $_.TrimEnd() }) -join "
 "@
     $clusterCaManifest | kubectl --context $KubeContext apply -f - | Out-Null
 
-    # Both certificates land in one directory because KC_TRUSTSTORE_PATHS takes a path, not a
-    # list; the directory CA is only present when binding over LDAPS.
-    $truststoreSources = @('              - secret:', '                  name: cluster-ca')
-    if ($adCaPem) {
-        $truststoreSources += @('              - secret:', "                  name: $CaSecretName")
-    }
-    $truststoreSources = $truststoreSources -join "`n"
-
-    # ------------------------------------------------------------------------------------------
-    # Workloads.
-    # ------------------------------------------------------------------------------------------
-    Write-Host "==> Deploying PostgreSQL and Keycloak into '$Namespace'" -ForegroundColor Cyan
-
-    $keycloakRef = Resolve-Image -Image $KeycloakImage -PublicHost 'quay.io'
-    $postgresRef = Resolve-Image -Image $PostgresImage -PublicHost 'docker.io/library'
-
-    $pullSecretBlock = ''
-    if ($Registry -and $ImagePullSecretName) {
+    if ($Registry) {
         # Pull secrets do not cross namespaces, so the one the rest of the deployment uses has to
         # be copied here or the kubelet falls back to an anonymous token and the registry refuses.
         $existing = kubectl --context $KubeContext -n $Namespace get secret $ImagePullSecretName `
@@ -599,184 +366,7 @@ data:
 "@ | kubectl --context $KubeContext apply -f - | Out-Null
             if ($LASTEXITCODE -ne 0) { throw 'Could not copy the registry credential.' }
         }
-
-        $pullSecretBlock = @"
-      imagePullSecrets:
-        - name: $ImagePullSecretName
-"@
     }
-
-    $manifest = @"
-apiVersion: v1
-kind: Service
-metadata:
-  name: keycloak-db
-  namespace: $Namespace
-spec:
-  selector:
-    app: keycloak-db
-  ports:
-    - port: 5432
-      targetPort: 5432
----
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: keycloak-db
-  namespace: $Namespace
-spec:
-  serviceName: keycloak-db
-  replicas: 1
-  selector:
-    matchLabels:
-      app: keycloak-db
-  template:
-    metadata:
-      labels:
-        app: keycloak-db
-    spec:
-$pullSecretBlock
-      containers:
-        - name: postgres
-          image: $postgresRef
-          env:
-            - name: POSTGRES_DB
-              value: keycloak
-            - name: POSTGRES_USER
-              valueFrom:
-                secretKeyRef: { name: keycloak-db, key: username }
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: keycloak-db, key: password }
-            - name: PGDATA
-              value: /var/lib/postgresql/data/pgdata
-          ports:
-            - containerPort: 5432
-          readinessProbe:
-            exec:
-              command: ["pg_isready", "-U", "keycloak", "-d", "keycloak"]
-            initialDelaySeconds: 10
-            periodSeconds: 10
-          volumeMounts:
-            - name: data
-              mountPath: /var/lib/postgresql/data
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 8Gi
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: $ReleaseName
-  namespace: $Namespace
-spec:
-  type: NodePort
-  selector:
-    app: $ReleaseName
-  ports:
-    - name: https
-      port: 8443
-      targetPort: 8443
-      nodePort: $NodePort
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: $ReleaseName
-  namespace: $Namespace
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: $ReleaseName
-  template:
-    metadata:
-      labels:
-        app: $ReleaseName
-    spec:
-$pullSecretBlock
-      containers:
-        - name: keycloak
-          image: $keycloakRef
-          args: ["start", "--import-realm", "--optimized=false"]
-          env:
-            - name: KC_BOOTSTRAP_ADMIN_USERNAME
-              valueFrom:
-                secretKeyRef: { name: keycloak-admin, key: username }
-            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: keycloak-admin, key: password }
-            - name: KC_DB
-              value: postgres
-            - name: KC_DB_URL
-              value: jdbc:postgresql://keycloak-db:5432/keycloak
-            - name: KC_DB_USERNAME
-              valueFrom:
-                secretKeyRef: { name: keycloak-db, key: username }
-            - name: KC_DB_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: keycloak-db, key: password }
-            # Self-signed is acceptable here only because every caller is inside the site and
-            # pins this certificate explicitly. Replace it with one the domain CA issues.
-            - name: KC_HTTPS_CERTIFICATE_FILE
-              value: /opt/keycloak/conf/tls/tls.crt
-            - name: KC_HTTPS_CERTIFICATE_KEY_FILE
-              value: /opt/keycloak/conf/tls/tls.key
-            - name: KC_HOSTNAME_STRICT
-              value: "false"
-            - name: KC_HEALTH_ENABLED
-              value: "true"
-            # One replica, so skip Infinispan clustering. Otherwise a restarted pod tries to join
-            # the membership row its predecessor left in the database and never finishes starting.
-            - name: KC_CACHE
-              value: local
-            # Versions are explicit: unversioned 'admin-fine-grained-authz' resolves to v2, and
-            # external-to-internal token exchange is only authorised by v1.
-            - name: KC_FEATURES
-              value: kubernetes-service-accounts:v1
-            # Lets Keycloak open the API server's JWKS endpoint, which is signed by the cluster CA
-            # and would otherwise fail validation.
-            - name: KC_TRUSTSTORE_PATHS
-              value: /opt/keycloak/conf/truststores
-          ports:
-            - containerPort: 8443
-          readinessProbe:
-            httpGet:
-              path: /health/ready
-              port: 9000
-              # The management interface inherits the server's HTTPS settings, so a plain HTTP
-              # probe is answered with a TLS handshake and never succeeds.
-              scheme: HTTPS
-            initialDelaySeconds: 30
-            periodSeconds: 10
-            failureThreshold: 30
-          volumeMounts:
-            - name: realm
-              mountPath: /opt/keycloak/data/import
-              readOnly: true
-            - name: truststore
-              mountPath: /opt/keycloak/conf/truststores
-              readOnly: true
-            - name: tls
-              mountPath: /opt/keycloak/conf/tls
-              readOnly: true
-      volumes:
-        - name: realm
-          secret:
-            secretName: keycloak-realm
-        - name: truststore
-          projected:
-            sources:
-$truststoreSources
-        - name: tls
-          secret:
-            secretName: keycloak-tls
-"@
 
     # Keycloak refuses to start 'start' mode over plain HTTP, so it needs a certificate before the
     # Deployment is applied.
@@ -861,7 +451,15 @@ data:
         }
     }
 
-    $manifest | kubectl --context $KubeContext apply -f - | Out-Null
+    Write-Host "==> Deploying PostgreSQL and Keycloak from infra/azurelocal/keycloak" -ForegroundColor Cyan
+    $rendered = kubectl kustomize (Join-Path $repoRoot 'infra/azurelocal/keycloak')
+    if ($LASTEXITCODE -ne 0) { throw 'Could not render infra/azurelocal/keycloak.' }
+    if ($Registry) {
+        # The manifests name the public images; the site pulls the same images from its own registry.
+        $rendered = $rendered -replace 'image: (quay\.io|docker\.io/library)/', "image: $Registry/"
+    }
+    $rendered | kubectl --context $KubeContext apply -f - | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Could not apply infra/azurelocal/keycloak.' }
 
     Write-Host "==> Waiting for Keycloak to become ready" -ForegroundColor Cyan
     Invoke-Checked 'keycloak rollout' {

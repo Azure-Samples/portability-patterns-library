@@ -19,7 +19,7 @@
     Recipes (recipes/kubernetes) are always published with it.
 
 .EXAMPLE
-    ./scripts/publish-recipes.ps1 -Registry myregistry.azurecr.io -Platform azure
+    ./scripts/deploy/publish-recipes.ps1 -Registry myregistry.azurecr.io -Platform azure
 #>
 [CmdletBinding()]
 param(
@@ -36,7 +36,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-. (Join-Path $PSScriptRoot 'lib/recipes.ps1')
+. (Join-Path $PSScriptRoot '../lib/recipes.ps1')
 $recipes = Get-LibraryRecipe -Platform $Platform
 if (-not $recipes) { throw "No Recipes found for platform '$Platform' under $LibraryRecipeRoot." }
 

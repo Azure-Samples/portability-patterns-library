@@ -22,10 +22,10 @@
     Runs `az deployment sub what-if` and stops, without changing anything.
 
 .EXAMPLE
-    ./scripts/azure/provision-infra.ps1 -SubscriptionId <sub-id> -RegistryName bcdacr042
+    ./scripts/infra/azure/provision-infra.ps1 -SubscriptionId <sub-id> -RegistryName bcdacr042
 
 .EXAMPLE
-    ./scripts/azure/provision-infra.ps1 -SubscriptionId <sub-id> -RegistryName bcdacr042 -WhatIf
+    ./scripts/infra/azure/provision-infra.ps1 -SubscriptionId <sub-id> -RegistryName bcdacr042 -WhatIf
 #>
 [CmdletBinding()]
 param(
@@ -67,11 +67,15 @@ param(
     [int]$RadiusCliTokenHours = 24,
 
     [switch]$SkipRadiusInstall,
+
+    # The platform template is already deployed (for example by azd up). Skips the deployment and
+    # does only the steps inside the cluster.
+    [switch]$SkipTemplate,
     [switch]$WhatIf
 )
 
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
 Push-Location $repoRoot
 
 <#
@@ -225,82 +229,99 @@ try {
     }
 
     # Arrays cannot be passed as key=value, so every parameter goes through a file.
-    $parameterFile = New-ParameterFile @{
-        location                = $Location
-        resourceGroupName       = $ResourceGroup
-        clusterName             = $ClusterName
-        registryName            = $RegistryName
-        identityName            = $IdentityName
-        radiusIdentityName      = $RadiusIdentityName
-        appNamespace            = $AppNamespace
-        serviceAccountName      = $ServiceAccountName
-        nodeCount               = $NodeCount
-        nodeVmSize              = $NodeVmSize
-        registrySku             = $RegistrySku
-        clusterAdminObjectIds   = @($ClusterAdminObjectIds)
-        useEntraAuthentication  = $UseEntraAuthentication
+    if ($SkipTemplate) {
+        # The template was deployed by someone else, for example azd. Read what the rest of this
+        # script needs from the resources themselves.
+        Write-Host "==> Reading the platform resources in '$ResourceGroup'" -ForegroundColor Cyan
+        $registryLoginServer = az acr show --name $RegistryName --query loginServer --output tsv
+        $workloadIdentity = az identity show --resource-group $ResourceGroup --name $IdentityName --output json | ConvertFrom-Json
+        $radiusClientId = az identity show --resource-group $ResourceGroup --name $RadiusIdentityName --query clientId --output tsv
+        $oidcIssuer = az aks show --resource-group $ResourceGroup --name $ClusterName --query oidcIssuerProfile.issuerUrl --output tsv
+        if (-not $registryLoginServer -or -not $workloadIdentity -or -not $radiusClientId -or -not $oidcIssuer) {
+            throw "The platform resources aren't all in '$ResourceGroup'. Deploy infra/azure/platform.bicep first, or run without -SkipTemplate."
+        }
+        $clientId = $workloadIdentity.clientId
+        $principalId = $workloadIdentity.principalId
+        $identity = $workloadIdentity.name
     }
+    else {
+        $parameterFile = New-ParameterFile @{
+            location                = $Location
+            resourceGroupName       = $ResourceGroup
+            clusterName             = $ClusterName
+            registryName            = $RegistryName
+            identityName            = $IdentityName
+            radiusIdentityName      = $RadiusIdentityName
+            appNamespace            = $AppNamespace
+            serviceAccountName      = $ServiceAccountName
+            nodeCount               = $NodeCount
+            nodeVmSize              = $NodeVmSize
+            registrySku             = $RegistrySku
+            clusterAdminObjectIds   = @($ClusterAdminObjectIds)
+            useEntraAuthentication  = $UseEntraAuthentication
+        }
 
-    if ($WhatIf) {
-        Write-Host "==> Previewing changes (what-if). Nothing is created." -ForegroundColor Cyan
-        az deployment sub what-if `
+        if ($WhatIf) {
+            Write-Host "==> Previewing changes (what-if). Nothing is created." -ForegroundColor Cyan
+            az deployment sub what-if `
+                --location $Location `
+                --template-file $template `
+                --parameters "@$parameterFile"
+
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "==> Preview failed. Extracting the underlying error..." -ForegroundColor Yellow
+                $details = Get-PreflightError -TemplateFile $template -Location $Location -ParameterFile $parameterFile
+                if ($details) {
+                    Write-Host "`nUnderlying error reported by Azure:" -ForegroundColor Red
+                    $details | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+                }
+                throw 'Preview failed.'
+            }
+
+            return
+        }
+
+        Write-Host "==> Deploying platform infrastructure (this typically takes 5-10 minutes)" -ForegroundColor Cyan
+        az deployment sub create `
+            --name $deploymentName `
             --location $Location `
             --template-file $template `
-            --parameters "@$parameterFile"
-
+            --parameters "@$parameterFile" `
+            --output none
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "==> Preview failed. Extracting the underlying error..." -ForegroundColor Yellow
-            $details = Get-PreflightError -TemplateFile $template -Location $Location -ParameterFile $parameterFile
+            # Two different failure modes, so try both sources. A deployment that reached ARM records
+            # its error tree; one rejected at preflight never does, and must be reproduced via validate.
+            Write-Host "==> Deployment failed. Extracting the underlying error..." -ForegroundColor Yellow
+
+            $details = Get-DeploymentError -DeploymentName $deploymentName
+            if (-not $details) {
+                $details = Get-PreflightError -TemplateFile $template -Location $Location -ParameterFile $parameterFile
+            }
+
             if ($details) {
                 Write-Host "`nUnderlying error reported by Azure:" -ForegroundColor Red
                 $details | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
             }
-            throw 'Preview failed.'
+            else {
+                Write-Host "  Could not extract further detail. Re-run with:" -ForegroundColor DarkGray
+                Write-Host "    az deployment sub validate --location $Location --template-file $template --parameters @$parameterFile --debug" -ForegroundColor DarkGray
+            }
+
+            throw 'Infrastructure deployment failed.'
         }
 
-        return
+        Write-Host "==> Reading deployment outputs" -ForegroundColor Cyan
+        $outputsJson = az deployment sub show --name $deploymentName --query properties.outputs --output json
+        if ($LASTEXITCODE -ne 0) { throw 'Could not read deployment outputs.' }
+        $outputs = $outputsJson | ConvertFrom-Json
+
+        $registryLoginServer = $outputs.registryLoginServer.value
+        $clientId = $outputs.workloadIdentityClientId.value
+        $principalId = $outputs.workloadIdentityPrincipalId.value
+        $identity = $outputs.workloadIdentityName.value
+        $radiusClientId = $outputs.radiusIdentityClientId.value
+        $oidcIssuer = $outputs.oidcIssuerUrl.value
     }
-
-    Write-Host "==> Deploying platform infrastructure (this typically takes 5-10 minutes)" -ForegroundColor Cyan
-    az deployment sub create `
-        --name $deploymentName `
-        --location $Location `
-        --template-file $template `
-        --parameters "@$parameterFile" `
-        --output none
-    if ($LASTEXITCODE -ne 0) {
-        # Two different failure modes, so try both sources. A deployment that reached ARM records
-        # its error tree; one rejected at preflight never does, and must be reproduced via validate.
-        Write-Host "==> Deployment failed. Extracting the underlying error..." -ForegroundColor Yellow
-
-        $details = Get-DeploymentError -DeploymentName $deploymentName
-        if (-not $details) {
-            $details = Get-PreflightError -TemplateFile $template -Location $Location -ParameterFile $parameterFile
-        }
-
-        if ($details) {
-            Write-Host "`nUnderlying error reported by Azure:" -ForegroundColor Red
-            $details | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
-        }
-        else {
-            Write-Host "  Could not extract further detail. Re-run with:" -ForegroundColor DarkGray
-            Write-Host "    az deployment sub validate --location $Location --template-file $template --parameters @$parameterFile --debug" -ForegroundColor DarkGray
-        }
-
-        throw 'Infrastructure deployment failed.'
-    }
-
-    Write-Host "==> Reading deployment outputs" -ForegroundColor Cyan
-    $outputsJson = az deployment sub show --name $deploymentName --query properties.outputs --output json
-    if ($LASTEXITCODE -ne 0) { throw 'Could not read deployment outputs.' }
-    $outputs = $outputsJson | ConvertFrom-Json
-
-    $registryLoginServer = $outputs.registryLoginServer.value
-    $clientId = $outputs.workloadIdentityClientId.value
-    $principalId = $outputs.workloadIdentityPrincipalId.value
-    $identity = $outputs.workloadIdentityName.value
-    $radiusClientId = $outputs.radiusIdentityClientId.value
-    $oidcIssuer = $outputs.oidcIssuerUrl.value
     $tenantId = az account show --query tenantId --output tsv
 
     Write-Host "==> Fetching cluster credentials" -ForegroundColor Cyan
@@ -345,7 +366,7 @@ metadata:
             kubectl create namespace radius-system --context $ClusterName --dry-run=client -o yaml |
                 kubectl apply --context $ClusterName -f - | Out-Null
             if ($LASTEXITCODE -ne 0) { throw 'Creating the radius-system namespace failed.' }
-            $radiusContext = ./scripts/azure/ensure-radius-context.ps1 `
+            $radiusContext = ./scripts/lib/ensure-radius-context.ps1 `
                 -ClusterName $ClusterName `
                 -ServiceAccountName $RadiusCliServiceAccount `
                 -TokenHours $RadiusCliTokenHours
@@ -399,7 +420,7 @@ metadata:
     Write-Host "`nNext step - deploy the application." -ForegroundColor Yellow
     Write-Host "-AppInfraResourceGroup is where Recipes provision Service Bus, Storage and Azure SQL;"
     Write-Host "reusing '$ResourceGroup' keeps everything in one group, so cleanup is one 'az group delete'."
-    Write-Host "     ./scripts/azure/deploy.ps1 ``"
+    Write-Host "     ./scripts/deploy/azure.ps1 ``"
     Write-Host "         -Registry $registryLoginServer ``"
     Write-Host "         -SubscriptionId $SubscriptionId ``"
     Write-Host "         -AppInfraResourceGroup $ResourceGroup ``"

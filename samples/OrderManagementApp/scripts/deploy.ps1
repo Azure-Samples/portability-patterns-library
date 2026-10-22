@@ -9,7 +9,7 @@
     decides what backs the queue, object storage and database.
 
     Values come from the 'Common' and 'Deploy' sections of the target in scripts/settings.json. Any
-    other argument goes to scripts/<target>/deploy.ps1 and wins over the settings file.
+    other argument goes to scripts/deploy/<target>.ps1 and wins over the settings file.
 
 .EXAMPLE
     ./scripts/deploy.ps1 -Target Azure
@@ -28,7 +28,7 @@ $ErrorActionPreference = 'Stop'
 if (-not $Target) { throw 'Specify -Target Azure or -Target AzureLocal.' }
 . "$PSScriptRoot/lib/settings.ps1"
 
-$script = Join-Path $PSScriptRoot "$($Target.ToLowerInvariant())/deploy.ps1"
+$script = Join-Path $PSScriptRoot "deploy/$($Target.ToLowerInvariant()).ps1"
 $arguments = Get-OmsStepArguments (Read-OmsSettings $Target $SettingsPath) 'Deploy' $script
 foreach ($argument in $args) {
     if ($argument -is [string] -and $argument -match '^-([A-Za-z]\w*):?$') { $arguments.Remove($Matches[1]) }

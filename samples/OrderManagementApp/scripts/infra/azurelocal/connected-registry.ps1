@@ -28,7 +28,7 @@
     already in place, since regenerating them breaks whatever is using the old value.
 
 .EXAMPLE
-    ./scripts/azurelocal/connected-registry.ps1 -RegistryName <acr-name> -KubeContext bcd-aksarc
+    ./scripts/infra/azurelocal/connected-registry.ps1 -RegistryName <acr-name> -KubeContext bcd-aksarc
 #>
 [CmdletBinding()]
 param(
@@ -67,7 +67,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
 
 function Invoke-Checked {
     param(

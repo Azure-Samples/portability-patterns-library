@@ -16,7 +16,7 @@
 // Deployed at subscription scope so it can create its own resource group:
 //   az deployment sub create --location <region> --template-file infra/azure/platform.bicep
 //
-// scripts/azure/provision-infra.ps1 wraps this and performs the imperative follow-up steps.
+// scripts/infra/azure/provision-infra.ps1 wraps this and performs the imperative follow-up steps.
 
 targetScope = 'subscription'
 
@@ -32,7 +32,7 @@ param clusterName string = 'bcd-aks'
 @description('Globally unique Azure Container Registry name. Lowercase alphanumeric, 5-50 characters.')
 @minLength(5)
 @maxLength(50)
-param registryName string
+param registryName string = 'omsacr${uniqueString(subscription().id, resourceGroupName)}'
 
 @description('Name of the user-assigned managed identity the application pods federate with.')
 param identityName string = 'bcd-workload-identity'

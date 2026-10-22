@@ -14,7 +14,7 @@
 //   * The Arc extension. Its connection string is write-only, so it is only deployed when
 //     syncConnectionString is passed: on first install, or to rotate the sync password.
 //
-// scripts/azurelocal/connected-registry.ps1 wraps this: it generates the passwords and writes the
+// scripts/infra/azurelocal/connected-registry.ps1 wraps this: it generates the passwords and writes the
 // pull secrets and CA into the cluster.
 
 @description('Name of the Premium cloud registry, with its dedicated data endpoint enabled.')

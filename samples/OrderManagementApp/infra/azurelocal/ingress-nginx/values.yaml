@@ -1,0 +1,39 @@
+# Helm values for the ingress-nginx chart on Azure Local: an HTTPS address on the site network for
+# the app. Install with:
+#
+#   helm upgrade --install ingress-nginx ingress-nginx --repo https://kubernetes.github.io/ingress-nginx `
+#     --version 4.15.1 --namespace ingress-nginx --create-namespace `
+#     --values infra/azurelocal/ingress-nginx/values.yaml
+#
+# Change the marked values for your site first.
+
+# Pulls the images from the in-cluster connected registry, so the ingress keeps running when the
+# link to Azure is down.
+imagePullSecrets:
+  - name: azurelocal-registry
+
+controller:
+  image:
+    registry: 10.96.0.50                    # your connected registry's address
+    image: ingress-nginx/controller
+    tag: v1.15.1
+    digest: ""
+  ingressClassResource:
+    name: nginx
+    default: false
+  # Browsers send no SNI for https://<ip>, so the catch-all server presents the app's certificate.
+  extraArgs:
+    default-ssl-certificate: oms-azurelocal/oms-app-tls
+  service:
+    type: LoadBalancer
+    # An address from the Arc load balancer's range. MetalLB refuses a Service that also sets
+    # spec.loadBalancerIP, so it goes here only.
+    annotations:
+      metallb.io/loadBalancerIPs: 192.168.44.200   # your ingress address
+  admissionWebhooks:
+    patch:
+      image:
+        registry: 10.96.0.50                # your connected registry's address
+        image: ingress-nginx/kube-webhook-certgen
+        tag: v1.6.9
+        digest: ""

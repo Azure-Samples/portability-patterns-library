@@ -32,11 +32,11 @@
     SQL container keeps no volume, so rotating restarts it empty; use it when the password leaked.
 
 .EXAMPLE
-    ./scripts/azurelocal/deploy.ps1
+    ./scripts/deploy/azurelocal.ps1
 
 .EXAMPLE
     # Rotate the SQL password without rebuilding images or reinstalling Radius.
-    ./scripts/azurelocal/deploy.ps1 -SkipImageBuild -SkipRadiusInstall -RotateSqlPassword
+    ./scripts/deploy/azurelocal.ps1 -SkipImageBuild -SkipRadiusInstall -RotateSqlPassword
 #>
 [CmdletBinding()]
 param(
@@ -69,25 +69,25 @@ param(
     [string]$KeycloakRelease = 'keycloak',
     [string]$KeycloakRealm = 'oms',
     [int]$KeycloakNodePort = 30443,
-    # Keycloak client and service account the workloads authenticate as, from scripts/azurelocal/keycloak.ps1.
+    # Keycloak client and service account the workloads authenticate as, from scripts/infra/azurelocal/keycloak.ps1.
     [string]$WorkloadClientId = 'oms-workloads',
     [string]$WorkloadServiceAccount = 'oms-workload',
     [string]$IdentityCaSecretName = 'oms-identity-ca',
     [switch]$SkipOAuth,
 
-    # SQL Kerberos material written by scripts/azurelocal/ad-setup.ps1. When all three exist in the
+    # SQL Kerberos material written by scripts/infra/azurelocal/ad-setup.ps1. When all three exist in the
     # application namespace, the application signs in to SQL Server as its AD account.
     [string]$KerberosConfigMapName = 'oms-krb5',
     [string]$AppKeytabSecretName = 'oms-app-kerberos',
     [string]$SqlKeytabSecretName = 'oms-sql-kerberos',
     [switch]$SkipKerberos,
 
-    # Keycloak clients for user sign-in, as registered by scripts/azurelocal/configure-app-identity.ps1.
+    # Keycloak clients for user sign-in, defined in infra/azurelocal/keycloak/realm.json.
     [string]$OrdersApiClientId = 'oms-api',
     [string]$OrdersSpaClientId = 'oms-spa',
     [int]$UiLocalPort = 5090,
 
-    # Ingress from scripts/azurelocal/provision-ingress.ps1. Used when present; otherwise the app
+    # Ingress from scripts/infra/azurelocal/provision-ingress.ps1. Used when present; otherwise the app
     # is only reachable through kubectl port-forward.
     [string]$IngressNamespace = 'ingress-nginx',
     [string]$IngressClassName = 'nginx',
@@ -98,7 +98,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 . (Join-Path $repoRoot 'scripts/lib/recipes.ps1')
 Push-Location $repoRoot
 
@@ -154,7 +154,7 @@ try {
     $dockerConfigEncoded = kubectl get secret $ImagePullSecretName --context $KubeContext --namespace $Namespace `
         --ignore-not-found --output 'jsonpath={.data.\.dockerconfigjson}'
     if ([string]::IsNullOrWhiteSpace($dockerConfigEncoded)) {
-        throw "Pull secret '$ImagePullSecretName' is missing from '$Namespace'. Run scripts/azurelocal/connected-registry.ps1 first."
+        throw "Pull secret '$ImagePullSecretName' is missing from '$Namespace'. Run scripts/infra/azurelocal/connected-registry.ps1 first."
     }
     $pullAuth = ([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($dockerConfigEncoded)) | ConvertFrom-Json).auths.$PullRegistry
     if (-not $pullAuth -or -not $pullAuth.username -or -not $pullAuth.password) {
@@ -164,7 +164,7 @@ try {
     $registryCaPem = (kubectl get configmap $RegistryCaConfigMapName --context $KubeContext --namespace $Namespace `
         --ignore-not-found --output 'jsonpath={.data.ca\.crt}') -join "`n"
     if ([string]::IsNullOrWhiteSpace($registryCaPem)) {
-        throw "ConfigMap '$RegistryCaConfigMapName' is missing from '$Namespace'. Run scripts/azurelocal/connected-registry.ps1 first."
+        throw "ConfigMap '$RegistryCaConfigMapName' is missing from '$Namespace'. Run scripts/infra/azurelocal/connected-registry.ps1 first."
     }
     $registryCaFile = Join-Path ([System.IO.Path]::GetTempPath()) "oms-azurelocal-ca-$([guid]::NewGuid().ToString('N')).crt"
     $temporaryFiles += $registryCaFile
@@ -220,7 +220,7 @@ try {
     }
 
     Write-Host "==> Publishing Recipes to $pushRegistry" -ForegroundColor Cyan
-    ./scripts/publish-recipes.ps1 -Registry $pushRegistry -Platform azure-local -Tag $ImageTag
+    ./scripts/deploy/publish-recipes.ps1 -Registry $pushRegistry -Platform azure-local -Tag $ImageTag
 
     # ------------------------------------------------------------------------------------------
     # Wait for the connected registry to hold everything this deployment pulls. It syncs
@@ -229,7 +229,7 @@ try {
     Write-Host "==> Waiting for the connected registry ($PullRegistry) to sync" -ForegroundColor Cyan
     $services = kubectl get services --all-namespaces --context $KubeContext -o json | ConvertFrom-Json
     $registryService = $services.items | Where-Object { $_.spec.clusterIP -eq $PullRegistry } | Select-Object -First 1
-    if (-not $registryService) { throw "No Service with ClusterIP $PullRegistry. Run scripts/azurelocal/connected-registry.ps1." }
+    if (-not $registryService) { throw "No Service with ClusterIP $PullRegistry. Run scripts/infra/azurelocal/connected-registry.ps1." }
     $servicePort = ($registryService.spec.ports | Select-Object -First 1).port
     $localPort = Get-Random -Minimum 20000 -Maximum 30000
 
@@ -362,7 +362,7 @@ try {
             $caPresent = kubectl --context $KubeContext -n $Namespace get secret $IdentityCaSecretName `
                 --ignore-not-found --output name 2>$null
             if ([string]::IsNullOrWhiteSpace($caPresent)) {
-                throw "Secret '$IdentityCaSecretName' is missing from namespace '$Namespace'. Re-run scripts/azurelocal/keycloak.ps1 with -WorkloadNamespace $Namespace, or pass -SkipOAuth."
+                throw "Secret '$IdentityCaSecretName' is missing from namespace '$Namespace'. Re-run scripts/infra/azurelocal/keycloak.ps1 with -WorkloadNamespace $Namespace, or pass -SkipOAuth."
             }
             Write-Host "==> Queue authentication federated to $oauthIssuer" -ForegroundColor Cyan
         }
@@ -389,7 +389,7 @@ try {
             Write-Host "==> SQL authentication: Kerberos as $sqlWindowsLogin" -ForegroundColor Cyan
         }
         else {
-            Write-Host "==> No Kerberos keytabs in '$Namespace'; SQL uses a SQL login (run scripts/azurelocal/ad-setup.ps1 -KerberosOnly)" -ForegroundColor Yellow
+            Write-Host "==> No Kerberos keytabs in '$Namespace'; SQL uses a SQL login (run scripts/infra/azurelocal/ad-setup.ps1 -KerberosOnly)" -ForegroundColor Yellow
         }
     }
 

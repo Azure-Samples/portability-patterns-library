@@ -20,7 +20,7 @@
 //   az deployment sub create --location <region> --template-file infra/azurelocal/platform.bicep `
 //     --parameters <parameters file>
 //
-// scripts/azurelocal/provision-infra.ps1 fills in the parameters and wraps this.
+// scripts/infra/azurelocal/provision-infra.ps1 fills in the parameters and wraps this.
 
 targetScope = 'subscription'
 

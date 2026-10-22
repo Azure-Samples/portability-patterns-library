@@ -19,11 +19,11 @@
     What-if doesn't cover the Entra group; it reports it as not supported.
 
 .EXAMPLE
-    ./scripts/azurelocal/provision-infra.ps1 -RegistryName <acr-name>
+    ./scripts/infra/azurelocal/provision-infra.ps1 -RegistryName <acr-name>
 
 .EXAMPLE
     # Preview what the template would change on an existing site.
-    ./scripts/azurelocal/provision-infra.ps1 -RegistryName <acr-name> -WhatIf
+    ./scripts/infra/azurelocal/provision-infra.ps1 -RegistryName <acr-name> -WhatIf
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
@@ -78,7 +78,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
 Push-Location $repoRoot
 
 # $ErrorActionPreference does not apply to native commands, so every external call is checked.
@@ -238,8 +238,8 @@ try {
     Write-Host "Service CIDR hint: kubernetes service is $kubernetesServiceIp"
 
     Write-Host "`nNext steps:" -ForegroundColor Yellow
-    Write-Host "  1. ./scripts/azurelocal/import-images.ps1 -Mode Mirror -Registry $registryLoginServer"
-    Write-Host "  2. ./scripts/azurelocal/connected-registry.ps1 -RegistryName $RegistryName -KubeContext $KubeContext"
+    Write-Host "  1. ./scripts/infra/azurelocal/import-images.ps1 -Mode Mirror -Registry $registryLoginServer"
+    Write-Host "  2. ./scripts/infra/azurelocal/connected-registry.ps1 -RegistryName $RegistryName -KubeContext $KubeContext"
 }
 finally {
     if ($parametersFile) { Remove-Item $parametersFile -Force -ErrorAction SilentlyContinue -WhatIf:$false }
