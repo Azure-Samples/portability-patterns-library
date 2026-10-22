@@ -21,7 +21,8 @@
     registry, Keycloak, ingress and the orders app's sign-in registration). Usually run through
     ./scripts/deploy.ps1 -Target AzureLocal, which supplies the settings.
 
-    Images are built with podman when it is available, otherwise docker.
+    Images are built with podman when it is available, otherwise docker. With neither, for example
+    on Windows Server, the registry builds them itself with 'az acr build' (ACR Tasks).
 
 .PARAMETER ReinstallRadius
     Reinstall the Radius control plane even when present. Needed whenever the registry CA or pull
@@ -203,19 +204,35 @@ try {
         $acrToken | docker login $pushRegistry --username $acrUser --password-stdin | Out-Null
         if ($LASTEXITCODE -ne 0) { throw 'docker login failed.' }
     }
-    elseif (-not $SkipImageBuild) {
-        throw 'Neither podman nor docker is on PATH. Install one, or pass -SkipImageBuild.'
+    else {
+        # No container engine, for example on Windows Server. 'rad bicep publish' still needs the
+        # registry credential in the Docker-compatible config, so it is written there directly.
+        $dockerConfig = if (Test-Path $dockerConfigFile) { Get-Content $dockerConfigFile -Raw | ConvertFrom-Json -AsHashtable } else { @{} }
+        if (-not $dockerConfig.auths) { $dockerConfig.auths = @{} }
+        $dockerConfig.auths[$pushRegistry] = @{ auth = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("${acrUser}:$acrToken")) }
+        [System.IO.File]::WriteAllText($dockerConfigFile, ($dockerConfig | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))
     }
     $acrToken = $null
 
     if (-not $SkipImageBuild) {
-        Write-Host "==> Building application images with $containerTool against base images in $pushRegistry" -ForegroundColor Cyan
         foreach ($component in @('api', 'processor')) {
             $image = "$pushRegistry/oms/${component}:$ImageTag"
-            Invoke-Checked "$containerTool build $component" {
-                & $containerTool build --build-arg "BASE_REGISTRY=$pushRegistry" -f "docker/Dockerfile.$component" -t $image .
+            if ($containerTool) {
+                Write-Host "==> Building $component with $containerTool against base images in $pushRegistry" -ForegroundColor Cyan
+                Invoke-Checked "$containerTool build $component" {
+                    & $containerTool build --build-arg "BASE_REGISTRY=$pushRegistry" -f "docker/Dockerfile.$component" -t $image .
+                }
+                Invoke-Checked "$containerTool push $component" { & $containerTool push $image }
             }
-            Invoke-Checked "$containerTool push $component" { & $containerTool push $image }
+            else {
+                # ACR builds the image itself, so this machine needs no container engine.
+                Write-Host "==> Building $component in $RegistryName (az acr build)" -ForegroundColor Cyan
+                Invoke-Checked "az acr build $component" {
+                    az acr build --registry $RegistryName --resource-group $RegistryResourceGroup `
+                        --image "oms/${component}:$ImageTag" --build-arg "BASE_REGISTRY=$pushRegistry" `
+                        --file "docker/Dockerfile.$component" --platform linux/amd64 . --output none
+                }
+            }
         }
     }
 
