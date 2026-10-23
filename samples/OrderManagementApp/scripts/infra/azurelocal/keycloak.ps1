@@ -385,46 +385,54 @@ or create the Secret yourself and re-run:
         $nodeIp = kubectl --context $KubeContext get nodes `
             --output 'jsonpath={.items[0].status.addresses[?(@.type=="InternalIP")].address}'
 
-        # -DnsName records an address as a DNS entry, which browsers reject when the URL is an
-        # address, so the SAN is written out explicitly to get a real iPAddress entry.
-        $san = @(
-            "DNS=$ReleaseName",
-            "DNS=$ReleaseName.$Namespace",
-            "DNS=$ReleaseName.$Namespace.svc",
-            "DNS=$ReleaseName.$Namespace.svc.cluster.local",
-            "IPAddress=$nodeIp"
-        ) -join '&'
+        # Built with .NET rather than New-SelfSignedCertificate, which only exists in Windows
+        # PowerShell's PKI module, so this works under PowerShell 7 on any OS and touches no store.
+        $X509 = 'System.Security.Cryptography.X509Certificates'
+        $sha256 = [System.Security.Cryptography.HashAlgorithmName]::SHA256
+        $pkcs1 = [System.Security.Cryptography.RSASignaturePadding]::Pkcs1
+        $now = [DateTimeOffset]::UtcNow
 
         # A small CA signs the serving certificate rather than the certificate signing itself.
         # Erlang's TLS client, which RabbitMQ uses to fetch the signing keys, rejects a self-signed
         # peer outright ('Bad Certificate - selfsigned_peer') because a trust anchor has to be a CA.
         # Clients therefore trust this CA, not the certificate Keycloak presents.
-        $ca = New-SelfSignedCertificate -Subject 'CN=BCD Identity Issuing CA' `
-            -CertStoreLocation 'Cert:\CurrentUser\My' -KeyExportPolicy Exportable `
-            -KeyUsage CertSign, CRLSign, DigitalSignature -KeyUsageProperty All `
-            -TextExtension @('2.5.29.19={critical}{text}CA=true&pathlength=0') `
-            -NotAfter (Get-Date).AddYears(5) -KeyAlgorithm RSA -KeyLength 2048
+        $caKey = [System.Security.Cryptography.RSA]::Create(2048)
+        $caRequest = New-Object "$X509.CertificateRequest" 'CN=BCD Identity Issuing CA', $caKey, $sha256, $pkcs1
+        $caRequest.CertificateExtensions.Add((New-Object "$X509.X509BasicConstraintsExtension" $true, $true, 0, $true))
+        $caRequest.CertificateExtensions.Add((New-Object "$X509.X509KeyUsageExtension" (
+                    [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]'KeyCertSign, CrlSign, DigitalSignature'), $true))
+        $caRequest.CertificateExtensions.Add((New-Object "$X509.X509SubjectKeyIdentifierExtension" $caRequest.PublicKey, $false))
+        $ca = $caRequest.CreateSelfSigned($now.AddDays(-1), $now.AddYears(5))
 
-        $cert = New-SelfSignedCertificate -Subject "CN=$ReleaseName.$Namespace.svc" `
-            -Signer $ca `
-            -TextExtension @("2.5.29.17={text}$san", '2.5.29.37={text}1.3.6.1.5.5.7.3.1') `
-            -CertStoreLocation 'Cert:\CurrentUser\My' -KeyExportPolicy Exportable `
-            -NotAfter (Get-Date).AddYears(2) -KeyAlgorithm RSA -KeyLength 2048
+        # The node address goes in as a real iPAddress entry: browsers reject an address listed as a
+        # DNS name when the URL is an address.
+        $san = New-Object "$X509.SubjectAlternativeNameBuilder"
+        foreach ($name in $ReleaseName, "$ReleaseName.$Namespace", "$ReleaseName.$Namespace.svc", "$ReleaseName.$Namespace.svc.cluster.local") {
+            $san.AddDnsName($name)
+        }
+        $san.AddIpAddress([System.Net.IPAddress]::Parse($nodeIp))
 
-        try {
-            $certPem = ConvertTo-Pem -Certificate $cert
-            $caPem = ConvertTo-Pem -Certificate $ca
+        $key = [System.Security.Cryptography.RSA]::Create(2048)
+        $request = New-Object "$X509.CertificateRequest" "CN=$ReleaseName.$Namespace.svc", $key, $sha256, $pkcs1
+        $request.CertificateExtensions.Add($san.Build())
+        $serverAuth = New-Object System.Security.Cryptography.OidCollection
+        [void]$serverAuth.Add([System.Security.Cryptography.Oid]::new('1.3.6.1.5.5.7.3.1'))
+        $request.CertificateExtensions.Add((New-Object "$X509.X509EnhancedKeyUsageExtension" $serverAuth, $false))
+        $request.CertificateExtensions.Add((New-Object "$X509.X509BasicConstraintsExtension" $false, $false, 0, $false))
+        $serial = [byte[]]::new(16); [System.Security.Cryptography.RandomNumberGenerator]::Fill($serial)
+        $cert = $request.Create($ca, $now.AddDays(-1), $now.AddYears(2), $serial)
 
-            $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($cert)
-            $keyPem = "-----BEGIN PRIVATE KEY-----`n" +
-                [Convert]::ToBase64String($rsa.ExportPkcs8PrivateKey(), 'InsertLineBreaks') +
-                "`n-----END PRIVATE KEY-----"
+        $certPem = ConvertTo-Pem -Certificate $cert
+        $caPem = ConvertTo-Pem -Certificate $ca
+        $keyPem = "-----BEGIN PRIVATE KEY-----`n" +
+            [Convert]::ToBase64String($key.ExportPkcs8PrivateKey(), 'InsertLineBreaks') +
+            "`n-----END PRIVATE KEY-----"
 
-            # Keycloak serves the issuer alongside the leaf so a client that holds only the CA can
-            # still build the path.
-            $chainPem = "$certPem`n$caPem"
+        # Keycloak serves the issuer alongside the leaf so a client that holds only the CA can
+        # still build the path.
+        $chainPem = "$certPem`n$caPem"
 
-            $tlsManifest = @"
+        $tlsManifest = @"
 apiVersion: v1
 kind: Secret
 metadata:
@@ -443,12 +451,9 @@ metadata:
 data:
   ca.crt: $([Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($caPem)))
 "@
-            $tlsManifest | kubectl --context $KubeContext apply -f - | Out-Null
-        }
-        finally {
-            Remove-Item "Cert:\CurrentUser\My\$($cert.Thumbprint)" -Force -ErrorAction SilentlyContinue
-            Remove-Item "Cert:\CurrentUser\My\$($ca.Thumbprint)" -Force -ErrorAction SilentlyContinue
-        }
+        $tlsManifest | kubectl --context $KubeContext apply -f - | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'Writing the Keycloak certificate Secrets failed.' }
+        $caKey.Dispose(); $key.Dispose()
     }
 
     Write-Host "==> Deploying PostgreSQL and Keycloak from infra/azurelocal/keycloak" -ForegroundColor Cyan

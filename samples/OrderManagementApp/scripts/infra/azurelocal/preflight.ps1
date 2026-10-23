@@ -27,26 +27,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $results = [System.Collections.Generic.List[object]]::new()
+. (Join-Path $PSScriptRoot '../../lib/settings.ps1')
 
 function Add-Result([string]$Area, [string]$Check, [ValidateSet('PASS', 'WARN', 'FAIL')][string]$Status, [string]$Detail = '') {
     $results.Add([pscustomobject]@{ Area = $Area; Check = $Check; Status = $Status; Detail = $Detail })
     $color = @{ PASS = 'Green'; WARN = 'Yellow'; FAIL = 'Red' }[$Status]
     Write-Host ("  {0,-4}  {1,-10} {2}{3}" -f $Status, $Area, $Check, $(if ($Detail) { " - $Detail" })) -ForegroundColor $color
-}
-
-# The defaults the setup scripts would use, read from their param blocks so they can't drift.
-function Get-ScriptDefaults([string]$Path) {
-    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$null, [ref]$null)
-    $defaults = @{}
-    foreach ($parameter in $ast.ParamBlock.Parameters) {
-        if ($parameter.DefaultValue -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
-            $defaults[$parameter.Name.VariablePath.UserPath] = $parameter.DefaultValue.Value
-        }
-        elseif ($parameter.DefaultValue) {
-            try { $defaults[$parameter.Name.VariablePath.UserPath] = $parameter.DefaultValue.SafeGetValue() } catch { }
-        }
-    }
-    $defaults
 }
 
 function ConvertTo-UInt32([string]$Address) {
@@ -66,11 +52,19 @@ function Test-InRange([string]$Address, [string]$First, [string]$Last) {
     $value -ge (ConvertTo-UInt32 $First) -and $value -le (ConvertTo-UInt32 $Last)
 }
 
+# Plain TCP connect, so it works on any OS (Test-NetConnection is Windows-only).
+function Test-TcpPort([string]$HostName, [int]$Port, [int]$TimeoutMs = 3000) {
+    $client = [Net.Sockets.TcpClient]::new()
+    try { $client.ConnectAsync($HostName, $Port).Wait($TimeoutMs) -and $client.Connected }
+    catch { $false }
+    finally { $client.Dispose() }
+}
+
 # --- Settings -----------------------------------------------------------------------------------
 $infra = Join-Path $PSScriptRoot '.'
 $s = @{}
 foreach ($script in 'provision-infra.ps1', 'connected-registry.ps1', 'keycloak.ps1', 'provision-ingress.ps1') {
-    (Get-ScriptDefaults (Join-Path $infra $script)).GetEnumerator() | ForEach-Object { if (-not $s.ContainsKey($_.Key)) { $s[$_.Key] = $_.Value } }
+    (Get-OmsScriptDefaults (Join-Path $infra $script)).GetEnumerator() | ForEach-Object { if (-not $s.ContainsKey($_.Key)) { $s[$_.Key] = $_.Value } }
 }
 if (Test-Path $SettingsPath) {
     $site = (Get-Content $SettingsPath -Raw | ConvertFrom-Json -AsHashtable).AzureLocal
@@ -119,17 +113,17 @@ if ($signedIn) {
         else { Add-Result Azure $provider WARN "$state; setup registers it, which needs Contributor on the subscription" }
     }
 
-    $customLocation = az customlocation show --resource-group $s.AzureLocalResourceGroup --name $s.CustomLocationName `
-        --output json @sub 2>$null | ConvertFrom-Json
+    $customLocation = az resource show --resource-group $s.AzureLocalResourceGroup --name $s.CustomLocationName `
+        --resource-type Microsoft.ExtendedLocation/customLocations --output json @sub 2>$null | ConvertFrom-Json
     if (-not $customLocation) {
         Add-Result Azure 'Custom location' FAIL "'$($s.CustomLocationName)' not found in '$($s.AzureLocalResourceGroup)'"
     }
-    elseif ($customLocation.provisioningState -ne 'Succeeded') {
-        Add-Result Azure 'Custom location' FAIL "$($customLocation.name) is $($customLocation.provisioningState)"
+    elseif ($customLocation.properties.provisioningState -ne 'Succeeded') {
+        Add-Result Azure 'Custom location' FAIL "$($customLocation.name) is $($customLocation.properties.provisioningState)"
     }
     else {
         Add-Result Azure 'Custom location' PASS $customLocation.name
-        $bridge = az resource show --ids $customLocation.hostResourceId --output json @sub 2>$null | ConvertFrom-Json
+        $bridge = az resource show --ids $customLocation.properties.hostResourceId --output json @sub 2>$null | ConvertFrom-Json
         if ($bridge.properties.status -eq 'Running') { Add-Result Azure 'Arc resource bridge' PASS $bridge.name }
         else { Add-Result Azure 'Arc resource bridge' FAIL "$($bridge.name) is '$($bridge.properties.status)'; the instance must be connected to deploy" }
     }
@@ -196,7 +190,10 @@ else {
     if ($resolved) { Add-Result Directory "Resolves through $dns" PASS "$($s.AdServer) -> $($resolved.IPAddress)" }
     else { Add-Result Directory "Resolves through $dns" WARN "$($s.AdServer) didn't resolve from here; the cluster nodes use $dns and must resolve it" }
 
-    $ldaps = Test-NetConnection -ComputerName $s.AdServer -Port 636 -WarningAction SilentlyContinue -InformationLevel Quiet
+    # The address the site's DNS returned, which is what the cluster nodes will use; this machine's
+    # own resolver may not know the site's domain.
+    $ldapsTarget = if ($resolved) { $resolved.IPAddress } else { $s.AdServer }
+    $ldaps = Test-TcpPort $ldapsTarget 636
     if ($ldaps) { Add-Result Directory 'LDAPS (636)' PASS }
     else { Add-Result Directory 'LDAPS (636)' WARN "no answer from this machine; Keycloak in the cluster needs it" }
 }
@@ -222,7 +219,7 @@ else {
                 Add-Result Cluster "Secret identity/$secret" PASS
             }
             else {
-                Add-Result Cluster "Secret identity/$secret" WARN 'needed before the Keycloak step; see "Connect your Active Directory" in the README'
+                Add-Result Cluster "Secret identity/$secret" WARN 'needed before the Keycloak step; see "Connect your Active Directory" in docs/authentication.md'
             }
         }
     }

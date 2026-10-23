@@ -32,8 +32,19 @@
     Generate a new SQL administrator password instead of reusing the one in 'oms-sql-admin'. The
     SQL container keeps no volume, so rotating restarts it empty; use it when the password leaked.
 
+.PARAMETER Stage
+    All (default) runs everything on this machine, which needs Azure access and the cluster. When no
+    machine has both, run -Stage Azure where Azure is reachable (build images, publish Recipes) and
+    then -Stage Site on the site network (wait for the connected registry, rad install, rad deploy).
+    The Azure stage writes the image digests to <HandoverPath>/release.json for the Site stage.
+
 .EXAMPLE
     ./scripts/deploy/azurelocal.ps1
+
+.EXAMPLE
+    # Build and publish where Azure is reachable, then deploy from a machine on the site network.
+    ./scripts/deploy/azurelocal.ps1 -Stage Azure
+    ./scripts/deploy/azurelocal.ps1 -Stage Site
 
 .EXAMPLE
     # Rotate the SQL password without rebuilding images or reinstalling Radius.
@@ -95,7 +106,14 @@ param(
     [string]$IngressTlsSecretName = 'oms-app-tls',
 
     [switch]$SkipImageBuild,
-    [switch]$SkipRadiusInstall
+    [switch]$SkipRadiusInstall,
+
+    # All: this machine reaches Azure and the cluster. Otherwise run 'Azure' where Azure is reachable
+    # (build, push, publish) and 'Site' on the site network (rad); they hand over through
+    # -HandoverPath (image digests only, no secrets).
+    [ValidateSet('All', 'Azure', 'Site')]
+    [string]$Stage = 'All',
+    [string]$HandoverPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../.handover'))
 )
 
 $ErrorActionPreference = 'Stop'
@@ -141,103 +159,137 @@ function New-ParameterFile {
 
 try {
     if ($PSVersionTable.PSEdition -ne 'Core') { throw 'Run this script under PowerShell 7 (pwsh).' }
+    $releaseFile = Join-Path $HandoverPath 'release.json'
 
-    Write-Host "==> Checking the cluster is reachable" -ForegroundColor Cyan
-    Invoke-Checked 'kubectl cluster-info' { kubectl cluster-info --context $KubeContext --request-timeout=20s | Out-Null }
-
-    kubectl create namespace $Namespace --context $KubeContext --dry-run=client -o yaml |
-        kubectl apply --context $KubeContext -f - | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Creating the application namespace failed.' }
-
-    # ------------------------------------------------------------------------------------------
-    # Connected registry credentials and CA, kept in the cluster by connected-registry.ps1.
-    # ------------------------------------------------------------------------------------------
-    $dockerConfigEncoded = kubectl get secret $ImagePullSecretName --context $KubeContext --namespace $Namespace `
-        --ignore-not-found --output 'jsonpath={.data.\.dockerconfigjson}'
-    if ([string]::IsNullOrWhiteSpace($dockerConfigEncoded)) {
-        throw "Pull secret '$ImagePullSecretName' is missing from '$Namespace'. Run scripts/infra/azurelocal/connected-registry.ps1 first."
-    }
-    $pullAuth = ([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($dockerConfigEncoded)) | ConvertFrom-Json).auths.$PullRegistry
-    if (-not $pullAuth -or -not $pullAuth.username -or -not $pullAuth.password) {
-        throw "Pull secret '$ImagePullSecretName' holds no credentials for '$PullRegistry'."
-    }
-
-    $registryCaPem = (kubectl get configmap $RegistryCaConfigMapName --context $KubeContext --namespace $Namespace `
-        --ignore-not-found --output 'jsonpath={.data.ca\.crt}') -join "`n"
-    if ([string]::IsNullOrWhiteSpace($registryCaPem)) {
-        throw "ConfigMap '$RegistryCaConfigMapName' is missing from '$Namespace'. Run scripts/infra/azurelocal/connected-registry.ps1 first."
-    }
-    $registryCaFile = Join-Path ([System.IO.Path]::GetTempPath()) "oms-azurelocal-ca-$([guid]::NewGuid().ToString('N')).crt"
-    $temporaryFiles += $registryCaFile
-    [System.IO.File]::WriteAllText($registryCaFile, $registryCaPem, [System.Text.UTF8Encoding]::new($false))
-
-    $pushRegistry = az acr show --name $RegistryName --resource-group $RegistryResourceGroup --query loginServer --output tsv
-    if ($LASTEXITCODE -ne 0 -or -not $pushRegistry) { throw "Registry '$RegistryName' not found." }
-
-    # ------------------------------------------------------------------------------------------
-    # Build, push and publish to the cloud registry.
-    # ------------------------------------------------------------------------------------------
+    # Both stages compile Bicep that uses the queue type, so both need its extension.
     Invoke-Checked 'rad bicep publish-extension' {
         rad bicep publish-extension -f $QueueTypeFile --target $QueueTypeExtension
     }
 
-    # An ACR access token lasts three hours, plenty for one run. It is written to the Docker-
-    # compatible config as well, because that is where 'rad bicep publish' looks for credentials.
-    Write-Host "==> Signing in to $pushRegistry" -ForegroundColor Cyan
-    $acrToken = az acr login --name $RegistryName --expose-token --query accessToken --output tsv
-    if ($LASTEXITCODE -ne 0 -or -not $acrToken) { throw 'az acr login --expose-token failed.' }
+    if ($Stage -ne 'Azure') {
+        Write-Host "==> Checking the cluster is reachable" -ForegroundColor Cyan
+        Invoke-Checked 'kubectl cluster-info' { kubectl cluster-info --context $KubeContext --request-timeout=20s | Out-Null }
 
-    $containerTool = if (Get-Command podman -ErrorAction SilentlyContinue) { 'podman' }
-    elseif (Get-Command docker -ErrorAction SilentlyContinue) { 'docker' }
-    else { $null }
+        kubectl create namespace $Namespace --context $KubeContext --dry-run=client -o yaml |
+            kubectl apply --context $KubeContext -f - | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'Creating the application namespace failed.' }
 
-    $dockerConfigFile = Join-Path $HOME '.docker/config.json'
-    New-Item -ItemType Directory -Force -Path (Split-Path $dockerConfigFile) | Out-Null
-    $acrUser = '00000000-0000-0000-0000-000000000000'
-    if ($containerTool -eq 'podman') {
-        $acrToken | podman login $pushRegistry --username $acrUser --password-stdin | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw 'podman login failed.' }
-        $acrToken | podman login $pushRegistry --username $acrUser --password-stdin --compat-auth-file $dockerConfigFile | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw 'podman login (Docker-compatible config) failed.' }
-    }
-    elseif ($containerTool -eq 'docker') {
-        $acrToken | docker login $pushRegistry --username $acrUser --password-stdin | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw 'docker login failed.' }
-    }
-    else {
-        # No container engine, for example on Windows Server. 'rad bicep publish' still needs the
-        # registry credential in the Docker-compatible config, so it is written there directly.
-        $dockerConfig = if (Test-Path $dockerConfigFile) { Get-Content $dockerConfigFile -Raw | ConvertFrom-Json -AsHashtable } else { @{} }
-        if (-not $dockerConfig.auths) { $dockerConfig.auths = @{} }
-        $dockerConfig.auths[$pushRegistry] = @{ auth = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("${acrUser}:$acrToken")) }
-        [System.IO.File]::WriteAllText($dockerConfigFile, ($dockerConfig | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))
-    }
-    $acrToken = $null
+        # ------------------------------------------------------------------------------------------
+        # Connected registry credentials and CA, kept in the cluster by connected-registry.ps1.
+        # ------------------------------------------------------------------------------------------
+        $dockerConfigEncoded = kubectl get secret $ImagePullSecretName --context $KubeContext --namespace $Namespace `
+            --ignore-not-found --output 'jsonpath={.data.\.dockerconfigjson}'
+        if ([string]::IsNullOrWhiteSpace($dockerConfigEncoded)) {
+            throw "Pull secret '$ImagePullSecretName' is missing from '$Namespace'. Run scripts/infra/azurelocal/connected-registry.ps1 first."
+        }
+        $pullAuth = ([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($dockerConfigEncoded)) | ConvertFrom-Json).auths.$PullRegistry
+        if (-not $pullAuth -or -not $pullAuth.username -or -not $pullAuth.password) {
+            throw "Pull secret '$ImagePullSecretName' holds no credentials for '$PullRegistry'."
+        }
 
-    if (-not $SkipImageBuild) {
-        foreach ($component in @('api', 'processor')) {
-            $image = "$pushRegistry/oms/${component}:$ImageTag"
-            if ($containerTool) {
-                Write-Host "==> Building $component with $containerTool against base images in $pushRegistry" -ForegroundColor Cyan
-                Invoke-Checked "$containerTool build $component" {
-                    & $containerTool build --build-arg "BASE_REGISTRY=$pushRegistry" -f "docker/Dockerfile.$component" -t $image .
+        $registryCaPem = (kubectl get configmap $RegistryCaConfigMapName --context $KubeContext --namespace $Namespace `
+            --ignore-not-found --output 'jsonpath={.data.ca\.crt}') -join "`n"
+        if ([string]::IsNullOrWhiteSpace($registryCaPem)) {
+            throw "ConfigMap '$RegistryCaConfigMapName' is missing from '$Namespace'. Run scripts/infra/azurelocal/connected-registry.ps1 first."
+        }
+        $registryCaFile = Join-Path ([System.IO.Path]::GetTempPath()) "oms-azurelocal-ca-$([guid]::NewGuid().ToString('N')).crt"
+        $temporaryFiles += $registryCaFile
+        [System.IO.File]::WriteAllText($registryCaFile, $registryCaPem, [System.Text.UTF8Encoding]::new($false))
+    }
+
+    if ($Stage -ne 'Site') {
+        $pushRegistry = az acr show --name $RegistryName --resource-group $RegistryResourceGroup --query loginServer --output tsv
+        if ($LASTEXITCODE -ne 0 -or -not $pushRegistry) { throw "Registry '$RegistryName' not found." }
+
+        # ------------------------------------------------------------------------------------------
+        # Build, push and publish to the cloud registry.
+        # ------------------------------------------------------------------------------------------
+        # An ACR access token lasts three hours, plenty for one run. It is written to the Docker-
+        # compatible config as well, because that is where 'rad bicep publish' looks for credentials.
+        Write-Host "==> Signing in to $pushRegistry" -ForegroundColor Cyan
+        $acrToken = az acr login --name $RegistryName --expose-token --query accessToken --output tsv
+        if ($LASTEXITCODE -ne 0 -or -not $acrToken) { throw 'az acr login --expose-token failed.' }
+
+        $containerTool = if (Get-Command podman -ErrorAction SilentlyContinue) { 'podman' }
+        elseif (Get-Command docker -ErrorAction SilentlyContinue) { 'docker' }
+        else { $null }
+
+        $dockerConfigFile = Join-Path $HOME '.docker/config.json'
+        New-Item -ItemType Directory -Force -Path (Split-Path $dockerConfigFile) | Out-Null
+        $acrUser = '00000000-0000-0000-0000-000000000000'
+        if ($containerTool -eq 'podman') {
+            $acrToken | podman login $pushRegistry --username $acrUser --password-stdin | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'podman login failed.' }
+            $acrToken | podman login $pushRegistry --username $acrUser --password-stdin --compat-auth-file $dockerConfigFile | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'podman login (Docker-compatible config) failed.' }
+        }
+        elseif ($containerTool -eq 'docker') {
+            $acrToken | docker login $pushRegistry --username $acrUser --password-stdin | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'docker login failed.' }
+        }
+        else {
+            # No container engine, for example on Windows Server. 'rad bicep publish' still needs the
+            # registry credential in the Docker-compatible config, so it is written there directly.
+            $dockerConfig = if (Test-Path $dockerConfigFile) { Get-Content $dockerConfigFile -Raw | ConvertFrom-Json -AsHashtable } else { @{} }
+            if (-not $dockerConfig.auths) { $dockerConfig.auths = @{} }
+            $dockerConfig.auths[$pushRegistry] = @{ auth = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("${acrUser}:$acrToken")) }
+            [System.IO.File]::WriteAllText($dockerConfigFile, ($dockerConfig | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))
+        }
+        $acrToken = $null
+
+        if (-not $SkipImageBuild) {
+            foreach ($component in @('api', 'processor')) {
+                $image = "$pushRegistry/oms/${component}:$ImageTag"
+                if ($containerTool) {
+                    Write-Host "==> Building $component with $containerTool against base images in $pushRegistry" -ForegroundColor Cyan
+                    Invoke-Checked "$containerTool build $component" {
+                        & $containerTool build --build-arg "BASE_REGISTRY=$pushRegistry" -f "docker/Dockerfile.$component" -t $image .
+                    }
+                    Invoke-Checked "$containerTool push $component" { & $containerTool push $image }
                 }
-                Invoke-Checked "$containerTool push $component" { & $containerTool push $image }
-            }
-            else {
-                # ACR builds the image itself, so this machine needs no container engine.
-                Write-Host "==> Building $component in $RegistryName (az acr build)" -ForegroundColor Cyan
-                Invoke-Checked "az acr build $component" {
-                    az acr build --registry $RegistryName --resource-group $RegistryResourceGroup `
-                        --image "oms/${component}:$ImageTag" --build-arg "BASE_REGISTRY=$pushRegistry" `
-                        --file "docker/Dockerfile.$component" --platform linux/amd64 . --output none
+                else {
+                    # ACR builds the image itself, so this machine needs no container engine.
+                    Write-Host "==> Building $component in $RegistryName (az acr build)" -ForegroundColor Cyan
+                    Invoke-Checked "az acr build $component" {
+                        az acr build --registry $RegistryName --resource-group $RegistryResourceGroup `
+                            --image "oms/${component}:$ImageTag" --build-arg "BASE_REGISTRY=$pushRegistry" `
+                            --file "docker/Dockerfile.$component" --platform linux/amd64 . --output none
+                    }
                 }
             }
         }
-    }
 
-    Write-Host "==> Publishing Recipes to $pushRegistry" -ForegroundColor Cyan
-    ./scripts/deploy/publish-recipes.ps1 -Registry $pushRegistry -Platform azure-local -Tag $ImageTag
+        Write-Host "==> Publishing Recipes to $pushRegistry" -ForegroundColor Cyan
+        ./scripts/deploy/publish-recipes.ps1 -Registry $pushRegistry -Platform azure-local -Tag $ImageTag
+
+        # The cluster pulls latest-tagged images by tag, so a stale digest would still answer 200. The
+        # digest in the cloud registry is compared for the images rebuilt by this run.
+        $expectedDigests = @{}
+        foreach ($worker in @('api', 'processor')) {
+            $expectedDigests["oms/${worker}:$ImageTag"] = az acr manifest show-metadata "$pushRegistry/oms/${worker}:$ImageTag" --query digest --output tsv 2>$null
+            if (-not $expectedDigests["oms/${worker}:$ImageTag"]) { throw "Could not read the digest of oms/${worker}:$ImageTag in $pushRegistry." }
+        }
+
+        if ($Stage -eq 'Azure') {
+            # What the Site stage deploys. No secrets: image digests only.
+            New-Item -ItemType Directory -Force -Path $HandoverPath | Out-Null
+            [System.IO.File]::WriteAllText($releaseFile,
+                (@{ imageTag = $ImageTag; digests = $expectedDigests } | ConvertTo-Json -Depth 5),
+                [System.Text.UTF8Encoding]::new($false))
+            Write-Host "`nImages and Recipes are in $pushRegistry; release written to $releaseFile." -ForegroundColor Green
+            Write-Host "Next, on a machine on the site network: ./scripts/deploy.ps1 -Target AzureLocal -Stage Site"
+            return
+        }
+    }
+    else {
+        if (-not (Test-Path $releaseFile)) {
+            throw "No release to deploy: '$releaseFile' is missing. Run ./scripts/deploy.ps1 -Target AzureLocal -Stage Azure, then copy the handover folder here."
+        }
+        $release = Get-Content $releaseFile -Raw | ConvertFrom-Json -AsHashtable
+        $ImageTag = $release.imageTag
+        $expectedDigests = $release.digests
+        Write-Host "==> Deploying the release from $releaseFile (tag '$ImageTag')" -ForegroundColor Cyan
+    }
 
     # ------------------------------------------------------------------------------------------
     # Wait for the connected registry to hold everything this deployment pulls. It syncs
@@ -276,14 +328,6 @@ try {
         $response = Invoke-WebRequest -Uri "https://localhost:$localPort/v2/$Repository/manifests/$Tag" -Method Head `
             -Headers @{ Authorization = "Bearer $token"; Accept = $accept } -SkipCertificateCheck -TimeoutSec 15
         return ($response.Headers['Docker-Content-Digest'] | Select-Object -First 1)
-    }
-
-    # The cluster pulls latest-tagged images by tag, so a stale digest would still answer 200. The
-    # digest in the cloud registry is compared for the images rebuilt by this run.
-    $expectedDigests = @{}
-    foreach ($worker in @('api', 'processor')) {
-        $expectedDigests["oms/${worker}:$ImageTag"] = az acr manifest show-metadata "$pushRegistry/oms/${worker}:$ImageTag" --query digest --output tsv 2>$null
-        if (-not $expectedDigests["oms/${worker}:$ImageTag"]) { throw "Could not read the digest of oms/${worker}:$ImageTag in $pushRegistry." }
     }
 
     $deadline = (Get-Date).AddMinutes($SyncTimeoutMinutes)

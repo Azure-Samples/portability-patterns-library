@@ -330,8 +330,8 @@ try {
     $caCertPem = $null
     if (-not $SkipCertificateAuthority -and -not $KerberosOnly) {
         Write-Host "==> Ensuring an enterprise certificate authority" -ForegroundColor Cyan
-        $caCertPem = Invoke-Guest -Credential $domainCredential -ArgumentList $CaCommonName -ScriptBlock {
-            param($caName)
+        $caCertPem = Invoke-Guest -Credential $domainCredential -ArgumentList $CaCommonName, $domainCredential -ScriptBlock {
+            param($caName, $directoryCredential)
             $ErrorActionPreference = 'Stop'
 
             # A controller already serving other systems may have its own CA. Reuse it rather than
@@ -357,19 +357,27 @@ try {
             # Auto-enrolment is on a timer, so nudge it rather than waiting for the next cycle.
             certutil -pulse | Out-Null
 
+            # LDAPS uses a certificate issued to the controller's own name. Other server certificates
+            # a controller may already hold, for example for ADFS, don't count.
+            $dcName = ([System.Net.Dns]::GetHostEntry($env:COMPUTERNAME)).HostName
             $deadline = (Get-Date).AddMinutes(5)
             while ((Get-Date) -lt $deadline) {
                 $dcCert = Get-ChildItem Cert:\LocalMachine\My -ErrorAction SilentlyContinue |
-                    Where-Object { $_.EnhancedKeyUsageList.ObjectId -contains '1.3.6.1.5.5.7.3.1' }
+                    Where-Object {
+                        $_.EnhancedKeyUsageList.ObjectId -contains '1.3.6.1.5.5.7.3.1' -and
+                        ($_.DnsNameList.Unicode -contains $dcName) -and $_.NotAfter -gt (Get-Date)
+                    }
                 if ($dcCert) { break }
                 Start-Sleep -Seconds 15
                 certutil -pulse | Out-Null
             }
-            if (-not $dcCert) { throw 'The controller never enrolled a server authentication certificate.' }
+            if (-not $dcCert) { throw "The controller never enrolled a server authentication certificate for $dcName." }
 
             # The controller serves other systems, so the directory is not restarted: the rootDSE
-            # 'renewServerCertificate' operation tells LDAP to reload its certificate in place.
-            $rootDse = [System.DirectoryServices.DirectoryEntry]::new('LDAP://localhost/RootDSE')
+            # 'renewServerCertificate' operation tells LDAP to reload its certificate in place. The
+            # bind is explicit because a PowerShell Direct session has no credentials to pass on.
+            $rootDse = [System.DirectoryServices.DirectoryEntry]::new('LDAP://localhost/RootDSE',
+                $directoryCredential.UserName, $directoryCredential.GetNetworkCredential().Password)
             $rootDse.Properties['renewServerCertificate'].Value = 1
             $rootDse.CommitChanges()
             $rootDse.Dispose()

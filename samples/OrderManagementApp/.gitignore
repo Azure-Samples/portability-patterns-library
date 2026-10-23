@@ -35,3 +35,6 @@ local/certs/*
 
 ## Azure Developer CLI environments (azd env)
 .azure/
+
+## Handover between the Azure and Site stages (may hold a registry pull credential)
+scripts/.handover/

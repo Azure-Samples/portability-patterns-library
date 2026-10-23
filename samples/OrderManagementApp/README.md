@@ -115,6 +115,26 @@ Then:
 Open the address it prints and sign in with an AD account in one of the app's groups. The first
 time, trust the site's CA certificates with the commands step 3 printed.
 
+**When no machine has both Azure and the site.** Often the machine that can sign in to Azure can't
+reach the cluster's network, and the machine on the site's network can't sign in to Azure. Run each
+script in two stages. The Azure stage does the work that needs Azure. The Site stage runs `kubectl`,
+`helm` and `rad` against the cluster and needs no Azure sign-in.
+
+```powershell
+# On the machine signed in to Azure
+./scripts/setup-platform.ps1 -Target AzureLocal -Stage Azure
+./scripts/deploy.ps1 -Target AzureLocal -Stage Azure
+
+# Copy scripts/.handover to the same place in a checkout on the site machine
+# (it holds the admin kubeconfig and a registry pull token), then on that machine:
+./scripts/setup-platform.ps1 -Target AzureLocal -Stage Site
+./scripts/deploy.ps1 -Target AzureLocal -Stage Site
+```
+
+The Site stage merges the handed-over kubeconfig into `~/.kube/config` and deletes the secret
+files once it has applied them. `scripts/.handover` is ignored by git; treat it as a secret while
+you copy it.
+
 To see or run each piece yourself, without the scripts, see [Set up by hand](./docs/setup-by-hand.md).
 
 ## Portability patterns in this sample

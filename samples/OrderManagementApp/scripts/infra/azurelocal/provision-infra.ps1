@@ -15,6 +15,10 @@
     Cluster credentials are fetched with --admin: they authenticate with a client certificate
     directly against the API server, which keeps working with no Azure connectivity.
 
+    -Stage Azure is for a machine that reaches Azure but not the site network: the credentials go
+    to <HandoverPath>/kubeconfig instead of this machine's kubeconfig, for the site machine to take
+    over (setup-platform.ps1 -Stage Site merges and deletes it), and nothing contacts the cluster.
+
     -WhatIf runs an Azure what-if of the template instead of deploying it, and changes nothing.
     What-if doesn't cover the Entra group; it reports it as not supported.
 
@@ -74,7 +78,11 @@ param(
     # Public key installed on the nodes. Generated when missing.
     [string]$SshPublicKeyPath = (Join-Path $HOME '.ssh/id_rsa.pub'),
 
-    [string]$KubeContext = 'bcd-aksarc'
+    [string]$KubeContext = 'bcd-aksarc',
+
+    [ValidateSet('All', 'Azure')]
+    [string]$Stage = 'All',
+    [string]$HandoverPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../.handover'))
 )
 
 $ErrorActionPreference = 'Stop'
@@ -218,16 +226,29 @@ try {
     $registryLoginServer = ($outputsJson | ConvertFrom-Json).registryLoginServer.value
 
     Write-Host "==> Fetching admin credentials as context '$KubeContext'" -ForegroundColor Cyan
-    Invoke-Checked 'az aksarc get-credentials' {
-        az aksarc get-credentials --name $ClusterName --resource-group $ResourceGroup `
-            --admin --context $KubeContext --overwrite-existing
+    if ($Stage -eq 'Azure') {
+        # The site machine takes these over; this machine can't reach the API server.
+        New-Item -ItemType Directory -Force -Path $HandoverPath | Out-Null
+        $kubeconfigFile = Join-Path $HandoverPath 'kubeconfig'
+        Invoke-Checked 'az aksarc get-credentials' {
+            az aksarc get-credentials --name $ClusterName --resource-group $ResourceGroup `
+                --admin --context $KubeContext --file $kubeconfigFile --overwrite-existing
+        }
+        Write-Host "    written to $kubeconfigFile for the site machine" -ForegroundColor Yellow
+        $kubernetesServiceIp = '(not checked from here)'
     }
-    Invoke-Checked 'kubectl cluster-info' {
-        kubectl cluster-info --context $KubeContext --request-timeout=30s | Out-Null
-    }
+    else {
+        Invoke-Checked 'az aksarc get-credentials' {
+            az aksarc get-credentials --name $ClusterName --resource-group $ResourceGroup `
+                --admin --context $KubeContext --overwrite-existing
+        }
+        Invoke-Checked 'kubectl cluster-info' {
+            kubectl cluster-info --context $KubeContext --request-timeout=30s | Out-Null
+        }
 
-    # The connected registry Service needs a ClusterIP inside the service CIDR; report it.
-    $kubernetesServiceIp = kubectl get service kubernetes --namespace default --context $KubeContext -o jsonpath='{.spec.clusterIP}'
+        # The connected registry Service needs a ClusterIP inside the service CIDR; report it.
+        $kubernetesServiceIp = kubectl get service kubernetes --namespace default --context $KubeContext -o jsonpath='{.spec.clusterIP}'
+    }
 
     Write-Host "`n================ Platform ready ================" -ForegroundColor Green
     Write-Host "Resource group   : $ResourceGroup"
