@@ -107,43 +107,56 @@ Then:
 
 1. Copy [scripts/settings.example.json](./scripts/settings.example.json) to `scripts/settings.json`
    and fill in the `AzureLocal` section.
-2. Bring it up:
+2. In a PowerShell 7 window, run:
 
    ```powershell
    ./scripts/up.ps1 -Target AzureLocal
    ```
 
-   This checks the site ([preflight.ps1](./scripts/infra/azurelocal/preflight.ps1)), sets up the
-   platform ([setup-platform.ps1](./scripts/setup-platform.ps1): the cluster, the registry that keeps
-   serving images offline, Keycloak and the ingress) and deploys the app
-   ([deploy.ps1](./scripts/deploy.ps1)). Run it again to update; every step is idempotent. After
-   the first time, `./scripts/deploy.ps1 -Target AzureLocal` redeploys the app alone.
+   It checks that the site is ready, creates the cluster and everything the app needs on it, and
+   deploys the app. Creating the cluster takes 20 to 40 minutes of that.
 
 Open the address it prints and sign in with an AD account in one of the app's groups. The first
 time, trust the site's CA certificates with the commands it printed.
 
-**Two stages.** Setup and deploy each run in two stages. The Azure stage does the work that needs
-Azure: it creates the cluster, fills the registry, and builds and publishes the app. The Site stage
-runs `kubectl`, `helm` and `rad` against the cluster and never signs in to Azure; that is all the
-site needs to redeploy while its link to Azure is down. The Azure stage leaves what the site needs
-in `scripts/.handover`: the cluster's admin kubeconfig, a registry pull token and the release's
-image digests. The Site stage applies them and deletes the secrets.
+To deploy a new version of the app later, run `./scripts/deploy.ps1 -Target AzureLocal`. Running
+`up.ps1` again is also safe: each step updates what's already there instead of starting over.
 
-Run as above, both stages run in a row on one machine. When the machine that can sign in to Azure
-can't reach the site's network, or the reverse, run them on two machines:
+#### When your site machine can't sign in to Azure
 
-```powershell
-# On the machine signed in to Azure
-./scripts/up.ps1 -Target AzureLocal -Stage Azure
+The steps above assume one machine that can both sign in to Azure and reach the site's network.
+Often that isn't the case: your workstation can sign in to Azure but can't reach the site, and the
+management machine on the site can reach the cluster but not Azure. Split the run between the two:
 
-# Copy scripts/.handover to the same place in a checkout on the site machine, then on that machine:
-./scripts/up.ps1 -Target AzureLocal -Stage Site
-```
+1. On the machine that can sign in to Azure:
 
-`scripts/.handover` is ignored by git; treat it as a secret while you copy it.
+   ```powershell
+   ./scripts/up.ps1 -Target AzureLocal -Stage Azure
+   ```
+
+   This creates the cluster in Azure, fills the registry and builds the app.
+
+2. Copy the `scripts/.handover` folder to the same place in a copy of this repository on the site
+   machine, along with your `scripts/settings.json`. The folder holds the cluster's admin
+   credentials and a registry token, so treat it as a secret while you copy it. Git ignores both.
+3. On the site machine, in a PowerShell 7 window, run:
+
+   ```powershell
+   ./scripts/up.ps1 -Target AzureLocal -Stage Site
+   ```
+
+   This installs and deploys everything on the cluster, then deletes the credentials from the
+   folder. The site machine needs PowerShell 7, `kubectl`, Helm and the Radius CLI, but no Azure
+   sign-in.
+
+To ship a new version the same way, run `./scripts/deploy.ps1 -Target AzureLocal -Stage Azure` on
+the first machine, copy `scripts/.handover` across again, and run `-Stage Site` on the site machine.
+
+**While the site is cut off from Azure**, the app keeps running, and you can redeploy the last
+version you copied to the site machine with `-Stage Site`. Creating clusters and publishing new
+versions need Azure, so they wait until the link is back.
 
 To see or run each piece yourself, without the scripts, see [Set up by hand](./docs/setup-by-hand.md).
-
 ## Portability patterns in this sample
 
 How the sample applies each portability pattern on each platform. **Portable contract** is what the
@@ -258,3 +271,15 @@ Radius injects these into the API and the processor from their connections. The 
 - Radius 0.60 cannot delete the role assignments the Azure Recipes create, so deleting the app on
   Azure leaves Radius retrying. Delete the Azure resource group directly.
 - `InvariantGlobalization` must stay `false`: `Microsoft.Data.SqlClient` requires ICU.
+- On Azure Local, run the scripts in a PowerShell 7 window on the machine itself. Started from a
+  remote PowerShell session (WinRM), the Radius CLI doesn't return, and the deployment stops at
+  its first `rad` command.
+- On Azure Local, users reach Keycloak on the first cluster node's address, and Keycloak's
+  certificate names that address. If the node is replaced and gets a new address, sign-in stops
+  working. To recover, delete the `keycloak-tls` secret in the `identity` namespace and run
+  `./scripts/up.ps1 -Target AzureLocal` again. Putting Keycloak behind a load balancer address
+  would avoid this.
+- On Azure Local, the scripts create their own certificate authorities for the app's and
+  Keycloak's HTTPS certificates, so the sample runs on any site. Browsers outside the site trust
+  them only after you import them. In production, issue these certificates from your
+  organization's certificate authority instead.
