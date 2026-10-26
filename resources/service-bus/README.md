@@ -1,7 +1,5 @@
 # Azure Service Bus → Azure Local
 
-> **Draft sample guide**, written from the Order Management sample.
-
 | Target | Alternative | Portability class | Availability | Summary |
 |---|---|---|---|---|
 | Azure Local | [RabbitMQ](./alternatives/rabbitmq.md) | `adapter-required` | Sample available | Self-hosted broker with its own addressing, authentication and failure handling. |
