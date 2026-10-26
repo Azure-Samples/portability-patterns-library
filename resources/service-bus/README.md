@@ -23,10 +23,6 @@ A second broker implementation behind the same publish and subscribe interfaces,
 | Identity | Entra workload identity itself is not available. The same federated, secret-free pattern works through OAuth 2.0 with the customer's own identity provider (Keycloak in the sample). The alternative is a generated password. |
 | Storage | The reference recipe does not mount a data volume, so queued messages are lost if the broker pod is rescheduled. |
 
-## Data
-
-Messages waiting in Service Bus are not carried to the new broker.
-
 ## Examples
 
 The Order Management sample runs the same workers against Service Bus on Azure and RabbitMQ on Azure Local.
