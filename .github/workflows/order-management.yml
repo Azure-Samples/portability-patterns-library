@@ -1,0 +1,134 @@
+# Checks that the Order Management sample and the Recipes it uses still fit together: every
+# template compiles against the Radius types, the app builds and runs, and the setup assets render.
+name: Order Management sample
+
+on:
+  pull_request:
+    paths:
+      - recipes/**
+      - recipe-packs/**
+      - samples/OrderManagementApp/**
+      - .github/workflows/order-management.yml
+  push:
+    branches: [main]
+    paths:
+      - recipes/**
+      - recipe-packs/**
+      - samples/OrderManagementApp/**
+      - .github/workflows/order-management.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RADIUS_VERSION: 0.60.0
+  BICEP_VERSION: v0.42.1
+  SAMPLE: samples/OrderManagementApp
+
+jobs:
+  bicep:
+    name: Bicep templates and Recipes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Radius and Bicep CLIs
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/radius-project/radius/main/deploy/install.sh |
+            /bin/bash -s -- --version "$RADIUS_VERSION" --install-dir "$HOME/.local/bin"
+          curl -fsSLo "$HOME/.local/bin/bicep" "https://github.com/Azure/bicep/releases/download/$BICEP_VERSION/bicep-linux-x64"
+          chmod +x "$HOME/.local/bin/bicep"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # The app and Recipes use the Portability.Messaging/messageQueues type through this extension.
+      - name: Generate the queue type's Bicep extension
+        run: rad bicep publish-extension -f recipes/message-queue/messageQueues.yaml --target recipes/message-queue/messageQueues.tgz
+
+      - name: Build every template
+        run: |
+          status=0
+          while IFS= read -r file; do
+            echo "::group::$file"
+            bicep build "$file" --stdout > /dev/null || { echo "::error file=$file::bicep build failed"; status=1; }
+            echo "::endgroup::"
+          done < <(git ls-files '*.bicep')
+          exit $status
+
+  app:
+    name: App build and local run
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ env.SAMPLE }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Build
+        run: dotnet build OrderManagement.sln --configuration Release
+
+      # The same steps a developer follows in the README to run the app locally.
+      - name: Start the app with docker compose
+        run: |
+          dotnet dev-certs https --export-path local/certs/localhost.crt --format Pem --no-password
+          # Keycloak's container user must be able to read the certificate and key.
+          chmod 644 local/certs/localhost.*
+          docker compose up --build --detach --wait --wait-timeout 600
+
+      - name: Check the app answers and sign-in is wired up
+        run: |
+          set -x
+          curl -fsS http://localhost:8080/healthz
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/me)" = 401
+          issuer=$(curl -fsSk https://localhost:8443/realms/oms/.well-known/openid-configuration | jq -r .issuer)
+          test "$issuer" = https://localhost:8443/realms/oms
+          # The processor exits if it can't reach the queue, the database or blob storage.
+          sleep 30
+          test "$(docker compose ps processor --format '{{.State}}')" = running
+
+      - name: Logs
+        if: failure()
+        run: docker compose logs --no-color
+
+  assets:
+    name: Setup assets and scripts
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ env.SAMPLE }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Keycloak manifests and realm
+        run: |
+          kubectl kustomize infra/azurelocal/keycloak > /dev/null
+          jq empty infra/azurelocal/keycloak/realm.json local/keycloak-users.json
+
+      - name: Ingress values
+        run: |
+          helm template ingress-nginx ingress-nginx --repo https://kubernetes.github.io/ingress-nginx \
+            --version 4.15.1 --values infra/azurelocal/ingress-nginx/values.yaml > /dev/null
+
+      - name: Image list
+        run: |
+          # Every line is <source> <target> [artifact].
+          awk '!/^[[:space:]]*(#|$)/ && (NF < 2 || NF > 3) { print "bad line " NR ": " $0; bad=1 } END { exit bad }' infra/azurelocal/images.txt
+
+      - name: PowerShell scripts
+        shell: pwsh
+        run: |
+          $errors = Get-ChildItem scripts -Recurse -Filter *.ps1 | ForEach-Object {
+            $parseErrors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$parseErrors)
+            $parseErrors | ForEach-Object { "$($_.Extent.File):$($_.Extent.StartLineNumber): $($_.Message)" }
+          }
+          if ($errors) { $errors; exit 1 }
+
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          $findings = Invoke-ScriptAnalyzer -Path scripts -Recurse -Settings scripts/PSScriptAnalyzerSettings.psd1
+          $findings | Format-Table ScriptName, Line, RuleName, Message -AutoSize -Wrap
+          if ($findings) { exit 1 }

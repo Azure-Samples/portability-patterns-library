@@ -1,0 +1,207 @@
+# Keycloak with a PostgreSQL database, in the identity namespace.
+#
+# Expects these to exist in the identity namespace (see README.md in this folder):
+#   Secret keycloak-admin           username, password    bootstrap admin
+#   Secret keycloak-db              username, password    database login
+#   Secret keycloak-tls             tls.crt, tls.key      Keycloak's serving certificate
+#   Secret cluster-ca               cluster-ca.pem        the cluster's CA, to verify service account tokens
+#   Secret oms-ad-bind              bind-upn, bind-password   read-only directory account
+#   Secret oms-ad-ca                ca.crt                directory CA, for LDAPS (optional)
+#   ConfigMap keycloak-realm-settings                     site values from realm-settings.env
+#   Secret azurelocal-registry      image pull secret, when pulling from a private registry
+---
+# Keycloak verifies service account tokens against the cluster's signing keys, which the API
+# server only serves to authenticated callers.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: keycloak-issuer-discovery
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:service-account-issuer-discovery
+subjects:
+  - kind: ServiceAccount
+    name: default
+    namespace: identity
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak-db
+  namespace: identity
+spec:
+  selector:
+    app: keycloak-db
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: keycloak-db
+  namespace: identity
+spec:
+  serviceName: keycloak-db
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keycloak-db
+  template:
+    metadata:
+      labels:
+        app: keycloak-db
+    spec:
+      imagePullSecrets:
+        - name: azurelocal-registry
+      containers:
+        - name: postgres
+          image: docker.io/library/postgres
+          env:
+            - name: POSTGRES_DB
+              value: keycloak
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef: { name: keycloak-db, key: username }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: keycloak-db, key: password }
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "keycloak", "-d", "keycloak"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 8Gi
+---
+# Reached on every node's address at port 30443, so the issuer URL is https://<node address>:30443/realms/oms.
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: identity
+spec:
+  type: NodePort
+  selector:
+    app: keycloak
+  ports:
+    - name: https
+      port: 8443
+      targetPort: 8443
+      nodePort: 30443
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: identity
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keycloak
+  template:
+    metadata:
+      labels:
+        app: keycloak
+    spec:
+      imagePullSecrets:
+        - name: azurelocal-registry
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak
+          args: ["start", "--import-realm", "--optimized=false"]
+          # Site values for the ${...} placeholders in realm.json.
+          envFrom:
+            - configMapRef:
+                name: keycloak-realm-settings
+          env:
+            - name: LDAP_BIND_DN
+              valueFrom:
+                secretKeyRef: { name: oms-ad-bind, key: bind-upn }
+            - name: LDAP_BIND_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: oms-ad-bind, key: bind-password }
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef: { name: keycloak-admin, key: username }
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: keycloak-admin, key: password }
+            - name: KC_DB
+              value: postgres
+            - name: KC_DB_URL
+              value: jdbc:postgresql://keycloak-db:5432/keycloak
+            - name: KC_DB_USERNAME
+              valueFrom:
+                secretKeyRef: { name: keycloak-db, key: username }
+            - name: KC_DB_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: keycloak-db, key: password }
+            - name: KC_HTTPS_CERTIFICATE_FILE
+              value: /opt/keycloak/conf/tls/tls.crt
+            - name: KC_HTTPS_CERTIFICATE_KEY_FILE
+              value: /opt/keycloak/conf/tls/tls.key
+            - name: KC_HOSTNAME_STRICT
+              value: "false"
+            - name: KC_HEALTH_ENABLED
+              value: "true"
+            # One replica, so no clustering. Otherwise a restarted pod waits on its predecessor's
+            # membership row in the database and never finishes starting.
+            - name: KC_CACHE
+              value: local
+            # Exchanging a Kubernetes service account token needs this feature, at v1.
+            - name: KC_FEATURES
+              value: kubernetes-service-accounts:v1
+            # Trusts the cluster CA (for the API server's signing keys) and the directory CA (for LDAPS).
+            - name: KC_TRUSTSTORE_PATHS
+              value: /opt/keycloak/conf/truststores
+          ports:
+            - containerPort: 8443
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 9000
+              scheme: HTTPS
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 30
+          volumeMounts:
+            - name: realm
+              mountPath: /opt/keycloak/data/import
+              readOnly: true
+            - name: truststore
+              mountPath: /opt/keycloak/conf/truststores
+              readOnly: true
+            - name: tls
+              mountPath: /opt/keycloak/conf/tls
+              readOnly: true
+      volumes:
+        - name: realm
+          configMap:
+            name: keycloak-realm
+        - name: truststore
+          projected:
+            sources:
+              - secret:
+                  name: cluster-ca
+              - secret:
+                  name: oms-ad-ca
+                  optional: true
+        - name: tls
+          secret:
+            secretName: keycloak-tls

@@ -1,0 +1,2 @@
+# Bicep extension compiled from recipes/message-queue/messageQueues.yaml
+recipes/message-queue/*.tgz

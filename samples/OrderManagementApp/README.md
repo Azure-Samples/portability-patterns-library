@@ -1,487 +1,294 @@
-# Business Continuity Demo App
+# Order Management sample
 
-A Radius sample showing one application definition and one set of container images deploying
-unchanged to a local kind cluster, to AKS with Azure PaaS backing services, and to Azure Local
-running air-gapped disconnected operations — with the platform, not the application, deciding what
-backs each dependency.
+An app written for Azure that moves to **Azure Local** without code changes. The same app
+definition and the same container images run on AKS with Azure PaaS services, and on AKS enabled by
+Arc on Azure Local, where the app keeps running when the site loses its link to Azure.
 
-## What it does
+Use it as a template for moving your own app: [Move your app in five steps](./docs/move-your-app.md).
 
-```
-┌─────────────┐      JSON        ┌──────────┐                  ┌──────────────┐
-│  Publisher  │ ───────────────► │  Queue   │ ───────────────► │   Consumer   │
-│   worker    │  business event  │          │                  │    worker    │
-└─────────────┘                  └──────────┘                  └───────┬──────┘
-                                                                       │
-                                         ┌─────────────────────────────┴────────────┐
-                                         ▼                                          ▼
-                                 ┌───────────────┐                        ┌──────────────────┐
-                                 │ Object storage│                        │   SQL Server     │
-                                 │  (JSON blob)  │                        │ (indexed record) │
-                                 └───────────────┘                        └──────────────────┘
-```
+## What the app does
 
-The publisher emits a random business continuity event every few seconds. The consumer archives the
-JSON to object storage, then inserts an indexed row in SQL pointing at that blob. Blob first, so
-every row references an archive that exists; the SQL write is a `MERGE`, so redelivery never
-duplicates.
+Users sign in to a browser app and place orders. The **API** publishes each order to a **queue**;
+the **processor** archives the order as JSON in **object storage** and records it in **SQL**.
 
-### Orders: users sign in and place orders
+```mermaid
+flowchart LR
+    user(["User in a browser"])
+    idp["Identity provider<br/>Entra ID on Azure<br/>Keycloak + Active Directory on Azure Local"]
+    api["API"]
+    queue[["Queue"]]
+    processor["Processor"]
+    storage[("Object storage<br/>order JSON")]
+    sql[("SQL<br/>orders table")]
 
-The publisher also serves an orders API and a browser app. A user signs in with **MSAL.js**, picks
-products and places an order; the API publishes it to the same queue, and the consumer archives it
-(`orders/<date>/<id>.json`) and records it in `dbo.Orders`. The page polls until the order shows as
-*Processed*.
-
-```
-Browser (MSAL.js) ──sign in──► Entra ID  |  Keycloak + AD (Azure Local)
-      │ Bearer token (aud, scp=access_as_user, roles)
-      ▼
-Publisher API (Microsoft.Identity.Web) ──OrderPlaced──► Queue ──► Consumer ──► blob + SQL
-      ▲                                                                           │
-      └──────────────── GET /api/orders (the user's own orders) ◄──────────────────┘
+    user -- "1. sign in" --> idp
+    idp -- "2. access token" --> user
+    user -- "3. place order" --> api
+    api -- "4. publish" --> queue
+    queue -- "5. deliver" --> processor
+    processor -- "6. archive" --> storage
+    processor -- "7. record" --> sql
+    api -- "my orders" --> sql
 ```
 
-The code is written as an ordinary Entra app; nothing in it knows about Keycloak. On Azure Local the
-platform makes Keycloak issue Entra-shaped tokens, so only configuration differs:
-
-| Setting | Entra ID | Keycloak (Azure Local) |
+| Dependency | On Azure | On Azure Local |
 |---|---|---|
-| API `AzureAd` section | `Instance`, `TenantId`, `ClientId` | `Authority`, `MetadataAddress`, `ClientId`, `Audience` |
-| SPA `ProtocolMode` | `AAD` | `OIDC` (plus `KnownAuthorities`) |
-| `Orders.Read` / `Orders.Create` | app roles assigned to groups | realm roles mapped from AD groups `bcd-app-readers` / `bcd-app-writers` |
-| Scope | `api://<api>/access_as_user` | `api://bcd-orders-api/access_as_user` |
+| Queue | Azure Service Bus | RabbitMQ container |
+| Object storage | Azure Blob Storage | Azurite container |
+| SQL | Azure SQL Database | SQL Server container |
+| User sign-in | Microsoft Entra ID | Keycloak, federated to the site's Active Directory |
+| How the app authenticates to services | Entra Workload ID (no secrets) | Keycloak token for the queue; Kerberos (Active Directory) for SQL; Recipe-issued credentials for storage |
+| Images and Recipes | Azure Container Registry | ACR connected registry inside the cluster |
 
-| Endpoint | Requires |
+The Azure Local column runs nothing in Azure at runtime. That is what lets the app keep working when
+the site is cut off from Azure.
+
+## Run it
+
+All commands run from this folder, `samples/OrderManagementApp`.
+
+| Where | What you need | How long |
+|---|---|---|
+| [Your machine](#on-your-machine) | Docker or Podman, .NET 9 SDK | 10 minutes |
+| [Azure](#on-azure) | an Azure subscription | 20 minutes |
+| [Azure Local](#on-azure-local) | an Azure Local instance and its Active Directory | an afternoon, the first time |
+
+### On your machine
+
+The app with RabbitMQ, SQL Server, Azurite and Keycloak in containers: the same services as on
+Azure Local, with no cluster and no Radius.
+
+```powershell
+dotnet dev-certs https --trust
+dotnet dev-certs https --export-path local/certs/localhost.crt --format Pem --no-password
+docker compose up --build
+```
+
+On Linux and macOS, also run `chmod 644 local/certs/localhost.*` before `docker compose up`, so the
+Keycloak container can read the certificate.
+
+Open http://localhost:8080 and sign in as `demo`, password `demo`. Stop it with `docker compose down`.
+
+### On Azure
+
+**You need:** Owner on an Azure subscription (the template assigns roles), the right to register
+apps in Microsoft Entra ID, and these tools: [Azure Developer CLI](https://aka.ms/azd-install),
+[Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) with `kubectl` and `kubelogin`
+(`az aks install-cli`), [Helm](https://helm.sh/docs/intro/install/),
+[Radius CLI 0.60](https://docs.radapp.io/installation/), PowerShell 7, and Docker or Podman.
+
+```powershell
+azd auth login
+az login
+azd up
+```
+
+azd and the Azure CLI keep separate sign-ins, and `azd up` uses both, so sign in to the same tenant
+with each.
+
+`azd up` creates AKS, a container registry and managed identities, installs Radius and an HTTPS
+ingress, registers the app in Entra ID, then builds and deploys the app. It prints the app's
+address. Your account gets both app roles, so you can sign in and place orders straight away.
+
+Settings for your subscription, if you need them, are listed at the top of
+[azure.yaml](./azure.yaml) (`azd env set ...`). Remove everything with `azd down`.
+
+### On Azure Local
+
+**Before you start**, check that you have:
+
+- [ ] An Azure Local instance **connected to Azure**, with its custom location and a running Arc
+      resource bridge.
+- [ ] A **management machine** on the site network to run the scripts from, such as an admin
+      workstation or jump box. Not an Azure Local node: Microsoft recommends keeping CLI extensions
+      and tools off the nodes. It needs PowerShell 7 and the tools for Azure above, except azd.
+- [ ] Free addresses on the site network, from your network plan: one for the cluster's control
+      plane, a pool for the nodes, and a small range for the load balancer. The app gets the first
+      free address of that range.
+- [ ] One unused address in the cluster's service range for the in-cluster registry. AKS enabled
+      by Arc uses 10.96.0.0/12; avoid the first few addresses, which Kubernetes takes.
+- [ ] The site's **Active Directory**, with the app's groups and a bind account for Keycloak. See
+      [Connect your Active Directory](./docs/authentication.md#connect-your-active-directory).
+- [ ] Contributor and User Access Administrator on the Azure subscription, and the right to create
+      groups in Entra ID.
+
+Then, on the management machine:
+
+1. Copy [scripts/settings.example.json](./scripts/settings.example.json) to `scripts/settings.json`
+   and fill in the `AzureLocal` section with the names and addresses above. Everything else, such as
+   the app's address and the registry's, the scripts read from the cluster.
+2. In a PowerShell 7 window, run:
+
+   ```powershell
+   ./scripts/up.ps1 -Target AzureLocal
+   ```
+
+   It checks that the site is ready, creates the cluster and everything the app needs on it, and
+   deploys the app. Creating the cluster takes 20 to 40 minutes of that.
+
+Open the address it prints and sign in with an AD account in one of the app's groups. The first
+time, trust the site's CA certificates with the commands it printed.
+
+To deploy a new version of the app later, run `./scripts/deploy.ps1 -Target AzureLocal`. Running
+`up.ps1` again is also safe: each step updates what's already there instead of starting over.
+
+#### When your management machine can't sign in to Azure
+
+The steps above assume the management machine can both sign in to Azure and reach the site's
+network, which is usual for a connected site. If your policy keeps Azure sign-in off the site
+network, split the run between a machine that can sign in to Azure and the management machine:
+
+1. On the machine that can sign in to Azure:
+
+   ```powershell
+   ./scripts/up.ps1 -Target AzureLocal -Stage Azure
+   ```
+
+   This creates the cluster in Azure, fills the registry and builds the app.
+
+2. Copy the `scripts/.handover` folder to the same place in a copy of this repository on the
+   management machine, along with your `scripts/settings.json`. The folder holds the cluster's admin
+   credentials and a registry token, so treat it as a secret while you copy it. Git ignores both.
+3. On the management machine, in a PowerShell 7 window, run:
+
+   ```powershell
+   ./scripts/up.ps1 -Target AzureLocal -Stage Site
+   ```
+
+   This installs and deploys everything on the cluster, then deletes the credentials from the
+   folder. This machine needs PowerShell 7, `kubectl`, Helm and the Radius CLI, but no Azure
+   sign-in.
+
+To ship a new version the same way, run `./scripts/deploy.ps1 -Target AzureLocal -Stage Azure` on
+the first machine, copy `scripts/.handover` across again, and run `-Stage Site` on the management
+machine.
+
+**While the site is cut off from Azure**, the app keeps running, and you can redeploy the last
+version you copied to the management machine with `-Stage Site`. Creating clusters and publishing
+new versions need Azure, so they wait until the link is back.
+
+## Portability patterns in this sample
+
+How the sample applies each portability pattern on each platform. **Portable contract** is what the
+app and its definitions rely on, which stays the same while the platform underneath changes.
+
+<table>
+<thead><tr><th>Pattern</th><th>Aspect</th><th>Azure</th><th>Azure Local</th><th>Portable contract</th></tr></thead>
+<tbody>
+<tr><td rowspan="2"><b>Separate application intent from environment</b></td><td>Deployment</td><td><a href="../../recipe-packs/azure.bicep">azure.bicep</a> Recipe Pack maps each type to an Azure service</td><td><a href="../../recipe-packs/azure-local.bicep">azure-local.bicep</a> Recipe Pack maps each type to a container</td><td><a href="./deploy/app.bicep">app.bicep</a>: one app definition</td></tr>
+<tr><td>Code</td><td>Service Bus and Blob Storage SDK clients</td><td>RabbitMQ client; Blob Storage SDK against Azurite</td><td><code>IMessagePublisher</code>, <code>IArchiveStore</code>, <code>IOrderStore</code>; the implementation is picked at startup (<a href="./src/OrderManagement.Shared/DependencyInjection/ServiceCollectionExtensions.cs">ServiceCollectionExtensions.cs</a>)</td></tr>
+<tr><td rowspan="4"><b>Standardized container platform</b></td><td>Cluster</td><td>AKS</td><td>AKS enabled by Arc, on a logical network of the Azure Local instance</td><td>container images; manifests from the shared <a href="../../recipes/kubernetes/kubernetes-containers.bicep">container Recipe</a></td></tr>
+<tr><td>Registry</td><td>Azure Container Registry</td><td>ACR connected registry inside the cluster, synced while connected (<a href="./infra/azurelocal/connected-registry.bicep">connected-registry.bicep</a>)</td><td>images and Recipes pushed to one ACR</td></tr>
+<tr><td>Load balancer and ingress</td><td>Azure Load Balancer; managed NGINX (app routing)</td><td>Arc load balancer (MetalLB); NGINX ingress</td><td>Service of type LoadBalancer; Ingress</td></tr>
+<tr><td>Cluster access</td><td>Entra ID with Azure RBAC</td><td>Entra while connected; admin kubeconfig (certificate) when offline</td><td>the standard Kubernetes API; operators use the same tools on both</td></tr>
+<tr><td rowspan="2"><b>Portable database engine</b></td><td>Engine</td><td>Azure SQL Database</td><td>SQL Server 2022 container</td><td><code>Radius.Data/sqlServerDatabases</code> type; T-SQL; <code>Microsoft.Data.SqlClient</code></td></tr>
+<tr><td>Sign-in</td><td>Entra (Workload ID); the app's managed identity is the admin</td><td>Windows (Kerberos) against the site's Active Directory</td><td>no password in the app: it uses whichever identity the platform mounts, a workload identity token or a Kerberos keytab</td></tr>
+<tr><td rowspan="2"><b>Portable messaging</b></td><td>Broker</td><td>Azure Service Bus queue</td><td>RabbitMQ container</td><td><code>Portability.Messaging/messageQueues</code> type; idempotent consumer (<code>MERGE</code>)</td></tr>
+<tr><td>Sign-in</td><td>Entra (Workload ID)</td><td>Kubernetes service account token exchanged at Keycloak (OAuth 2.0)</td><td>no password in the app: the pod's token from the platform, exchanged for an access token by the issuer the connection names</td></tr>
+<tr><td><b>Classified, abstracted object storage</b></td><td>Store</td><td>Azure Blob Storage, with Workload ID</td><td>Azurite (development emulator)</td><td>flat-file use, one JSON per order, behind <code>IArchiveStore</code>; endpoint and credentials injected</td></tr>
+<tr><td rowspan="2"><b>Portable workload and user identities</b></td><td>Users</td><td>Microsoft Entra ID</td><td>Keycloak, federated to Active Directory</td><td>OpenID Connect with MSAL.js and Microsoft.Identity.Web; <code>roles</code>, <code>scp</code> and <code>oid</code> claims</td></tr>
+<tr><td>Workloads</td><td>Entra Workload ID (federated credential)</td><td>Kubernetes service account token projection</td><td>the platform mounts a short-lived token into the pod; the app definition holds no credentials</td></tr>
+<tr><td><b>Identity estate as code</b></td><td>Definitions</td><td>Entra app registrations, roles and assignments in <a href="./infra/azure/app-identity.bicep">app-identity.bicep</a></td><td>Keycloak realm, clients and role mappings in <a href="./infra/azurelocal/keycloak/realm.json">realm.json</a>, imported when Keycloak starts</td><td>app roles <code>Orders.Read</code>, <code>Orders.Create</code>; scope <code>access_as_user</code></td></tr>
+<tr><td><b>Platform as code</b></td><td>Templates</td><td><a href="./infra/azure/">infra/azure/</a>: AKS, ACR, managed identity</td><td><a href="./infra/azurelocal/">infra/azurelocal/</a>: AKS Arc, logical network, ACR, load balancer, connected registry; Keycloak and ingress manifests</td><td>Bicep, deployed with <code>azd up</code> or <code>az deployment sub create</code></td></tr>
+<tr><td><b>Observability</b></td><td>Telemetry</td><td>not covered</td><td>not covered</td><td>not covered; would be OpenTelemetry to a configurable backend</td></tr>
+</tbody>
+</table>
+
+### Not covered yet
+
+- **Continuous portability assessment** with Azure Policy: no parity or SKU checks against the target
+  platform.
+- **Observability:** the app logs to the console only. There's no OpenTelemetry instrumentation,
+  collector or alternative backend.
+- **Data paths:** SQL Server, RabbitMQ and Azurite run without persistent volumes, so their data
+  doesn't survive a pod restart, and there's no backup, replication or seeding from Azure. The
+  pattern expects a tested data path with a measured recovery point.
+- **Messaging protocol:** the app uses each broker's own SDK (Service Bus, and RabbitMQ's AMQP 0-9-1
+  client) behind one interface, rather than AMQP 1.0 for both. There's no dead-letter handling on
+  RabbitMQ: a message that keeps failing is requeued with a back-off, indefinitely.
+- **Object storage target:** Azurite is a development emulator, not a production store. Use a file
+  share for this flat-file case, or an object store you operate (for example Azure Container
+  Storage enabled by Azure Arc, or an S3-compatible store behind `IArchiveStore`).
+- **Identity sync and MFA:** Entra users aren't synchronized to Active Directory; each platform has
+  its own users. Keycloak doesn't enforce a second factor.
+
+## Learn more
+
+| | |
 |---|---|
-| `GET /api/me`, `GET /api/products` | signed in, scope `access_as_user` |
-| `GET /api/orders`, `GET /api/orders/{id}` | `Orders.Read` or `Orders.Create`; only the caller's own orders |
-| `POST /api/orders` | `Orders.Create`; prices come from the server catalog, never the client |
-
-The browser app is plain HTML/JS with the MSAL.js 4.30 browser bundle vendored under
-`src/Bcd.Publisher/wwwroot/lib`, so building the image needs no Node.js and no internet. The random
-event generator is off by default (`publishIntervalSeconds = 0`).
-
-## Same app, different infrastructure
-
-[`deploy/app.bicep`](./deploy/app.bicep) never names RabbitMQ, Service Bus, Azurite or Azure SQL. It
-declares three abstract dependencies:
-
-```bicep
-resource queue    'BusinessContinuity.Messaging/messageQueues@2025-08-01-preview' = { ... }
-resource archive  'Radius.Storage/objectStorage@2025-08-01-preview'               = { ... }
-resource database 'Radius.Data/sqlServerDatabases@2025-08-01-preview'             = { ... }
-```
-
-A **Recipe** binds each Resource Type to real infrastructure, a **Recipe Pack** groups them, and an
-**Environment** references a Recipe Pack. Changing environment changes the infrastructure without
-touching application code or Bicep:
-
-| Resource Type | `bcd-local` (kind) | `bcd-azure` (AKS) | `bcd-aldo` (disconnected) |
-|---|---|---|---|
-| `messageQueues` | RabbitMQ container | **Azure Service Bus** | RabbitMQ container, local registry |
-| `objectStorage` | Azurite container | **Azure Blob Storage** | Azurite container, local registry |
-| `sqlServerDatabases` | SQL Server container | **Azure SQL** (Entra-only) | SQL Server container, local registry |
-| Worker auth | credentials from Recipes | **Entra Workload Identity** | credentials from Recipes |
-
-The third column is not a lesser second: disconnected operations exposes no Service Bus, Azure SQL
-or Blob Storage, and supports only *system-assigned* managed identity, so there is no federated
-credential to build on. The Recipes absorb those platform facts — which is the point.
-
-`BusinessContinuity.Messaging/messageQueues` is user-defined
-([schema](./deploy/types/messageQueues.yaml)) because the built-in `Radius.Messaging/rabbitMQ` is
-broker-specific and cannot represent Service Bus. Object storage and SQL use built-in portable types.
-
-## How the application adapts
-
-Radius injects `CONNECTION_<NAME>_<PROPERTY>` variables per connected resource.
-[`BcdServiceCollectionExtensions`](./src/Bcd.Shared/DependencyInjection/BcdServiceCollectionExtensions.cs)
-is the only place that branches on them:
-
-```csharp
-return options.Provider switch
-{
-    QueueProvider.ServiceBus => new ServiceBusMessageBroker(...),
-    QueueProvider.RabbitMq   => new RabbitMqMessageBroker(...),
-};
-```
-
-The workers only ever see `IMessagePublisher` / `IMessageSubscriber`. Storage follows the same rule:
-a connection string means Azurite, an endpoint alone means managed identity.
-
-On Azure no keys exist at all — the Recipes set `disableLocalAuth` and `allowSharedKeyAccess: false`
-and grant data-plane roles to a user-assigned identity, which the workers reach through a federated
-credential trusting the AKS OIDC issuer for one service account subject.
+| [Move your app in five steps](./docs/move-your-app.md) | resource types, connections, Recipes, Recipe Packs, environments |
+| [How authentication works](./docs/authentication.md) | user sign-in, workload identity, Active Directory and Kerberos |
+| [Workload identity in depth](./docs/workload-identity.md) | decoded tokens and troubleshooting |
 
 ## Repository layout
 
-```
-├── src/
-│   ├── Bcd.Shared/         Provider abstractions, CONNECTION_* binding, identity
-│   ├── Bcd.Publisher/      Generates and publishes events
-│   └── Bcd.Consumer/       Archives to blob, records in SQL
-├── deploy/
-│   ├── app.bicep           Environment-agnostic application definition
-│   ├── registry-auth.bicep Private registry credentials for Recipe pulls
-│   ├── infra/              Resource group, ACR, AKS, managed identity + FIC
-│   ├── types/              User-defined Resource Type for the queue
-│   ├── recipes/            local/ azure/ kubernetes/
-│   ├── recipe-packs/       Bind Resource Types to Recipes per environment
-│   └── environments/       bcd-local, bcd-azure, bcd-aldo, bcd-azurelocal
-├── scripts/
-│   ├── setup-platform.ps1  Once per site (platform team): cluster, ingress, sign-in, offline registry
-│   ├── deploy.ps1          Every release (app team): images, Recipes, rad deploy
-│   ├── settings.example.json  Per-target values; copy to settings.json (gitignored)
-│   ├── azure/, azurelocal/ The steps the two commands run, one script per step
-│   ├── lib/                Settings loader shared by the two commands
-│   └── publish-recipes.ps1 Compile and push Recipes to an OCI registry
-├── lab/                    NOT part of the sample: stands up what a customer already has
-│   ├── aldo/               Domain controller VM, k3s VM, Azure Local disconnected operations path
-│   └── local/              kind cluster for the developer inner loop
-├── docker/                 Dockerfiles for both workers
-└── docker-compose.yml      Run everything without Kubernetes
-```
-
-Every script carries its own `.SYNOPSIS`/`.DESCRIPTION` with the environment-specific detail; run
-`Get-Help ./scripts/<path>.ps1 -Full` rather than looking for it here.
-
-## Two commands, two roles
-
-| Who | Command | When |
-|---|---|---|
-| Platform team | `./scripts/setup-platform.ps1 -Target Azure` or `AzureLocal` | once per site |
-| Application team | `./scripts/deploy.ps1 -Target Azure` or `AzureLocal` | every release |
-
-The application is the same for both targets: same `deploy/app.bicep`, same images. Only the
-platform setup differs, and on Azure Local that setup is also what keeps the app running when the
-link to Azure drops. Site-specific values (subscription, registry, addresses) live in
-`scripts/settings.json`; start from [settings.example.json](./scripts/settings.example.json).
-`setup-platform.ps1 -WhatIf` shows each step and the arguments it would get.
-
----
-
-# Deploying
-
-| Tool | Needed for |
-|---|---|
-| .NET 9 SDK, Docker, kubectl | everything |
-| [Radius CLI](https://docs.radapp.io/getting-started/) 0.60+ | everything |
-| kind | local path |
-| Azure CLI + [kubelogin](https://azure.github.io/kubelogin/install.html) | Azure path |
-
-## Option 1 — No Kubernetes
-
-```powershell
-Copy-Item .env.example .env   # then set RABBITMQ_PASSWORD and MSSQL_SA_PASSWORD in .env
-docker compose up --build
-docker compose logs consumer --tail 20
-docker compose down -v
-```
-
-## Option 2 — Local kind cluster (lab)
-
-```powershell
-$env:MSSQL_SA_PASSWORD = '<choose-a-strong-password>'
-./lab/local/deploy.ps1
-./lab/local/verify.ps1
-kubectl logs -n bcd-local -l radapp.io/resource=consumer -f
-```
-
-The script creates the cluster and an in-cluster registry, installs Radius, binds a dedicated
-workspace, registers the Resource Type, builds and loads images, publishes Recipes, then deploys the
-Recipe Pack, Environment and application.
-
-Two things that bite if you work outside the script: `rad` targets the *workspace's* cluster rather
-than your current `kubectl` context, and the Radius control plane resolves cluster DNS while the
-kubelet does not — so Recipes come from the in-cluster registry but images go onto the node with
-`kind load`.
-
-## Option 3 — AKS with Azure PaaS
-
-Azure access is split across two identities, and conflating them causes most of the confusion:
-
-| | Radius control plane → Azure | Workers → Azure |
-|---|---|---|
-| Who | `applications-rp`, `bicep-de`, `ucp`, `dynamic-rp` | `publisher`, `consumer` |
-| Does | *provisions* Service Bus, Storage, SQL | *calls* them at runtime |
-| Identity | `bcd-radius-identity`, 4 federated credentials | `bcd-workload-identity`, 1 |
-
-Neither uses a client secret. Both are created by
-[provision-infra.ps1](./scripts/azure/provision-infra.ps1), which also disables local cluster
-accounts in favour of Entra ID + Azure RBAC.
-
-```powershell
-az login
-Copy-Item scripts/settings.example.json scripts/settings.json   # then fill in the Azure section
-
-./scripts/setup-platform.ps1 -Target Azure   # cluster, ingress, Entra app registrations
-./scripts/deploy.ps1 -Target Azure
-```
-
-`setup-platform.ps1` runs three steps. *Cluster* creates the platform and prints the workload
-identity IDs that `Deploy` needs in the settings. *Ingress* gives the app a public HTTPS address;
-set `PrivateCa` where policy blocks inbound internet traffic, so Let's Encrypt cannot validate, as
-in Microsoft-internal subscriptions, and then `IngressCertIssuer: bcd-private-ca` under `Deploy`.
-*Identity* registers the API and browser app with Entra (in the Microsoft tenant set
-`ServiceManagementReference`).
-
-`deploy.ps1` mints a short-lived, read-only registry token for Recipe pulls itself, builds with
-podman or docker, and publishes the orders app through the ingress when
-`provision-ingress.ps1` has run (add `-IngressCertIssuer bcd-private-ca` with `-PrivateCa`). Use
-`-SqlLocation` when the region refuses new SQL servers, and a distinct `-ResourceGroup` (Radius
-group) when another deployment in the subscription already uses `bcd`, since Recipe resource names
-derive from it (both under `Deploy` in the settings). Already have a cluster? Run
-[bootstrap-identity.ps1](./scripts/azure/bootstrap-identity.ps1), then
-`setup-platform.ps1 -Target Azure -Skip Cluster`.
-
-Clean up with `az group delete --name bcd-infra --yes --no-wait`, then
-`rad workspace delete bcd-azure --yes`.
-
-Worth knowing: "resource group" means three different things here — the Azure platform group
-(`-ResourceGroup`), the Azure group the Recipes provision into (`-AppInfraResourceGroup`), and the
-Radius control-plane scope, which is not an Azure group at all despite the identical flag name.
-
-## Option 4 — Azure Local, disconnected operations (lab)
-
-[Disconnected operations](https://learn.microsoft.com/azure/azure-local/manage/disconnected-operations-overview)
-offer ARM, RBAC, Azure Local VMs, Arc-enabled servers and Kubernetes, ACR, Key Vault and Policy —
-and no PaaS data services. So this is the **local** path plus a **local registry**, air-gapped: every
-backing service is an in-cluster container. There is no Entra to federate against either, so
-workload identity is rebuilt on Active Directory and Keycloak — see
-[Workload identity without Entra](#workload-identity-without-entra).
-
-**Nothing may come from a public registry**, including Radius itself. Everything is listed in
-[import-images.ps1](./scripts/azurelocal/import-images.ps1). Recipes are exempt — they are published
-from source, so the air gap only ever carries container images.
-
-```powershell
-# 1. Platform: resource group, registry, AKS enabled by Arc
-./lab/aldo/provision-infra.ps1 -SubscriptionId <sub-id> -RegistryName bcdaldoacr
-
-# 2. Images. Copy = this machine reaches both sides; Mirror = the registry itself has egress;
-#    Export/Import = genuinely air-gapped, two machines
-./scripts/azurelocal/import-images.ps1 -Mode Copy -Registry mylocalacr.azurecr.local
-
-# 3. Deploy
-./lab/aldo/deploy.ps1 -Registry mylocalacr.azurecr.local -KubeContext aks-arc
-
-# 4. Verify
-./lab/local/verify.ps1 -KubeContext aks-arc -Namespace bcd-aldo -SqlPassword '<password>'
-```
-
-With an authenticated, privately signed registry, step 3 needs all of:
-
-```powershell
-./lab/aldo/deploy.ps1 `
-    -Registry mylocalacr.azurecr.local -KubeContext aks-arc `
-    -ImagePullSecretName local-registry `
-    -RegistryUsername <user> -RegistryPassword (Read-Host -AsSecureString) `
-    -RegistryCaCertFile D:\certs\registry-ca.crt -ReinstallRadius
-```
-
-`-ReinstallRadius` matters: `rad install kubernetes` leaves an existing installation untouched, so
-new chart values would never reach the pods.
-
-### If the appliance cannot provision clusters
-
-```powershell
-Get-ChildItem C:\azurelocal\PlatformExtensionPacks
-```
-
-An `arcenabledkubernetesagents` pack with nothing for `HybridContainerService` means the appliance
-can **attach** a cluster but not **provision** one — there is no custom location for
-`az aksarc create` to target. Bring your own instead with
-[arc-k3s.ps1](./lab/aldo/arc-k3s.ps1), which builds a k3s VM on the appliance's own
-Hyper-V switch and registers it as `Microsoft.Kubernetes/connectedClusters`:
-
-```powershell
-./lab/aldo/arc-k3s.ps1 -CreateVm -IsoPath C:\iso\ubuntu-24.04.5-live-server-amd64.iso
-./lab/aldo/arc-k3s.ps1            # after installing Ubuntu and authorising the key
-```
-
-Then `provision-infra.ps1 -SkipClusterCreate` for the resource group and registry.
-
-### One registry, four trust and auth boundaries
-
-The sharpest edge in this environment. The same registry is reached by four consumers, each with its
-own trust store and credentials; fixing one does nothing for the others.
-
-| Consumer | Pulls | Trusts the CA via | Authenticates with |
-|---|---|---|---|
-| Docker on the workstation | pushes images and Recipes | Windows certificate store | `az acr login` |
-| containerd on the node | worker and backing-service images | node OS trust store | `imagePullSecrets` |
-| Radius control plane pods | Bicep Recipes | `global.rootCA.cert` Helm value | `Radius.Core/bicepSettings` |
-| Backing-service Recipes | their own images | node OS trust store | `imagePullSecretName` parameter |
-
-Mapping symptoms back:
-
-- `x509: certificate signed by unknown authority` on a Recipe pull → control plane lacks the CA;
-  pass `-RegistryCaCertFile` **and** `-ReinstallRadius`
-- `401 unauthorized` on a Recipe pull → `bicepSettings` missing or wrong
-- `ImagePullBackOff` with *failed to fetch anonymous token* → pod has no `imagePullSecrets`
-- `no such host` from containerd → the **node** cannot resolve the registry; pods use CoreDNS, the
-  kubelet uses the node's own `/etc/hosts`
-
-There is no DNS server for the appliance zone — it writes host entries on the machine it was
-deployed on, so anything else resolving those names needs them copied across, and a registry created
-later is not in that file at all.
-
-Identity-based registry auth is unavailable: disconnected operations issues no token for the
-`containerregistry.azure.net` audience, and the edge registry implements no `scopeMaps`, ruling out
-managed identity, workload identity and scoped ACR tokens alike. That leaves the admin user or
-anonymous pull.
-
-### Workload identity without Entra
-
-On AKS a pod presents its ServiceAccount token to Entra and gets back a credential for a federated
-managed identity. Every hop of that is outside the site, so it fails exactly when business
-continuity matters most. The same shape is rebuilt from components that stay in the site:
+The sample uses the library's shared [recipes/](../../recipes/) and
+[recipe-packs/](../../recipe-packs/) at the repository root. The sample folder holds:
 
 ```
-k3s signs a ServiceAccount token  ->  Keycloak verifies it against the cluster JWKS and
-                                      exchanges it for an access token
-                                  ->  the workload presents that token to a backing service
+├── src/                 the app (.NET): API and browser app, processor, shared code
+├── deploy/              what `rad deploy` uses every release: app.bicep, one environment per platform
+├── infra/
+│   ├── azure/              platform.bicep (AKS, ACR, identities), app-identity.bicep (Entra apps)
+│   └── azurelocal/         platform.bicep (AKS Arc, ACR, load balancer), connected-registry.bicep,
+│                           keycloak/, ingress-nginx/, images.txt
+├── docker/              Dockerfiles for the API and processor
+├── compose.yaml         the app on your machine; local/ holds its test user
+├── azure.yaml           azd up for Azure
+├── scripts/             optional automation over the files above; up.ps1 for Azure Local
+└── docs/
 ```
 
-Active Directory stays the source of users and groups; Keycloak federates it over LDAPS and is the
-only thing that issues tokens. Arc still registers the cluster, but nothing on this path depends on
-it, so workloads keep authenticating while the link is down.
+## Keeping it working
 
-| Azure | Here |
-|---|---|
-| Entra tenant | Active Directory Domain Services on its own VM |
-| Federated identity credential | Keycloak `kubernetes` identity provider |
-| Managed identity | Keycloak client plus directory group |
-| AKS OIDC issuer | k3s `service-account-issuer`, repointed at a reachable address |
+Everything that has to fit together lives in this repository and changes in the same pull
+request: the app, its Radius definitions, the Recipes and Recipe Packs, and the platform files. The
+Radius version is pinned once per tool: `bicepconfig.json` for the types, and
+[images.txt](./infra/azurelocal/images.txt) for the control plane images.
 
-```powershell
-# 1. Domain controller. Separate VM, because Azure Local requires AD DS off the cluster nodes
-./lab/aldo/addc-vm.ps1 -CreateVm -IsoPath C:\iso\windows-server-2022.iso
-./lab/aldo/addc-vm.ps1 -LocalAdminCredential (Get-Credential Administrator)
-
-# 2. Let the cluster resolve the domain
-./lab/aldo/arc-k3s.ps1 -SkipK3sInstall -SkipArcConnect -AdDomain bcd.lab -AdDnsServer 10.0.60.60
-
-# 3. Keycloak, federated to the directory and trusting the cluster issuer
-./scripts/azurelocal/keycloak.ps1 -AdServer <controller-fqdn> -AdDomain bcd.lab -Registry <registry>
-```
-
-Generated passwords are written to Kubernetes Secrets, never to the console.
-[arc-k3s.ps1](./lab/aldo/arc-k3s.ps1) must run before Keycloak: a default k3s cluster signs
-tokens as `https://kubernetes.default.svc.cluster.local`, which no external verifier can resolve.
-
-The controller also installs an enterprise certificate authority, so it auto-enrols a certificate
-and Keycloak binds over LDAPS on `636`. Pass `-AdServer` the controller's FQDN rather than its
-address; LDAPS validates the host name against the certificate. Without a CA a domain controller
-accepts connections on `636` and then drops them, having no certificate to present.
-
-One thing is deliberately unfinished: the backing services still use their own credentials.
-Moving them onto these tokens means MinIO in place of Azurite and RabbitMQ's OAuth2 backend,
-which changes application code.
-
-## Option 5 — Azure Local (connected) with AKS enabled by Arc
-
-A connected Azure Local instance *could* reach Azure PaaS, but the workload is built to keep running
-if the link drops. So it takes the ALDO shape: in-cluster RabbitMQ, SQL Server and Azurite, and
-identity from Keycloak bound to the site's existing Active Directory (`DC01`). Everything the demo
-creates lives in the `bcd-azurelocal` resource group, apart from the Azure Local instance itself.
-
-The difference from ALDO is the registry. Images and Recipes are pushed to a Premium ACR in Azure,
-and an **ACR connected registry** (Arc extension, ReadOnly) inside the cluster syncs them and serves
-every pull on a fixed ClusterIP (`10.96.0.50`). A pod restarted while Azure is unreachable still
-finds its image, and Radius still finds its Recipes.
-
-| Concern | Here |
-|---|---|
-| Cluster | AKS Arc `bcd-aksarc`, 1 control plane + 2 `Standard_A4_v2`, lnet `bcd-aks-lnet` |
-| Registry | push `<acr-name>.azurecr.io`, pull `10.96.0.50` (connected registry) |
-| Cluster access | `--admin` kubeconfig (client certificate, works offline); Entra group `azurelocal-aks-admins` when connected |
-| Token issuer | the cluster's default in-cluster issuer; Keycloak runs in the same cluster, so it resolves |
-| Directory | existing `DC01` (`azurelocal.lab`): AD CS + LDAPS, OU `BCD`, bind and demo accounts added |
-
-```powershell
-# Lab only: directory objects on the existing DC01 (OU BCD, bcd-app-* groups, demo user) and the
-# Keycloak bind account Secret. A customer's AD already has users and groups; it needs only a bind
-# account. Elevated; prompts for AZURELOCAL\Administrator; leaves DC01's network settings alone.
-./lab/aldo/addc-vm.ps1 -ExistingDomainController -VmName DC01 -DomainName azurelocal.lab `
-    -NetbiosName AZURELOCAL -IpAddress 192.168.44.10 -KubeContext bcd-aksarc
-
-./scripts/setup-platform.ps1 -Target AzureLocal
-./scripts/deploy.ps1 -Target AzureLocal
-```
-
-`setup-platform.ps1 -Target AzureLocal` runs, in order:
-
-| Step | What it gives the site |
-|---|---|
-| Cluster | resource group, Premium ACR, Entra admin group, AKS lnet and AKS Arc cluster |
-| Images | Radius, backing-service, Keycloak, ingress and .NET base images mirrored into the ACR |
-| Registry | connected registry in the cluster, pull secrets and registry CA: pulls keep working offline |
-| Keycloak | token issuer on site, federated to DC01 over LDAPS, trusting the in-cluster issuer |
-| Ingress | Arc load balancer (MetalLB, .200-.210), ingress-nginx from the connected registry, site CA certificate for https://192.168.44.200 |
-| Identity | orders app registered with Keycloak: API audience, browser client, scope, AD group -> role mapping |
-
-`deploy.ps1` builds with podman or docker, publishes images and Recipes, waits for the connected
-registry to sync, installs Radius and deploys.
-
-Open the orders app at <https://192.168.44.200>. Machines outside the domain trust the site CA and
-the Keycloak issuing CA once, with the `Import-Certificate` commands the Ingress step prints.
-Sign in as an AD user: members
-of `bcd-app-readers` can view, members of `bcd-app-writers` can also place orders. The Recipe Pack,
-not `app.bicep`, decides that containers with ports are published through the ingress.
-
-When something is slow or failing, `./scripts/azurelocal/diagnose.ps1` checks each layer read-only:
-cluster and nodes, connected registry sync, the CA Radius trusts, Keycloak and the app pods. Add
-`-IncludeNodeBootstrap` while the cluster is still creating to see each node VM's first-boot
-progress over SSH. To replace a leaked SQL password, run
-`./scripts/deploy.ps1 -Target AzureLocal -SkipImageBuild -SkipRadiusInstall -RotateSqlPassword`.
-
-What survives losing the Azure link: running pods, pod restarts and rescheduling (connected
-registry), token exchange (Keycloak and the cluster issuer), directory lookups (DC01), and `kubectl`
-with the admin kubeconfig. What does not: pushing new images or Recipes, Arc/ARM management of the
-cluster, and Entra sign-in to the cluster.
-
-To prove it, cut the site's link to Azure. The script shows, from inside the cluster, that Azure is
-blocked while the site's own services stay reachable; then sign in and place an order:
-
-```powershell
-./lab/azurelocal/wan.ps1 -State Down      # lab only: removes the host NAT, like cutting the WAN line
-./lab/azurelocal/wan.ps1 -State Up
-```
-
-## Adding another environment
-
-1. Write a Recipe per Resource Type.
-2. `./scripts/publish-recipes.ps1 -Registry <registry> -Set <set>`
-3. Create a Recipe Pack referencing those Recipes, and an Environment referencing the pack.
-4. `rad deploy deploy/app.bicep -e <new-environment>`
+Every pull request runs [order-management.yml](../../.github/workflows/order-management.yml): it
+compiles every Bicep template against the Radius types, builds the app, starts it with
+`docker compose` and checks it answers, renders the Keycloak and ingress files, and lints the
+scripts.
 
 ## Configuration reference
 
-Both workers read these, whether injected by Radius, docker-compose or `appsettings.json`:
+Radius injects these into the API and the processor from their connections. The same names work in
+`appsettings.json` as `OrderManagement:<connection>:<property>`.
 
-| Variable | Consumed by | Notes |
+| Variable | Used by | Notes |
 |---|---|---|
-| `CONNECTION_QUEUE_PROVIDER` | both | `rabbitmq` or `servicebus` |
-| `CONNECTION_QUEUE_QUEUENAME` | both | Queue / entity name |
-| `CONNECTION_QUEUE_HOST` / `_PORT` | both | RabbitMQ only |
-| `CONNECTION_QUEUE_USERNAME` / `_PASSWORD` | both | RabbitMQ only, secret-backed |
-| `CONNECTION_QUEUE_NAMESPACEFQDN` | both | Service Bus only |
-| `CONNECTION_ARCHIVE_ENDPOINT` | consumer | Blob endpoint; triggers managed identity |
-| `CONNECTION_ARCHIVE_CONNECTIONSTRING` | consumer | Local only; takes precedence |
-| `CONNECTION_ARCHIVE_CONTAINERNAME` | consumer | Blob container |
-| `CONNECTION_SQL_HOST` / `_PORT` / `_DATABASE` | consumer | |
-| `CONNECTION_SQL_USERNAME` / `_PASSWORD` | consumer | Omit password to force Entra ID |
-| `Bcd__Sql__UseEntraId` | consumer | Forces Entra ID even when a password exists |
-| `Bcd__Publisher__IntervalSeconds` | publisher | Defaults to 5 |
+| `CONNECTION_QUEUE_PROVIDER` | both | `servicebus` or `rabbitmq` |
+| `CONNECTION_QUEUE_QUEUENAME` | both | queue name |
+| `CONNECTION_QUEUE_ENDPOINT` | both | Service Bus namespace host name, or `host:port` for RabbitMQ |
+| `CONNECTION_QUEUE_OAUTH*` | both | Azure Local: Keycloak token endpoint, client and token file |
+| `CONNECTION_QUEUE_USERNAME` / `_PASSWORD` | both | only when the queue Recipe issues credentials |
+| `CONNECTION_ARCHIVE_ENDPOINT` / `_CONTAINERNAME` | processor | blob endpoint and container |
+| `CONNECTION_ARCHIVE_CONNECTIONSTRING` | processor | Azure Local (Azurite) only |
+| `CONNECTION_SQL_HOST` / `_PORT` / `_DATABASE` | both | |
+| `CONNECTION_SQL_USERNAME` / `_PASSWORD` | both | ignored when the pod has an Entra workload identity or a Kerberos keytab |
 
 ## Known gaps
 
-- **Workload Identity on AKS is not verified end to end.** `app.bicep` passes `serviceAccountName`
-  through `platformOptions.kubernetes`, but the stock container Recipe ignores it and does not set
-  the `azure.workload.identity/use` pod label. Patch the deployment after deploying, or extend the
-  Recipe.
-- The Azure SQL Recipe opens `AllowAllWindowsAzureIps`. Use a Private Endpoint for anything real.
-- `InvariantGlobalization` must stay `false` — `Microsoft.Data.SqlClient` requires ICU.
-- The local cluster has no metrics-server, so the stock Recipe's HorizontalPodAutoscaler logs
-  harmless `FailedGetResourceMetric` warnings.
+- The sample ships its own build of the stock Kubernetes container Recipe
+  ([kubernetes-containers.bicep](../../recipes/kubernetes/kubernetes-containers.bicep)) so the platform can set service
+  accounts, pull secrets, ingress, and extra volumes, mounts and environment variables. Each
+  platform scenario (identity provider token and CA, Kerberos keytab) is defined in the Recipe Pack
+  with those generic inputs, so the Recipe never changes for a new scenario. Upstream support is tracked in
+  radius-project/resource-types-contrib#143.
+- The Azure SQL Recipe allows access from all Azure services. Use a private endpoint for production.
+- Radius 0.60 cannot delete the role assignments the Azure Recipes create, so deleting the app on
+  Azure leaves Radius retrying. Delete the Azure resource group directly.
+- `InvariantGlobalization` must stay `false`: `Microsoft.Data.SqlClient` requires ICU.
+- On Azure Local, run the scripts in a PowerShell 7 window on the machine itself. Started from a
+  remote PowerShell session (WinRM), the Radius CLI doesn't return, and the deployment stops at
+  its first `rad` command.
+- On Azure Local, users reach Keycloak on the first cluster node's address, and Keycloak's
+  certificate names that address. If the node is replaced and gets a new address, sign-in stops
+  working. To recover, delete the `keycloak-tls` secret in the `identity` namespace and run
+  `./scripts/up.ps1 -Target AzureLocal` again. Putting Keycloak behind a load balancer address
+  would avoid this.
+- On Azure Local, the scripts create their own certificate authorities for the app's and
+  Keycloak's HTTPS certificates, so the sample runs on any site. Browsers outside the site trust
+  them only after you import them. In production, issue these certificates from your
+  organization's certificate authority instead.

@@ -1,0 +1,35 @@
+# Build from the sample root:
+#   docker build -f docker/Dockerfile.processor -t oms-processor:latest .
+#
+# Where mcr.microsoft.com is unreachable, import the .NET base images into a registry you can
+# reach and point the build at it:
+#   docker build --build-arg BASE_REGISTRY=myacr.azurecr.io -f docker/Dockerfile.processor .
+
+ARG BASE_REGISTRY=mcr.microsoft.com
+
+FROM ${BASE_REGISTRY}/dotnet/sdk:9.0 AS build
+WORKDIR /src
+
+# NuGet.Config is optional (redirects restore where nuget.org is unreachable). Paired with a file
+# that always exists, the glob may match nothing under both Docker and podman/buildah.
+COPY Directory.Build.props NuGet.Confi[g] ./
+COPY src/OrderManagement.Shared/OrderManagement.Shared.csproj src/OrderManagement.Shared/
+COPY src/OrderManagement.Processor/OrderManagement.Processor.csproj src/OrderManagement.Processor/
+RUN dotnet restore src/OrderManagement.Processor/OrderManagement.Processor.csproj
+
+COPY src/ src/
+RUN dotnet publish src/OrderManagement.Processor/OrderManagement.Processor.csproj -c Release -o /app --no-restore
+
+FROM ${BASE_REGISTRY}/dotnet/runtime:9.0 AS runtime
+WORKDIR /app
+# GSSAPI lets SqlClient use integrated (Kerberos) authentication where the platform mounts a keytab,
+# as on Azure Local with Active Directory. Unused elsewhere.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgssapi-krb5-2 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /app ./
+
+# Run as a non-root user; required by most cluster admission policies.
+USER $APP_UID
+
+ENTRYPOINT ["dotnet", "OrderManagement.Processor.dll"]

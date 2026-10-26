@@ -1,0 +1,63 @@
+namespace: Portability.Messaging
+types:
+  messageQueues:
+    description: |
+      A durable point-to-point queue, independent of the broker behind it. The application declares
+      the queue; the environment's Recipe decides what backs it: Azure Service Bus on Azure, a
+      RabbitMQ container on Azure Local. Radius has no built-in queue type that covers both.
+
+      A container connected to the queue as `queue` receives `CONNECTION_QUEUE_*` environment
+      variables, starting with `CONNECTION_QUEUE_PROVIDER` (`servicebus` or `rabbitmq`), which the
+      application uses to pick its client. The Order Management sample (samples/OrderManagementApp) shows a complete example.
+    apiVersions:
+      '2025-08-01-preview':
+        schema:
+          type: object
+          properties:
+            environment:
+              type: string
+              description: "(Required) The Radius Environment ID. Typically set by the rad CLI. Typically value should be `environment`."
+            application:
+              type: string
+              description: "(Optional) The Radius Application ID. `myApplication.id` for example."
+            queueName:
+              type: string
+              description: "(Optional) Name of the queue to create. Defaults to the name of the Radius resource."
+            maxDeliveryCount:
+              type: integer
+              description: "(Optional) How many times a message is redelivered before it is dead-lettered. Defaults to 10."
+            provider:
+              type: string
+              description: "(Read Only) The broker backing this queue: `rabbitmq` or `servicebus`. Set by the Recipe."
+              readOnly: true
+            endpoint:
+              type: string
+              description: "(Read Only) Where to reach the broker: `host:port` for RabbitMQ, the namespace host name for Azure Service Bus. Set by the Recipe."
+              readOnly: true
+            oauthTokenEndpoint:
+              type: string
+              description: "(Read Only) Token endpoint of the identity provider the broker trusts. Set only when the broker accepts OAuth 2.0 tokens."
+              readOnly: true
+            oauthClientId:
+              type: string
+              description: "(Read Only) Client the workload authenticates as at the token endpoint."
+              readOnly: true
+            oauthAssertionFile:
+              type: string
+              description: "(Read Only) Path of the projected ServiceAccount token the workload presents as its client assertion."
+              readOnly: true
+            secrets:
+              type: object
+              description: "(Read Only) Broker credentials, when the Recipe issues any. Injected into connected containers as CONNECTION_<NAME>_USERNAME and _PASSWORD."
+              properties:
+                name:
+                  type: string
+                  description: "(Reserved) Name of the managed secret that holds the credentials."
+                  readOnly: true
+                username:
+                  type: string
+                  readOnly: true
+                password:
+                  type: string
+                  readOnly: true
+          required: [environment]

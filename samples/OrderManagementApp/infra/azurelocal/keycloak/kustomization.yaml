@@ -1,0 +1,25 @@
+# Keycloak on the Azure Local cluster: the on-site identity provider for user sign-in and for
+# workload tokens. Apply with `kubectl apply -k infra/azurelocal/keycloak`; see README.md here.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: identity
+
+resources:
+  - keycloak.yaml
+
+# realm.json is imported when Keycloak first starts. Its ${...} placeholders are filled from the
+# keycloak-realm-settings ConfigMap and the oms-ad-bind Secret, which you create per site.
+configMapGenerator:
+  - name: keycloak-realm
+    files:
+      - realm.json
+
+# Pulls from the public registries by default. On a site that pulls from its own registry, such as
+# an ACR connected registry, point these at it:
+#   kustomize edit set image quay.io/keycloak/keycloak=<registry>/keycloak/keycloak:26.8
+images:
+  - name: quay.io/keycloak/keycloak
+    newTag: "26.8"
+  - name: docker.io/library/postgres
+    newTag: 17-alpine

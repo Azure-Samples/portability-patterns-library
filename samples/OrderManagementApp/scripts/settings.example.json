@@ -4,7 +4,7 @@
       "SubscriptionId": "<subscription-id>",
       "Location": "eastus2",
       "ClusterName": "bcd-aks",
-      "WorkspaceName": "bcd-azure"
+      "WorkspaceName": "oms-azure"
     },
     "Cluster": {
       "ResourceGroup": "bcd-infra",
@@ -21,9 +21,8 @@
     "Deploy": {
       "Registry": "<globally-unique-acr-name>.azurecr.io",
       "AppInfraResourceGroup": "bcd-infra",
-      "WorkloadIdentityClientId": "<printed by setup-platform: Cluster>",
       "WorkloadIdentityPrincipalId": "<printed by setup-platform: Cluster>",
-      "ResourceGroup": "bcd",
+      "ResourceGroup": "oms",
       "IngressCertIssuer": "letsencrypt"
     }
   },
@@ -34,35 +33,32 @@
       "RegistryName": "<acr-name>"
     },
     "Cluster": {
+      "AzureLocalResourceGroup": "<azure-local-resource-group>",
       "CustomLocationName": "<azure-local-custom-location>",
-      "AddressPrefix": "192.168.44.0/24",
-      "Gateway": "192.168.44.1",
-      "DnsServers": [ "192.168.44.10" ],
-      "IpPoolStart": "192.168.44.121",
-      "IpPoolEnd": "192.168.44.180",
-      "ControlPlaneIp": "192.168.44.120"
+      "VmSwitchName": "<vm-switch-name>",
+      "AddressPrefix": "<node-subnet-cidr>",
+      "Gateway": "<subnet-gateway>",
+      "DnsServers": [ "<active-directory-dns-server>" ],
+      "IpPoolStart": "<first-node-address>",
+      "IpPoolEnd": "<last-node-address>",
+      "ControlPlaneIp": "<free-address-outside-the-node-pool>",
+      "LoadBalancerAddresses": "<first-address>-<last-address>"
     },
     "Images": {
       "Mode": "Mirror",
       "Registry": "<acr-name>.azurecr.io"
     },
-    "Registry": {},
+    "Registry": {
+      "ServiceClusterIp": "<unused-address-in-the-cluster-service-range>"
+    },
     "Keycloak": {
       "AdServer": "<domain-controller-fqdn>",
       "AdDomain": "<ad-domain>",
-      "Registry": "10.96.0.50",
-      "ImagePullSecretName": "azurelocal-registry",
-      "ImagePullSecretSourceNamespace": "bcd-azurelocal",
-      "WorkloadNamespace": "bcd-azurelocal",
+      "ImagePullSecretSourceNamespace": "oms-azurelocal",
+      "WorkloadNamespace": "oms-azurelocal",
       "AllowInClusterIssuer": true
     },
-    "Ingress": {
-      "Addresses": "192.168.44.200-192.168.44.210",
-      "IngressIp": "192.168.44.200"
-    },
-    "Identity": {
-      "SpaOrigins": [ "https://192.168.44.200" ]
-    },
+    "Ingress": {},
     "Deploy": {}
   }
 }

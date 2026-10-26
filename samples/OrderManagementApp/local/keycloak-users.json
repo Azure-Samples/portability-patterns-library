@@ -1,0 +1,16 @@
+{
+  "realm": "oms",
+  "users": [
+    {
+      "username": "demo",
+      "enabled": true,
+      "firstName": "Demo",
+      "lastName": "User",
+      "email": "demo@example.com",
+      "emailVerified": true,
+      "credentials": [ { "type": "password", "value": "demo", "temporary": false } ],
+      "realmRoles": [ "default-roles-oms" ],
+      "groups": [ "/oms-app-readers", "/oms-app-writers" ]
+    }
+  ]
+}

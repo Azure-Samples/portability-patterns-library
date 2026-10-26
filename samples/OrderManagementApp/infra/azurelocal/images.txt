@@ -1,0 +1,42 @@
+# Images and Recipes to copy into the site's cloud ACR. The ACR connected registry then syncs them
+# into the cluster, so pods can start and restart while the link to Azure is down.
+#
+# One per line: <source> <target repository:tag in your ACR> [artifact]
+# 'artifact' marks an OCI artifact that isn't an image. Copy it with `az acr import` or `oras copy`,
+# not `docker`.
+#
+# With az CLI, each line is one command:
+#   az acr import --name <acr> --source <source> --image <target>
+
+# Radius control plane. `rad install kubernetes --set global.imageRegistry=<registry>` pulls these
+# from the registry root, with no radius-project prefix. The tag must match your rad CLI version.
+ghcr.io/radius-project/ucpd:0.60                               ucpd:0.60
+ghcr.io/radius-project/controller:0.60                         controller:0.60
+ghcr.io/radius-project/applications-rp:0.60                    applications-rp:0.60
+ghcr.io/radius-project/dynamic-rp:0.60                         dynamic-rp:0.60
+ghcr.io/radius-project/deployment-engine:0.60                  deployment-engine:0.60
+ghcr.io/radius-project/dashboard:0.60                          dashboard:0.60
+ghcr.io/radius-project/bicep:0.60                              bicep:0.60
+ghcr.io/radius-project/pre-upgrade:0.60                        pre-upgrade:0.60
+
+# Backing services the Recipes deploy. Paths match imageRepository in recipe-packs/azure-local.bicep.
+mcr.microsoft.com/mssql/server:2022-latest                     mssql/server:2022-latest
+mcr.microsoft.com/azure-storage/azurite:3.35.0                 azure-storage/azurite:3.35.0
+docker.io/library/rabbitmq:4-management-alpine                 rabbitmq:4-management-alpine
+
+# Radius's stock secrets Recipe. The tag must match radiusRecipeTag in recipe-packs/azure-local.bicep.
+ghcr.io/radius-project/kube-recipes/secrets:latest             radius-project/kube-recipes/secrets:latest  artifact
+
+# Keycloak, see infra/azurelocal/keycloak.
+quay.io/keycloak/keycloak:26.8                                 keycloak/keycloak:26.8
+docker.io/library/postgres:17-alpine                           postgres:17-alpine
+
+# Ingress, see infra/azurelocal/ingress-nginx.
+registry.k8s.io/ingress-nginx/controller:v1.15.1               ingress-nginx/controller:v1.15.1
+registry.k8s.io/ingress-nginx/kube-webhook-certgen:v1.6.9      ingress-nginx/kube-webhook-certgen:v1.6.9
+
+# Base images for building the app's images (BASE_REGISTRY in docker/Dockerfile.*). Only needed where
+# the build runs; the connected registry doesn't sync them.
+mcr.microsoft.com/dotnet/sdk:9.0                               dotnet/sdk:9.0
+mcr.microsoft.com/dotnet/runtime:9.0                           dotnet/runtime:9.0
+mcr.microsoft.com/dotnet/aspnet:9.0                            dotnet/aspnet:9.0

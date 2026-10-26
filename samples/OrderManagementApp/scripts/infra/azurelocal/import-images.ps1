@@ -1,0 +1,233 @@
+<#
+.SYNOPSIS
+    Moves every container image and stock Radius Recipe this application needs into the site's registry.
+
+.DESCRIPTION
+    On Azure Local every image is pulled from the ACR connected registry inside the cluster, so a
+    restarted pod finds its image even while the link to Azure is down. That registry syncs from a
+    cloud ACR, so every image, including the Radius control plane itself, must be in that ACR before
+    anything is deployed.
+
+    The library's own Recipes are published from source with `rad bicep publish`. Radius's stock
+    secrets Recipe is used as published on ghcr.io, so it is mirrored here like an image. It is an OCI
+    artifact, not an image: Mirror mode copies it with `az acr import`; for the other modes, copy it
+    with `oras copy`, which the script prints.
+
+    Four modes:
+
+      Copy    Registry-to-registry copy driven by this machine, with `docker buildx imagetools`.
+              Use this when the machine running the script can reach both the public registries and
+              target registry. The registry itself needs no outbound access.
+
+      Mirror  Server-side copy with `az acr import`. Only works when the target registry itself can
+              reach the public registries, which is true for the cloud ACR behind the connected
+              registry. This is the normal mode for Azure Local.
+
+      Export  `docker pull` then `docker save` into a folder, run on a machine with internet access.
+              Copy the folder to the target side by whatever means your environment allows.
+
+      Import  `docker load` then push into the target registry, for a registry with no internet path.
+              Multi-platform images are a known weak spot here: `docker save` writes the whole
+              index, and after `docker load` the daemon refuses to push it, reporting that the
+              image 'does not provide any platform'. Prefer Copy whenever both endpoints are
+              reachable from one machine.
+
+.PARAMETER Registry
+    Login server of the target registry, for example 'myacr.azurecr.io'.
+
+.PARAMETER ImageList
+    The list of what to transfer. Defaults to infra/azurelocal/images.txt, which also says what each
+    entry is for and which versions must match.
+
+.PARAMETER Platform
+    Platform to select from multi-platform images. The cluster nodes decide this, not this machine.
+
+.EXAMPLE
+    # Azure Local: server-side copy into the cloud ACR the connected registry syncs from.
+    ./scripts/infra/azurelocal/import-images.ps1 -Mode Mirror -Registry myacr.azurecr.io
+
+.EXAMPLE
+    # No internet path from the target: on a machine with internet access...
+    ./scripts/infra/azurelocal/import-images.ps1 -Mode Export -Path D:\oms-images
+    # ...then, after moving the folder, on the target side:
+    ./scripts/infra/azurelocal/import-images.ps1 -Mode Import -Path D:\oms-images -Registry myacr.azurecr.io
+#>
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)]
+    [ValidateSet('Copy', 'Mirror', 'Export', 'Import')]
+    [string]$Mode,
+
+    [string]$Registry,
+
+    [string]$Path,
+
+    # Images and Recipes to transfer: <source> <target> [artifact] per line.
+    [string]$ImageList,
+
+    # Multi-platform images must be narrowed to one platform: an archive holding a bare index
+    # cannot be pushed after 'docker load', which reports 'does not provide any platform'.
+    [string]$Platform = 'linux/amd64'
+)
+
+$ErrorActionPreference = 'Stop'
+
+function Invoke-Checked {
+    param(
+        [Parameter(Mandatory = $true)][string]$What,
+        [Parameter(Mandatory = $true)][scriptblock]$Command
+    )
+
+    & $Command
+    if ($LASTEXITCODE -ne 0) {
+        throw "$What failed with exit code $LASTEXITCODE."
+    }
+}
+
+if (-not $ImageList) {
+    $ImageList = Join-Path $PSScriptRoot '../../../infra/azurelocal/images.txt'
+}
+
+# Each line: <source> <target repository:tag> [artifact]. Artifacts are OCI artifacts such as Radius's
+# stock Recipes, which docker cannot move.
+$images = @()
+$recipeArtifacts = @()
+foreach ($line in Get-Content $ImageList) {
+    $fields = ($line -replace '#.*$', '').Trim() -split '\s+'
+    if (-not $fields[0]) { continue }
+    if ($fields.Count -lt 2) { throw "'$ImageList': '$line' needs a source and a target." }
+
+    $entry = @{ Source = $fields[0]; Target = $fields[1] }
+    if ($fields[2] -eq 'artifact') { $recipeArtifacts += $entry } else { $images += $entry }
+}
+# docker cannot move non-image artifacts, so outside Mirror mode the copy is left to oras.
+function Write-RecipeArtifactHint {
+    param([string]$TargetRegistry = '<registry>')
+
+    Write-Host "`nStock Radius Recipes are OCI artifacts, not images. Copy them with oras:" -ForegroundColor Yellow
+    foreach ($artifact in $recipeArtifacts) {
+        Write-Host "  oras copy $($artifact.Source) $TargetRegistry/$($artifact.Target)"
+    }
+}
+
+function Get-ArchiveName {
+    param([Parameter(Mandatory = $true)][string]$Target)
+
+    # Repository paths contain slashes and tags contain colons; neither is a legal file name.
+    return ($Target -replace '[/:]', '_') + '.tar'
+}
+
+switch ($Mode) {
+    'Copy' {
+        if (-not $Registry) { throw '-Registry is required for Copy mode.' }
+
+        # Client-side registry-to-registry copy. Unlike Mirror this needs no outbound access from
+        # the registry, and unlike Export/Import it never puts a multi-platform index through
+        # 'docker save', which produces archives that cannot be pushed afterwards.
+        Write-Host "==> Copying $($images.Count) images into $Registry ($Platform)" -ForegroundColor Cyan
+
+        $platformOs, $platformArch = $Platform.Split('/')
+        foreach ($image in $images) {
+            $repository = $image.Source -replace ':[^:/]+$', ''
+            $destination = "$Registry/$($image.Target)"
+
+            $index = docker manifest inspect $image.Source | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0) { throw "Could not read the manifest of $($image.Source)." }
+
+            # A single-platform image has no 'manifests' array and is copied by tag as it stands.
+            $reference = $image.Source
+            if ($index.manifests) {
+                $digest = ($index.manifests | Where-Object {
+                        $_.platform.os -eq $platformOs -and $_.platform.architecture -eq $platformArch -and -not $_.platform.variant
+                    } | Select-Object -First 1).digest
+                if (-not $digest) { throw "$($image.Source) publishes no $Platform manifest." }
+                $reference = "$repository@$digest"
+            }
+
+            Write-Host "    $($image.Target)" -ForegroundColor DarkGray
+            Invoke-Checked "copy $($image.Target)" {
+                docker buildx imagetools create --tag $destination $reference
+            }
+        }
+
+        Write-Host "`nAll images copied into $Registry" -ForegroundColor Green
+        Write-RecipeArtifactHint -TargetRegistry $Registry
+    }
+
+    'Mirror' {
+        if (-not $Registry) { throw '-Registry is required for Mirror mode.' }
+
+        # `az acr import` is server-side: the registry pulls from the source itself, so this only
+        # works while the registry has outbound access to the public registries.
+        $acrName = $Registry.Split('.')[0]
+        Write-Host "==> Importing $($images.Count) images into '$acrName' (server-side)" -ForegroundColor Cyan
+
+        foreach ($image in $images + $recipeArtifacts) {
+            Write-Host "    $($image.Source)  ->  $($image.Target)" -ForegroundColor DarkGray
+            az acr import --name $acrName --source $image.Source --image $image.Target --force --only-show-errors
+            if ($LASTEXITCODE -ne 0) {
+                throw "Importing $($image.Source) failed. If the registry has no outbound access, use -Mode Export/Import instead."
+            }
+        }
+
+        Write-Host "`nAll images imported into $Registry" -ForegroundColor Green
+    }
+
+    'Export' {
+        if (-not $Path) { throw '-Path is required for Export mode.' }
+        New-Item -ItemType Directory -Force -Path $Path | Out-Null
+
+        Write-Host "==> Pulling and saving $($images.Count) images to $Path ($Platform)" -ForegroundColor Cyan
+
+        foreach ($image in $images) {
+            $archive = Join-Path $Path (Get-ArchiveName -Target $image.Target)
+            Write-Host "    $($image.Source)" -ForegroundColor DarkGray
+
+            Invoke-Checked "docker pull $($image.Source)" { docker pull --quiet --platform $Platform $image.Source | Out-Null }
+            Invoke-Checked "docker save $($image.Source)" { docker save --output $archive $image.Source }
+        }
+
+        # The manifest carries the source-to-target mapping with the folder so Import does not
+        # have to re-derive it, and records the versions the payload was built for.
+        $manifest = @{
+            createdUtc     = (Get-Date).ToUniversalTime().ToString('o')
+            images         = @($images | ForEach-Object {
+                @{ source = $_.Source; target = $_.Target; archive = (Get-ArchiveName -Target $_.Target) }
+            })
+        }
+        $manifest | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $Path 'manifest.json') -Encoding utf8
+
+        $sizeMb = [math]::Round(((Get-ChildItem $Path -Filter *.tar | Measure-Object -Property Length -Sum).Sum / 1MB), 1)
+        Write-Host "`nExported $($images.Count) images ($sizeMb MB) to $Path" -ForegroundColor Green
+        Write-Host 'Copy this folder to the target side, then run this script with -Mode Import.'
+        Write-RecipeArtifactHint
+    }
+
+    'Import' {
+        if (-not $Path) { throw '-Path is required for Import mode.' }
+        if (-not $Registry) { throw '-Registry is required for Import mode.' }
+
+        $manifestPath = Join-Path $Path 'manifest.json'
+        if (-not (Test-Path $manifestPath)) {
+            throw "No manifest.json in '$Path'. Run -Mode Export on a connected machine first."
+        }
+
+        $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+        Write-Host "==> Loading $($manifest.images.Count) images exported $($manifest.createdUtc)" -ForegroundColor Cyan
+
+        foreach ($image in $manifest.images) {
+            $archive = Join-Path $Path $image.archive
+            if (-not (Test-Path $archive)) { throw "Missing archive '$archive'." }
+
+            $destination = "$Registry/$($image.target)"
+            Write-Host "    $($image.target)" -ForegroundColor DarkGray
+
+            Invoke-Checked "docker load $($image.archive)" { docker load --input $archive | Out-Null }
+            Invoke-Checked "docker tag $($image.source)" { docker tag $image.source $destination }
+            Invoke-Checked "docker push $destination" { docker push --quiet $destination | Out-Null }
+        }
+
+        Write-Host "`nAll images pushed to $Registry" -ForegroundColor Green
+        Write-RecipeArtifactHint -TargetRegistry $Registry
+    }
+}

@@ -5,25 +5,36 @@ obj/
 *.suo
 
 ## Radius / Bicep
-deploy/types/*.tgz
 *.bicepparam.local
 
 ## Local settings that may contain secrets
 **/appsettings.Local.json
 *.env
 .env
+# Placeholder site values for the Keycloak realm; no secrets.
+!infra/azurelocal/keycloak/realm-settings.env
 
 ## IDE
 .vs/
 .idea/
 
-## Site CA written by scripts/azurelocal/provision-ingress.ps1 for trusting on demo machines
+## Site CA written by scripts/infra/azurelocal/provision-ingress.ps1 for trusting on client machines
 bcd-site-ca.crt
 bcd-azure-ca.crt
-bcd-identity-ca.crt
+oms-identity-ca.crt
 
 ## Site-specific values for scripts/setup-platform.ps1 and deploy.ps1 (template: settings.example.json)
 scripts/settings.json
 
 # Machine-local package source, used where nuget.org is unreachable
 NuGet.Config
+
+## Local HTTPS certificate for compose.yaml (dotnet dev-certs export)
+local/certs/*
+!local/certs/.gitkeep
+
+## Azure Developer CLI environments (azd env)
+.azure/
+
+## Handover between the Azure and Site stages (may hold a registry pull credential)
+scripts/.handover/
