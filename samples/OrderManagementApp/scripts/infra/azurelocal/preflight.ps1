@@ -1,3 +1,4 @@
+#Requires -Version 7.0
 <#
 .SYNOPSIS
     Checks that a site is ready for the Order Management sample on Azure Local, without changing anything.
@@ -11,10 +12,14 @@
                    custom location and Arc resource bridge, the virtual switch
       Network      addresses for the control plane, node pool and load balancer fit together
       Directory    the domain controller resolves through the site DNS and answers on LDAPS
-      Cluster      if it already exists: reachable, nodes ready, the AD Secrets Keycloak needs
+      Cluster      if it already exists: reachable, nodes ready, the connected registry's storage
+                   class and ClusterIP, the AD Secrets Keycloak needs
 
     Values come from the AzureLocal section of scripts/settings.json, with the same defaults the
     setup scripts use. Each check prints PASS, WARN or FAIL; the script exits with 1 on any FAIL.
+
+    -Stage limits the checks to what one machine needs when setup runs in two stages: Azure checks
+    the tools, Azure and the address plan; Site checks the tools, the directory and the cluster.
 
 .EXAMPLE
     ./scripts/infra/azurelocal/preflight.ps1
@@ -22,10 +27,14 @@
 [CmdletBinding()]
 param(
     [string]$SettingsPath = (Join-Path $PSScriptRoot '../../settings.json'),
-    [string]$RadiusVersion = '0.60'
+    [string]$RadiusVersion = '0.60',
+    [ValidateSet('All', 'Azure', 'Site')]
+    [string]$Stage = 'All'
 )
 
 $ErrorActionPreference = 'Stop'
+$checkAzure = $Stage -ne 'Site'
+$checkSite = $Stage -ne 'Azure'
 $results = [System.Collections.Generic.List[object]]::new()
 . (Join-Path $PSScriptRoot '../../lib/settings.ps1')
 
@@ -82,7 +91,9 @@ Write-Host "`nTools" -ForegroundColor Cyan
 if ($PSVersionTable.PSVersion.Major -ge 7) { Add-Result Tools 'PowerShell 7' PASS "$($PSVersionTable.PSVersion)" }
 else { Add-Result Tools 'PowerShell 7' FAIL "running $($PSVersionTable.PSVersion); install PowerShell 7 and use pwsh" }
 
-foreach ($tool in 'az', 'kubectl', 'helm', 'rad') {
+# The Azure stage builds and publishes with az and rad; the Site stage drives the cluster.
+$tools = @(if ($checkAzure) { 'az' }) + @(if ($checkSite) { 'kubectl', 'helm' }) + @('rad')
+foreach ($tool in $tools) {
     if (Get-Command $tool -ErrorAction SilentlyContinue) { Add-Result Tools $tool PASS }
     else { Add-Result Tools $tool FAIL 'not on PATH' }
 }
@@ -96,9 +107,9 @@ if (Get-Command rad -ErrorAction SilentlyContinue) {
 }
 
 # --- Azure --------------------------------------------------------------------------------------
-Write-Host "`nAzure" -ForegroundColor Cyan
 $signedIn = $false
-if (Get-Command az -ErrorAction SilentlyContinue) {
+if ($checkAzure) { Write-Host "`nAzure" -ForegroundColor Cyan }
+if ($checkAzure -and (Get-Command az -ErrorAction SilentlyContinue)) {
     $account = az account show --subscription $s.SubscriptionId --output json 2>$null | ConvertFrom-Json
     if ($account) { $signedIn = $true; Add-Result Azure 'Subscription' PASS "$($account.name) as $($account.user.name)" }
     else { Add-Result Azure 'Subscription' FAIL "can't read '$($s.SubscriptionId)'; run az login and check SubscriptionId" }
@@ -176,12 +187,16 @@ catch {
 }
 
 # --- Directory ----------------------------------------------------------------------------------
-Write-Host "`nDirectory" -ForegroundColor Cyan
 $dns = @($s.DnsServers)[0]
-if (-not $s.AdServer -or $s.AdServer -like '<*') {
+if (-not $checkSite) {
+    # The Azure machine may not reach the site network; the Site stage checks these.
+}
+elseif (-not $s.AdServer -or $s.AdServer -like '<*') {
+    Write-Host "`nDirectory" -ForegroundColor Cyan
     Add-Result Directory 'Domain controller' FAIL 'set AdServer in the Keycloak settings to the DC FQDN'
 }
 else {
+    Write-Host "`nDirectory" -ForegroundColor Cyan
     $resolved = $null
     if (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue) {
         $resolved = Resolve-DnsName -Name $s.AdServer -Server $dns -Type A -DnsOnly -QuickTimeout -ErrorAction SilentlyContinue |
@@ -199,9 +214,11 @@ else {
 }
 
 # --- Cluster ------------------------------------------------------------------------------------
-Write-Host "`nCluster" -ForegroundColor Cyan
-$contexts = @(kubectl config get-contexts --output name 2>$null)
-if ($s.KubeContext -notin $contexts) {
+$contexts = if ($checkSite) { Write-Host "`nCluster" -ForegroundColor Cyan; @(kubectl config get-contexts --output name 2>$null) }
+if (-not $checkSite) {
+    # Checked by the Site stage, which has the cluster credentials.
+}
+elseif ($s.KubeContext -notin $contexts) {
     Add-Result Cluster 'Kube context' PASS "'$($s.KubeContext)' not created yet; setup creates the cluster"
 }
 else {
@@ -213,6 +230,24 @@ else {
         $notReady = @($nodes.items | Where-Object { ($_.status.conditions | Where-Object type -eq 'Ready').status -ne 'True' })
         if ($notReady) { Add-Result Cluster 'Nodes ready' FAIL "$($notReady.Count) of $($nodes.items.Count) not ready" }
         else { Add-Result Cluster 'Nodes ready' PASS "$($nodes.items.Count) nodes" }
+
+        # The connected registry is installed from Azure, which can't check these; a wrong value
+        # only fails once the extension is half installed.
+        if (kubectl --context $s.KubeContext get storageclass $s.StorageClassName --ignore-not-found --output name 2>$null) {
+            Add-Result Cluster 'Registry storage class' PASS $s.StorageClassName
+        }
+        else { Add-Result Cluster 'Registry storage class' FAIL "'$($s.StorageClassName)' not found; set StorageClassName in the Registry settings (kubectl get storageclass)" }
+
+        $kubernetesServiceIp = kubectl --context $s.KubeContext get service kubernetes --namespace default --output 'jsonpath={.spec.clusterIP}' 2>$null
+        $taken = kubectl --context $s.KubeContext get services --all-namespaces --output json 2>$null | ConvertFrom-Json |
+            Select-Object -ExpandProperty items | Where-Object { $_.spec.clusterIP -eq $s.ServiceClusterIp } | Select-Object -First 1
+        if (-not $kubernetesServiceIp -or -not $s.ServiceClusterIp.StartsWith((($kubernetesServiceIp -split '\.')[0..1] -join '.') + '.')) {
+            Add-Result Cluster 'Registry ClusterIP' FAIL "$($s.ServiceClusterIp) doesn't look like it is in the service CIDR (the 'kubernetes' service is '$kubernetesServiceIp')"
+        }
+        elseif ($taken -and $taken.metadata.namespace -notlike '*connected-registry*') {
+            Add-Result Cluster 'Registry ClusterIP' FAIL "$($s.ServiceClusterIp) is taken by $($taken.metadata.namespace)/$($taken.metadata.name)"
+        }
+        else { Add-Result Cluster 'Registry ClusterIP' PASS $s.ServiceClusterIp }
 
         foreach ($secret in 'oms-ad-bind', 'oms-ad-ca') {
             if (kubectl --context $s.KubeContext -n identity get secret $secret --ignore-not-found --output name 2>$null) {
@@ -234,3 +269,4 @@ if ($failed) {
     exit 1
 }
 Write-Host "Ready: $($results.Count) checks, $warned warning(s)." -ForegroundColor Green
+exit 0

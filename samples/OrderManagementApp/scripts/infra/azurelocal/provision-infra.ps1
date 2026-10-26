@@ -13,11 +13,10 @@
     separate from the resource group that holds the Azure Local instance and its custom location.
 
     Cluster credentials are fetched with --admin: they authenticate with a client certificate
-    directly against the API server, which keeps working with no Azure connectivity.
-
-    -Stage Azure is for a machine that reaches Azure but not the site network: the credentials go
-    to <HandoverPath>/kubeconfig instead of this machine's kubeconfig, for the site machine to take
-    over (setup-platform.ps1 -Stage Site merges and deletes it), and nothing contacts the cluster.
+    directly against the API server, which keeps working with no Azure connectivity. This is an
+    Azure-stage step and never contacts the cluster: the credentials go to <HandoverPath>/kubeconfig,
+    and the Site stage of setup-platform.ps1 or deploy.ps1 merges them into ~/.kube/config and
+    deletes the file, on this machine or on the site machine the folder was copied to.
 
     -WhatIf runs an Azure what-if of the template instead of deploying it, and changes nothing.
     What-if doesn't cover the Entra group; it reports it as not supported.
@@ -80,8 +79,6 @@ param(
 
     [string]$KubeContext = 'bcd-aksarc',
 
-    [ValidateSet('All', 'Azure')]
-    [string]$Stage = 'All',
     [string]$HandoverPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../.handover'))
 )
 
@@ -226,28 +223,11 @@ try {
     $registryLoginServer = ($outputsJson | ConvertFrom-Json).registryLoginServer.value
 
     Write-Host "==> Fetching admin credentials as context '$KubeContext'" -ForegroundColor Cyan
-    if ($Stage -eq 'Azure') {
-        # The site machine takes these over; this machine can't reach the API server.
-        New-Item -ItemType Directory -Force -Path $HandoverPath | Out-Null
-        $kubeconfigFile = Join-Path $HandoverPath 'kubeconfig'
-        Invoke-Checked 'az aksarc get-credentials' {
-            az aksarc get-credentials --name $ClusterName --resource-group $ResourceGroup `
-                --admin --context $KubeContext --file $kubeconfigFile --overwrite-existing
-        }
-        Write-Host "    written to $kubeconfigFile for the site machine" -ForegroundColor Yellow
-        $kubernetesServiceIp = '(not checked from here)'
-    }
-    else {
-        Invoke-Checked 'az aksarc get-credentials' {
-            az aksarc get-credentials --name $ClusterName --resource-group $ResourceGroup `
-                --admin --context $KubeContext --overwrite-existing
-        }
-        Invoke-Checked 'kubectl cluster-info' {
-            kubectl cluster-info --context $KubeContext --request-timeout=30s | Out-Null
-        }
-
-        # The connected registry Service needs a ClusterIP inside the service CIDR; report it.
-        $kubernetesServiceIp = kubectl get service kubernetes --namespace default --context $KubeContext -o jsonpath='{.spec.clusterIP}'
+    New-Item -ItemType Directory -Force -Path $HandoverPath | Out-Null
+    $kubeconfigFile = Join-Path $HandoverPath 'kubeconfig'
+    Invoke-Checked 'az aksarc get-credentials' {
+        az aksarc get-credentials --name $ClusterName --resource-group $ResourceGroup `
+            --admin --context $KubeContext --file $kubeconfigFile --overwrite-existing
     }
 
     Write-Host "`n================ Platform ready ================" -ForegroundColor Green
@@ -255,12 +235,12 @@ try {
     Write-Host "Registry         : $registryLoginServer (Premium, data endpoint enabled)"
     Write-Host "Cluster          : $ClusterName (API $ControlPlaneIp)"
     Write-Host "Load balancer    : $LoadBalancerAddresses"
-    Write-Host "kubectl context  : $KubeContext (admin certificate, works offline)"
-    Write-Host "Service CIDR hint: kubernetes service is $kubernetesServiceIp"
+    Write-Host "Credentials      : $kubeconfigFile, context $KubeContext (admin certificate, works offline)"
 
     Write-Host "`nNext steps:" -ForegroundColor Yellow
     Write-Host "  1. ./scripts/infra/azurelocal/import-images.ps1 -Mode Mirror -Registry $registryLoginServer"
-    Write-Host "  2. ./scripts/infra/azurelocal/connected-registry.ps1 -RegistryName $RegistryName -KubeContext $KubeContext"
+    Write-Host "  2. ./scripts/infra/azurelocal/connected-registry.ps1 -Stage Azure -RegistryName $RegistryName -ClusterName $ClusterName"
+    Write-Host "  3. On the site network: ./scripts/setup-platform.ps1 -Target AzureLocal -Stage Site"
 }
 finally {
     if ($parametersFile) { Remove-Item $parametersFile -Force -ErrorAction SilentlyContinue -WhatIf:$false }

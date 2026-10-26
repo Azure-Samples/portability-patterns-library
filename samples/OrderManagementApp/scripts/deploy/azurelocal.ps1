@@ -33,13 +33,10 @@
     SQL container keeps no volume, so rotating restarts it empty; use it when the password leaked.
 
 .PARAMETER Stage
-    All (default) runs everything on this machine, which needs Azure access and the cluster. When no
-    machine has both, run -Stage Azure where Azure is reachable (build images, publish Recipes) and
-    then -Stage Site on the site network (wait for the connected registry, rad install, rad deploy).
-    The Azure stage writes the image digests to <HandoverPath>/release.json for the Site stage.
-
-.EXAMPLE
-    ./scripts/deploy/azurelocal.ps1
+    Azure builds and pushes the images and publishes the Recipes to the cloud registry, and writes
+    the image digests to <HandoverPath>/release.json. Site runs on the site network with no Azure
+    sign-in: it reads release.json, waits for the connected registry to hold that release, and runs
+    rad install and rad deploy. ./scripts/deploy.ps1 runs both in a row unless told otherwise.
 
 .EXAMPLE
     # Build and publish where Azure is reachable, then deploy from a machine on the site network.
@@ -47,8 +44,8 @@
     ./scripts/deploy/azurelocal.ps1 -Stage Site
 
 .EXAMPLE
-    # Rotate the SQL password without rebuilding images or reinstalling Radius.
-    ./scripts/deploy/azurelocal.ps1 -SkipImageBuild -SkipRadiusInstall -RotateSqlPassword
+    # Rotate the SQL password without reinstalling Radius.
+    ./scripts/deploy/azurelocal.ps1 -Stage Site -SkipRadiusInstall -RotateSqlPassword
 #>
 [CmdletBinding()]
 param(
@@ -108,11 +105,11 @@ param(
     [switch]$SkipImageBuild,
     [switch]$SkipRadiusInstall,
 
-    # All: this machine reaches Azure and the cluster. Otherwise run 'Azure' where Azure is reachable
-    # (build, push, publish) and 'Site' on the site network (rad); they hand over through
-    # -HandoverPath (image digests only, no secrets).
-    [ValidateSet('All', 'Azure', 'Site')]
-    [string]$Stage = 'All',
+    # Azure where Azure is reachable (build, push, publish), Site on the site network (rad). They
+    # hand over through -HandoverPath (image digests only, no secrets).
+    [Parameter(Mandatory)]
+    [ValidateSet('Azure', 'Site')]
+    [string]$Stage,
     [string]$HandoverPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../.handover'))
 )
 
@@ -166,7 +163,7 @@ try {
         rad bicep publish-extension -f $QueueTypeFile --target $QueueTypeExtension
     }
 
-    if ($Stage -ne 'Azure') {
+    if ($Stage -eq 'Site') {
         Write-Host "==> Checking the cluster is reachable" -ForegroundColor Cyan
         Invoke-Checked 'kubectl cluster-info' { kubectl cluster-info --context $KubeContext --request-timeout=20s | Out-Null }
 
@@ -180,7 +177,7 @@ try {
         $dockerConfigEncoded = kubectl get secret $ImagePullSecretName --context $KubeContext --namespace $Namespace `
             --ignore-not-found --output 'jsonpath={.data.\.dockerconfigjson}'
         if ([string]::IsNullOrWhiteSpace($dockerConfigEncoded)) {
-            throw "Pull secret '$ImagePullSecretName' is missing from '$Namespace'. Run scripts/infra/azurelocal/connected-registry.ps1 first."
+            throw "Pull secret '$ImagePullSecretName' is missing from '$Namespace'. Run scripts/infra/azurelocal/connected-registry.ps1 -Stage Site first."
         }
         $pullAuth = ([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($dockerConfigEncoded)) | ConvertFrom-Json).auths.$PullRegistry
         if (-not $pullAuth -or -not $pullAuth.username -or -not $pullAuth.password) {
@@ -190,14 +187,14 @@ try {
         $registryCaPem = (kubectl get configmap $RegistryCaConfigMapName --context $KubeContext --namespace $Namespace `
             --ignore-not-found --output 'jsonpath={.data.ca\.crt}') -join "`n"
         if ([string]::IsNullOrWhiteSpace($registryCaPem)) {
-            throw "ConfigMap '$RegistryCaConfigMapName' is missing from '$Namespace'. Run scripts/infra/azurelocal/connected-registry.ps1 first."
+            throw "ConfigMap '$RegistryCaConfigMapName' is missing from '$Namespace'. Run scripts/infra/azurelocal/connected-registry.ps1 -Stage Site first."
         }
         $registryCaFile = Join-Path ([System.IO.Path]::GetTempPath()) "oms-azurelocal-ca-$([guid]::NewGuid().ToString('N')).crt"
         $temporaryFiles += $registryCaFile
         [System.IO.File]::WriteAllText($registryCaFile, $registryCaPem, [System.Text.UTF8Encoding]::new($false))
     }
 
-    if ($Stage -ne 'Site') {
+    if ($Stage -eq 'Azure') {
         $pushRegistry = az acr show --name $RegistryName --resource-group $RegistryResourceGroup --query loginServer --output tsv
         if ($LASTEXITCODE -ne 0 -or -not $pushRegistry) { throw "Registry '$RegistryName' not found." }
 
@@ -270,16 +267,13 @@ try {
             if (-not $expectedDigests["oms/${worker}:$ImageTag"]) { throw "Could not read the digest of oms/${worker}:$ImageTag in $pushRegistry." }
         }
 
-        if ($Stage -eq 'Azure') {
-            # What the Site stage deploys. No secrets: image digests only.
-            New-Item -ItemType Directory -Force -Path $HandoverPath | Out-Null
-            [System.IO.File]::WriteAllText($releaseFile,
-                (@{ imageTag = $ImageTag; digests = $expectedDigests } | ConvertTo-Json -Depth 5),
-                [System.Text.UTF8Encoding]::new($false))
-            Write-Host "`nImages and Recipes are in $pushRegistry; release written to $releaseFile." -ForegroundColor Green
-            Write-Host "Next, on a machine on the site network: ./scripts/deploy.ps1 -Target AzureLocal -Stage Site"
-            return
-        }
+        # What the Site stage deploys. No secrets: image digests only.
+        New-Item -ItemType Directory -Force -Path $HandoverPath | Out-Null
+        [System.IO.File]::WriteAllText($releaseFile,
+            (@{ imageTag = $ImageTag; digests = $expectedDigests } | ConvertTo-Json -Depth 5),
+            [System.Text.UTF8Encoding]::new($false))
+        Write-Host "`nImages and Recipes are in $pushRegistry; release written to $releaseFile." -ForegroundColor Green
+        return
     }
     else {
         if (-not (Test-Path $releaseFile)) {
@@ -298,7 +292,7 @@ try {
     Write-Host "==> Waiting for the connected registry ($PullRegistry) to sync" -ForegroundColor Cyan
     $services = kubectl get services --all-namespaces --context $KubeContext -o json | ConvertFrom-Json
     $registryService = $services.items | Where-Object { $_.spec.clusterIP -eq $PullRegistry } | Select-Object -First 1
-    if (-not $registryService) { throw "No Service with ClusterIP $PullRegistry. Run scripts/infra/azurelocal/connected-registry.ps1." }
+    if (-not $registryService) { throw "No Service with ClusterIP $PullRegistry. Run ./scripts/setup-platform.ps1 -Target AzureLocal (the Registry step)." }
     $servicePort = ($registryService.spec.ports | Select-Object -First 1).port
     $localPort = Get-Random -Minimum 20000 -Maximum 30000
 

@@ -107,33 +107,40 @@ Then:
 
 1. Copy [scripts/settings.example.json](./scripts/settings.example.json) to `scripts/settings.json`
    and fill in the `AzureLocal` section.
-2. Check the site: `./scripts/infra/azurelocal/preflight.ps1`. Fix anything marked FAIL.
-3. Set up the platform: `./scripts/setup-platform.ps1 -Target AzureLocal`. This creates the
-   cluster, the registry that keeps serving images offline, Keycloak and the ingress.
-4. Deploy the app: `./scripts/deploy.ps1 -Target AzureLocal`.
+2. Bring it up:
+
+   ```powershell
+   ./scripts/up.ps1 -Target AzureLocal
+   ```
+
+   This checks the site ([preflight.ps1](./scripts/infra/azurelocal/preflight.ps1)), sets up the
+   platform ([setup-platform.ps1](./scripts/setup-platform.ps1): the cluster, the registry that keeps
+   serving images offline, Keycloak and the ingress) and deploys the app
+   ([deploy.ps1](./scripts/deploy.ps1)). Run it again to update; every step is idempotent. After
+   the first time, `./scripts/deploy.ps1 -Target AzureLocal` redeploys the app alone.
 
 Open the address it prints and sign in with an AD account in one of the app's groups. The first
-time, trust the site's CA certificates with the commands step 3 printed.
+time, trust the site's CA certificates with the commands it printed.
 
-**When no machine has both Azure and the site.** Often the machine that can sign in to Azure can't
-reach the cluster's network, and the machine on the site's network can't sign in to Azure. Run each
-script in two stages. The Azure stage does the work that needs Azure. The Site stage runs `kubectl`,
-`helm` and `rad` against the cluster and needs no Azure sign-in.
+**Two stages.** Setup and deploy each run in two stages. The Azure stage does the work that needs
+Azure: it creates the cluster, fills the registry, and builds and publishes the app. The Site stage
+runs `kubectl`, `helm` and `rad` against the cluster and never signs in to Azure; that is all the
+site needs to redeploy while its link to Azure is down. The Azure stage leaves what the site needs
+in `scripts/.handover`: the cluster's admin kubeconfig, a registry pull token and the release's
+image digests. The Site stage applies them and deletes the secrets.
+
+Run as above, both stages run in a row on one machine. When the machine that can sign in to Azure
+can't reach the site's network, or the reverse, run them on two machines:
 
 ```powershell
 # On the machine signed in to Azure
-./scripts/setup-platform.ps1 -Target AzureLocal -Stage Azure
-./scripts/deploy.ps1 -Target AzureLocal -Stage Azure
+./scripts/up.ps1 -Target AzureLocal -Stage Azure
 
-# Copy scripts/.handover to the same place in a checkout on the site machine
-# (it holds the admin kubeconfig and a registry pull token), then on that machine:
-./scripts/setup-platform.ps1 -Target AzureLocal -Stage Site
-./scripts/deploy.ps1 -Target AzureLocal -Stage Site
+# Copy scripts/.handover to the same place in a checkout on the site machine, then on that machine:
+./scripts/up.ps1 -Target AzureLocal -Stage Site
 ```
 
-The Site stage merges the handed-over kubeconfig into `~/.kube/config` and deletes the secret
-files once it has applied them. `scripts/.handover` is ignored by git; treat it as a secret while
-you copy it.
+`scripts/.handover` is ignored by git; treat it as a secret while you copy it.
 
 To see or run each piece yourself, without the scripts, see [Set up by hand](./docs/setup-by-hand.md).
 
@@ -206,7 +213,7 @@ The sample uses the library's shared [recipes/](../../recipes/) and
 ├── docker/              Dockerfiles for the API and processor
 ├── compose.yaml         the app on your machine; local/ holds its test user
 ├── azure.yaml           azd up for Azure
-├── scripts/             optional automation over the files above
+├── scripts/             optional automation over the files above; up.ps1 for Azure Local
 └── docs/
 ```
 

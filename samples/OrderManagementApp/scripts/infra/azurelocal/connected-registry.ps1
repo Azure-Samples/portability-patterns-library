@@ -27,14 +27,13 @@
     Idempotent. Token passwords and the sync connection string are only generated when they are not
     already in place, since regenerating them breaks whatever is using the old value.
 
-    Run it where the machine reaches both Azure and the cluster (-Stage All, the default). When no
-    machine does, for example because the site's management machine has no Azure access, run it in
-    two stages that hand over through -HandoverPath:
-      -Stage Azure  on a machine with Azure access: steps 1 and 2, and a new pull credential for the
-                    client token, written to the handover folder. Pass -StorageClassName, since the
-                    cluster can't be asked.
-      -Stage Site   on a machine on the site network: step 3, taking the pull credential from the
-                    handover folder and deleting it from there afterwards.
+    It runs in two stages that hand over through -HandoverPath, the way a site whose management
+    machine can't reach Azure has to. setup-platform.ps1 runs both, on one machine or two:
+      -Stage Azure  where Azure is reachable: steps 1 and 2. When the client token is new (or with
+                    -NewPullCredential), its pull credential is written to the handover folder.
+      -Stage Site   on the site network, with no Azure sign-in: step 3, taking the pull credential
+                    from the handover folder and deleting it from there afterwards, or keeping the
+                    one already in the cluster.
 
 .PARAMETER NewPullCredential
     With -Stage Azure, issue a new pull credential even though the client token already exists, for
@@ -42,12 +41,9 @@
     Site stage to run with the new credential.
 
 .EXAMPLE
-    ./scripts/infra/azurelocal/connected-registry.ps1 -RegistryName <acr-name> -KubeContext bcd-aksarc
-
-.EXAMPLE
-    # No machine reaches both Azure and the site: Azure part here, then the site part on site.
-    ./scripts/infra/azurelocal/connected-registry.ps1 -RegistryName <acr-name> -Stage Azure -StorageClassName default
-    ./scripts/infra/azurelocal/connected-registry.ps1 -RegistryName <acr-name> -Stage Site
+    # Azure part where Azure is reachable, then the site part on the site network.
+    ./scripts/infra/azurelocal/connected-registry.ps1 -RegistryName <acr-name> -ClusterName bcd-aksarc -Stage Azure
+    ./scripts/infra/azurelocal/connected-registry.ps1 -KubeContext bcd-aksarc -Stage Site
 #>
 [CmdletBinding()]
 param(
@@ -60,15 +56,15 @@ param(
     [string]$ConnectedRegistryName = 'bcdazlocalcr',
     [string]$ExtensionName = 'bcd-connected-registry',
 
-    # Must fall inside the cluster's service CIDR and be unused.
+    # Must fall inside the cluster's service CIDR and be unused. preflight.ps1 checks it.
     [string]$ServiceClusterIp = '10.96.0.50',
     [string]$StorageRequest = '40Gi',
-    # Storage class for the registry's volume. Defaults to the cluster's default class; required
-    # with -Stage Azure.
-    [string]$StorageClassName,
+    # Storage class for the registry's volume: the one AKS enabled by Arc creates.
+    [string]$StorageClassName = 'default',
 
-    [ValidateSet('All', 'Azure', 'Site')]
-    [string]$Stage = 'All',
+    [Parameter(Mandatory)]
+    [ValidateSet('Azure', 'Site')]
+    [string]$Stage,
     [string]$HandoverPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../.handover')),
     [switch]$NewPullCredential,
 
@@ -136,34 +132,7 @@ $temporaryFiles = @()
 $handoverFile = Join-Path $HandoverPath 'registry-pull-credential.json'
 
 try {
-    if ($Stage -ne 'Azure') {
-        Write-Host "==> Checking the cluster is reachable" -ForegroundColor Cyan
-        Invoke-Checked 'kubectl cluster-info' { kubectl cluster-info --context $KubeContext --request-timeout=20s | Out-Null }
-    }
-
-    if ($Stage -eq 'All') {
-        # A ClusterIP outside the service CIDR is rejected by the API server, but only once the
-        # extension's Helm release is already half installed, so check the obvious case up front.
-        $kubernetesServiceIp = kubectl get service kubernetes --namespace default --context $KubeContext -o jsonpath='{.spec.clusterIP}'
-        $servicePrefix = ($kubernetesServiceIp -split '\.')[0..1] -join '.'
-        if (-not $ServiceClusterIp.StartsWith("$servicePrefix.")) {
-            throw "-ServiceClusterIp $ServiceClusterIp does not look like it is in the service CIDR (the 'kubernetes' service is $kubernetesServiceIp)."
-        }
-
-        # Use the cluster's default StorageClass for the connected registry volume.
-        if (-not $StorageClassName) {
-            $StorageClassName = kubectl get storageclass --context $KubeContext -o json | ConvertFrom-Json |
-                Select-Object -ExpandProperty items |
-                Where-Object { $_.metadata.annotations.'storageclass.kubernetes.io/is-default-class' -eq 'true' } |
-                Select-Object -First 1 -ExpandProperty metadata | Select-Object -ExpandProperty name
-            if (-not $StorageClassName) { throw 'The cluster has no default StorageClass for the connected registry volume.' }
-        }
-    }
-    if ($Stage -eq 'Azure' -and -not $StorageClassName) {
-        throw "-Stage Azure needs -StorageClassName. List the classes on site with: kubectl get storageclass"
-    }
-
-    if ($Stage -ne 'Site') {
+    if ($Stage -eq 'Azure') {
         $registryLoginServer = az acr show --name $RegistryName --resource-group $ResourceGroup --query loginServer --output tsv
         if ($LASTEXITCODE -ne 0 -or -not $registryLoginServer) { throw "Registry '$RegistryName' not found in '$ResourceGroup'." }
         $storageClass = $StorageClassName
@@ -245,9 +214,9 @@ try {
         } while ((Get-Date) -lt $deadline)
         if ($state -ne 'Online') { throw "Connected registry is '$state' after 15 minutes. Check the pods of the extension." }
 
-        # With the site done separately, a new client token gets its pull credential here and travels
-        # to the site through the handover folder.
-        if ($Stage -eq 'Azure' -and ($clientTokenIsNew -or $NewPullCredential)) {
+        # The pull credential travels to the site through the handover folder. It is only issued
+        # for a new client token or on request, since a new one replaces the password pods use.
+        if ($clientTokenIsNew -or $NewPullCredential) {
             Write-Host "==> Issuing a pull credential for the site ($handoverFile)" -ForegroundColor Cyan
             $clientPassword = az acr token credential generate --name $ClientTokenName --registry $RegistryName `
                 --password1 --query 'passwords[0].value' --output tsv
@@ -257,19 +226,19 @@ try {
                 (@{ server = $ServiceClusterIp; username = $ClientTokenName; password = $clientPassword } | ConvertTo-Json),
                 [System.Text.UTF8Encoding]::new($false))
             $clientPassword = $null
-            Write-Host "    carry it to the site machine; the Site stage applies it and deletes it" -ForegroundColor Yellow
+            Write-Host "    the Site stage applies it and deletes it" -ForegroundColor Yellow
         }
-        elseif ($Stage -eq 'Azure') {
+        else {
             Write-Host "==> Client token exists; the site keeps its pull secrets (pass -NewPullCredential to issue a new one)" -ForegroundColor DarkGray
         }
-    }
 
-    if ($Stage -eq 'Azure') {
-        Write-Host "`n================ Connected registry: Azure part done ================" -ForegroundColor Green
+        Write-Host "`n================ Connected registry: Azure stage done ================" -ForegroundColor Green
         Write-Host "Cloud registry   : $registryLoginServer (push here)"
-        Write-Host "Next, on a machine on the site network: connected-registry.ps1 -Stage Site"
         return
     }
+
+    Write-Host "==> Checking the cluster is reachable" -ForegroundColor Cyan
+    Invoke-Checked 'kubectl cluster-info' { kubectl cluster-info --context $KubeContext --request-timeout=20s | Out-Null }
 
     # ------------------------------------------------------------------------------------------
     # Pull secrets. The client token password lives only in the cluster, never in the repository.
@@ -282,7 +251,7 @@ try {
     }
 
     $clientPassword = $null
-    if ($Stage -eq 'Site' -and (Test-Path $handoverFile)) {
+    if (Test-Path $handoverFile) {
         $handover = Get-Content $handoverFile -Raw | ConvertFrom-Json
         $clientPassword = $handover.password
         Write-Host "    using the pull credential from $handoverFile" -ForegroundColor DarkGray
@@ -294,14 +263,8 @@ try {
             if ($auth -and $auth.username -eq $ClientTokenName) { $clientPassword = $auth.password }
         }
     }
-    if (-not $clientPassword -and $Stage -eq 'Site') {
-        throw "No pull credential: '$handoverFile' is missing and the cluster has no '$PullSecretName' yet. Run the Azure stage with -NewPullCredential and copy the handover folder here."
-    }
     if (-not $clientPassword) {
-        Write-Host "    generating a client token password" -ForegroundColor DarkGray
-        $clientPassword = az acr token credential generate --name $ClientTokenName --registry $RegistryName `
-            --password1 --query 'passwords[0].value' --output tsv
-        if ($LASTEXITCODE -ne 0 -or -not $clientPassword) { throw 'Generating the client token password failed.' }
+        throw "No pull credential: '$handoverFile' is missing and the cluster has no '$PullSecretName' yet. Run the Azure stage with -NewPullCredential and copy the handover folder here."
     }
 
     foreach ($namespace in $PullSecretNamespaces) {
@@ -312,7 +275,7 @@ try {
         Write-Host "    $namespace/$PullSecretName" -ForegroundColor DarkGray
     }
     $clientPassword = $null
-    if ($Stage -eq 'Site' -and (Test-Path $handoverFile)) {
+    if (Test-Path $handoverFile) {
         Remove-Item $handoverFile -Force
         Write-Host "    removed $handoverFile" -ForegroundColor DarkGray
     }
@@ -342,7 +305,6 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Writing ConfigMap '$CaConfigMapName' failed." }
 
     Write-Host "`n================ Connected registry ready ================" -ForegroundColor Green
-    if ($registryLoginServer) { Write-Host "Cloud registry   : $registryLoginServer (push here)" }
     Write-Host "In-cluster pulls : $ServiceClusterIp (secret '$PullSecretName', CA ConfigMap '$ApplicationNamespace/$CaConfigMapName')"
     Write-Host "Synced repos     : $($Repositories.Count)"
 }

@@ -1,3 +1,4 @@
+#Requires -Version 7.0
 <#
 .SYNOPSIS
     Deploys the Order Management sample: the same deploy/app.bicep and images to Azure or to
@@ -11,9 +12,11 @@
     Values come from the 'Common' and 'Deploy' sections of the target in scripts/settings.json. Any
     other argument goes to scripts/deploy/<target>.ps1 and wins over the settings file.
 
-    Azure Local, when no machine reaches both Azure and the site: run -Stage Azure where Azure is
-    reachable (build, push, publish Recipes), copy scripts/.handover to a machine on the site
-    network, and run -Stage Site there (rad install, rad deploy).
+    Azure Local deploys in two stages, the way a site whose management machine can't reach Azure
+    has to: -Stage Azure where Azure is reachable (build, push, publish Recipes, record the image
+    digests in scripts/.handover/release.json), then -Stage Site on the site network with no Azure
+    sign-in (rad install, rad deploy). On two machines, copy scripts/.handover across in between.
+    The default, -Stage All, runs both in a row on this machine, through the same folder.
 
 .EXAMPLE
     ./scripts/deploy.ps1 -Target Azure
@@ -45,16 +48,28 @@ $arguments = Get-OmsStepArguments $settings 'Deploy' $script
 foreach ($argument in $args) {
     if ($argument -is [string] -and $argument -match '^-([A-Za-z]\w*):?$') { $arguments.Remove($Matches[1]) }
 }
-if ($Stage -ne 'All') { $arguments['Stage'] = $Stage }
 
-$previousSubscription = $null
 Push-Location (Split-Path -Parent $PSScriptRoot)
 try {
-    # The site machine may have no Azure sign-in at all.
-    if ($Stage -ne 'Site') { $previousSubscription = Select-OmsSubscription $settings }
-    & $script @arguments @args
+    foreach ($currentStage in (Get-OmsStages $Target $Stage)) {
+        if ($currentStage -ne 'All') { $arguments['Stage'] = $currentStage }
+        $previousSubscription = $null
+        try {
+            if ($currentStage -eq 'Site') {
+                # The Site stage must work with no Azure sign-in at all, so it never touches az.
+                Import-OmsHandoverKubeconfig (Join-Path $PSScriptRoot '.handover')
+            }
+            else { $previousSubscription = Select-OmsSubscription $settings }
+            & $script @arguments @args
+        }
+        finally {
+            Restore-OmsSubscription $previousSubscription
+        }
+    }
+    if ($Stage -eq 'Azure') {
+        Write-Host "Next, copy scripts/.handover to a machine on the site network and run: ./scripts/deploy.ps1 -Target $Target -Stage Site" -ForegroundColor Green
+    }
 }
 finally {
-    Restore-OmsSubscription $previousSubscription
     Pop-Location
 }

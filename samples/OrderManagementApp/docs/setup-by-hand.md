@@ -95,8 +95,9 @@ az acr import --name <acr-name> --source <source> --image <target>
 It can't be done in one pass: the Arc extension needs a sync password, which only exists once the
 connected registry does. Deploy it, generate the sync token's password
 (`az acr token credential generate`), then deploy it again with the connection string.
-[connected-registry.ps1](../scripts/infra/azurelocal/connected-registry.ps1) does this and writes the
-`azurelocal-registry` pull secret into each namespace that pulls images.
+[connected-registry.ps1](../scripts/infra/azurelocal/connected-registry.ps1) does this in its Azure
+stage, and in its Site stage writes the `azurelocal-registry` pull secret into each namespace that
+pulls images.
 
 **4. Active Directory and Keycloak.** Follow
 [Connect your Active Directory](./authentication.md#connect-your-active-directory), then
