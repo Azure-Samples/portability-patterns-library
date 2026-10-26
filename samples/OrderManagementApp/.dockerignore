@@ -3,3 +3,6 @@
 .git/
 .vs/
 .idea/
+# Credentials the Azure Local scripts hand between machines, and site settings: never build context.
+scripts/.handover/
+scripts/settings.json

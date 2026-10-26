@@ -93,6 +93,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
+. (Join-Path $repoRoot 'scripts/lib/settings.ps1')
 
 function Invoke-Checked {
     param(
@@ -226,10 +227,8 @@ try {
             $clientPassword = az acr token credential generate --name $ClientTokenName --registry $RegistryName `
                 --password1 --query 'passwords[0].value' --output tsv
             if ($LASTEXITCODE -ne 0 -or -not $clientPassword) { throw 'Generating the client token password failed.' }
-            New-Item -ItemType Directory -Force -Path $HandoverPath | Out-Null
-            [System.IO.File]::WriteAllText($handoverFile,
-                (@{ server = $ServiceClusterIp; username = $ClientTokenName; password = $clientPassword } | ConvertTo-Json),
-                [System.Text.UTF8Encoding]::new($false))
+            Write-OmsSecretFile $handoverFile `
+                (@{ server = $ServiceClusterIp; username = $ClientTokenName; password = $clientPassword } | ConvertTo-Json)
             $clientPassword = $null
             Write-Host "    the Site stage applies it and deletes it" -ForegroundColor Yellow
         }

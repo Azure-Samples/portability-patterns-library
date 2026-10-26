@@ -79,8 +79,12 @@ apps in Microsoft Entra ID, and these tools: [Azure Developer CLI](https://aka.m
 
 ```powershell
 azd auth login
+az login
 azd up
 ```
+
+azd and the Azure CLI keep separate sign-ins, and `azd up` uses both, so sign in to the same tenant
+with each.
 
 `azd up` creates AKS, a container registry and managed identities, installs Radius and an HTTPS
 ingress, registers the app in Entra ID, then builds and deploys the app. It prints the app's

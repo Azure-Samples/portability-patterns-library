@@ -55,9 +55,13 @@ return options.Provider switch
 };
 ```
 
-Everything else in the app sees only `IMessagePublisher` / `IMessageSubscriber`. Storage and SQL
-follow the same rule: a connection string or password means the on-site container, none means
-managed identity. [compose.yaml](../compose.yaml) sets the same variables to run the app locally.
+Everything else in the app sees only `IMessagePublisher` / `IMessageSubscriber`. Storage follows the
+same rule: a connection string means the on-site container, none means managed identity. SQL picks
+by the identity the platform attached to the pod, in this order: an Entra workload identity means an
+Entra token for Azure SQL, a Kerberos keytab means integrated authentication as the pod's Active
+Directory account, and otherwise the SQL login the connection carries
+([SqlOptions.cs](../src/OrderManagement.Shared/Configuration/SqlOptions.cs)).
+[compose.yaml](../compose.yaml) sets the same variables to run the app locally.
 
 Sign-in stays an ordinary Entra app: MSAL.js in the browser and Microsoft.Identity.Web in the API.
 On Azure Local, Keycloak issues tokens shaped like Entra's, so only settings change. See

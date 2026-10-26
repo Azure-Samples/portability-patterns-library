@@ -78,7 +78,6 @@ function Import-OmsHandoverKubeconfig([string]$HandoverPath) {
     if (-not (Test-Path $handoverKubeconfig)) { return }
 
     $kubeHome = Join-Path $HOME '.kube/config'
-    New-Item -ItemType Directory -Force -Path (Split-Path $kubeHome) | Out-Null
     $previousKubeconfig = $env:KUBECONFIG
     try {
         $env:KUBECONFIG = (@($handoverKubeconfig) + @($kubeHome | Where-Object { Test-Path $_ })) -join [IO.Path]::PathSeparator
@@ -86,7 +85,23 @@ function Import-OmsHandoverKubeconfig([string]$HandoverPath) {
     }
     finally { $env:KUBECONFIG = $previousKubeconfig }
     if ($LASTEXITCODE -ne 0 -or -not $merged) { throw "Could not read $handoverKubeconfig." }
-    [IO.File]::WriteAllText($kubeHome, ($merged -join "`n"), [Text.UTF8Encoding]::new($false))
+    Write-OmsSecretFile $kubeHome ($merged -join "`n")
     Remove-Item $handoverKubeconfig -Force
     Write-Host "==> Took over the cluster credentials from $handoverKubeconfig" -ForegroundColor Cyan
+}
+
+# Writes a file that holds credentials so only the current user can read it.
+function Write-OmsSecretFile([string]$Path, [string]$Content) {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null
+    if (-not (Test-Path $Path)) { [IO.File]::WriteAllText($Path, '') }
+    Protect-OmsSecretPath $Path
+    [IO.File]::WriteAllText($Path, $Content, [Text.UTF8Encoding]::new($false))
+}
+
+# Owner-only access to a credentials file and its folder. A Windows profile is already private; on
+# Linux and macOS the default umask leaves both readable by other users.
+function Protect-OmsSecretPath([string]$Path) {
+    if ($IsWindows) { return }
+    [IO.File]::SetUnixFileMode((Split-Path -Parent $Path), [IO.UnixFileMode]'UserRead, UserWrite, UserExecute')
+    if (Test-Path $Path) { [IO.File]::SetUnixFileMode($Path, [IO.UnixFileMode]'UserRead, UserWrite') }
 }

@@ -92,6 +92,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
+. (Join-Path $repoRoot 'scripts/lib/settings.ps1')
 Push-Location $repoRoot
 
 # $ErrorActionPreference does not apply to native commands, so every external call is checked.
@@ -248,6 +249,7 @@ try {
         az aksarc get-credentials --name $ClusterName --resource-group $ResourceGroup `
             --admin --context $KubeContext --file $kubeconfigFile --overwrite-existing
     }
+    Protect-OmsSecretPath $kubeconfigFile
 
     Write-Host "`n================ Platform ready ================" -ForegroundColor Green
     Write-Host "Resource group   : $ResourceGroup"

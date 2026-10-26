@@ -3,8 +3,10 @@
 # Deploys the sample to Azure with the Azure Developer CLI:
 #
 #   azd auth login
+#   az login
 #   azd up
 #
+# The hooks use the Azure CLI, which keeps its own sign-in separate from azd's, so sign in to both.
 # azd provisions infra/azure/platform.bicep (AKS, container registry, managed identities). The hooks
 # then set up the cluster (Radius, ingress, Entra app registrations) and deploy the app with Radius.
 # azd has no service of its own to deploy here; Radius deploys the app from deploy/app.bicep.
@@ -29,6 +31,16 @@ infra:
   module: platform
 
 hooks:
+  # Fails before anything is created when the Azure CLI, which the later hooks use, isn't signed in.
+  preprovision:
+    shell: pwsh
+    run: |
+      $subscription = @(if ($env:AZURE_SUBSCRIPTION_ID) { '--subscription', $env:AZURE_SUBSCRIPTION_ID })
+      az account show @subscription --output none 2>$null
+      if ($LASTEXITCODE -ne 0) {
+        throw "The Azure CLI can't use subscription '$env:AZURE_SUBSCRIPTION_ID'. Sign it in too: az login --tenant <tenant-id>"
+      }
+
   postprovision:
     shell: pwsh
     interactive: true
