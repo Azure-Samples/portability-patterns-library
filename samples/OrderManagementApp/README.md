@@ -167,7 +167,6 @@ machine.
 version you copied to the management machine with `-Stage Site`. Creating clusters and publishing
 new versions need Azure, so they wait until the link is back.
 
-To see or run each piece yourself, without the scripts, see [Set up by hand](./docs/setup-by-hand.md).
 ## Portability patterns in this sample
 
 How the sample applies each portability pattern on each platform. **Portable contract** is what the
@@ -220,7 +219,6 @@ app and its definitions rely on, which stays the same while the platform underne
 | [Move your app in five steps](./docs/move-your-app.md) | resource types, connections, Recipes, Recipe Packs, environments |
 | [How authentication works](./docs/authentication.md) | user sign-in, workload identity, Active Directory and Kerberos |
 | [Workload identity in depth](./docs/workload-identity.md) | decoded tokens and troubleshooting |
-| [Set up by hand](./docs/setup-by-hand.md) | every prerequisite as a file and a command, for both platforms |
 
 ## Repository layout
 

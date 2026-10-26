@@ -102,5 +102,7 @@ rad deploy deploy/app.bicep -e oms-azurelocal -p apiImage=... -p processorImage=
 ```
 
 Same file, same parameters. The environment decides what gets created. Also pass `apiAuthentication`
-and `spaSettings`, the sign-in settings for that platform's identity provider. The full sequence is
-in [Set up by hand](./setup-by-hand.md#deploy-the-app).
+and `spaSettings`, the sign-in settings for that platform's identity provider. The full sequence,
+including the Recipe Pack, environment and registry credentials, is in
+[scripts/deploy/azurelocal.ps1](../scripts/deploy/azurelocal.ps1) and
+[scripts/deploy/azure.ps1](../scripts/deploy/azure.ps1).
