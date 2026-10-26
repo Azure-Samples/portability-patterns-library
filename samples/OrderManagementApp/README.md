@@ -100,7 +100,9 @@ Settings for your subscription, if you need them, are listed at the top of
 - An Azure Local instance connected to Azure, with its custom location and a running Arc resource
   bridge.
 - A management machine on the site network, not an Azure Local node, with PowerShell 7 and the
-  tools for Azure above, except azd.
+  tools for Azure above, except azd. Microsoft recommends managing AKS on Azure Local from such a
+  [client machine](https://learn.microsoft.com/azure/aks-hybrid-edge/local/aks-create-clusters-cli#install-the-azure-cli-extension)
+  rather than from the nodes.
 - Free addresses on the site network for the cluster: its control plane, a pool for the nodes and a
   small range for the load balancer.
 - The site's Active Directory, with the app's groups and a bind account for Keycloak. See
