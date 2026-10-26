@@ -16,7 +16,7 @@
 extension radius
 
 @description('''
-Address of the in-cluster connected registry, for example `10.96.0.50`. Holds both the Recipes and
+Address of the in-cluster connected registry: the ClusterIP of its Service. Holds both the Recipes and
 every container image, synced from the cloud ACR while the link is up.
 ''')
 param registry string

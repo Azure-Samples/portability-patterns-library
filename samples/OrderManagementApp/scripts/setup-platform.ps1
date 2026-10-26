@@ -18,8 +18,8 @@
       Cluster   infra/azurelocal/provision-infra.ps1         AKS Arc cluster, ACR, load balancer
       Images    infra/azurelocal/import-images.ps1           third-party images mirrored into the ACR
       Registry  infra/azurelocal/connected-registry.ps1      in-cluster registry that keeps serving offline
-      Keycloak  infra/azurelocal/keycloak.ps1                on-site sign-in and token issuer, federated to Active Directory
       Ingress   infra/azurelocal/provision-ingress.ps1       NGINX ingress, site CA certificate
+      Keycloak  infra/azurelocal/keycloak.ps1                on-site sign-in and token issuer, federated to Active Directory
     Values come from the target's section of scripts/settings.json (see settings.example.json):
     'Common' goes to every step that takes the parameter, a section named after the step to that
     step only. Keep secrets out of it; the scripts read those from Kubernetes Secrets.
@@ -28,12 +28,12 @@
     identity/oms-ad-bind and the directory's CA in identity/oms-ad-ca. Create them by hand (see
     the sample README) or with infra/azurelocal/ad-setup.ps1.
 
-    Azure Local steps need Azure (Cluster, Images), the cluster's network (Keycloak, Ingress) or
+    Azure Local steps need Azure (Cluster, Images), the cluster's network (Ingress, Keycloak) or
     both (Registry), so they run in two stages, the way a site whose management machine can't reach
     Azure has to:
       -Stage Azure  where Azure is reachable: Cluster, Images and the Azure part of Registry
-      -Stage Site   on the site network, with no Azure sign-in: the site part of Registry, Keycloak,
-                    Ingress
+      -Stage Site   on the site network, with no Azure sign-in: the site part of Registry, Ingress,
+                    Keycloak
     The Azure stage leaves what the site needs in scripts/.handover (cluster credentials, a registry
     pull token); the Site stage takes it over and deletes the secrets. On two machines, copy that
     folder across in between. The default, -Stage All, runs both stages in a row on this machine,
@@ -80,15 +80,16 @@ else {
         Cluster  = 'infra/azurelocal/provision-infra.ps1'
         Images   = 'infra/azurelocal/import-images.ps1'
         Registry = 'infra/azurelocal/connected-registry.ps1'
-        Keycloak = 'infra/azurelocal/keycloak.ps1'
+        # Before Keycloak, which takes the app's address from the ingress.
         Ingress  = 'infra/azurelocal/provision-ingress.ps1'
+        Keycloak = 'infra/azurelocal/keycloak.ps1'
     }
 }
 
 $settings = Read-OmsSettings $Target $SettingsPath
 $handoverPath = Join-Path $PSScriptRoot '.handover'
 # Which steps each stage runs; Registry runs in both, each doing its own part.
-$stageSteps = @{ All = @($steps.Keys); Azure = @('Cluster', 'Images', 'Registry'); Site = @('Registry', 'Keycloak', 'Ingress') }
+$stageSteps = @{ All = @($steps.Keys); Azure = @('Cluster', 'Images', 'Registry'); Site = @('Registry', 'Ingress', 'Keycloak') }
 $stages = Get-OmsStages $Target $Stage
 Push-Location (Split-Path -Parent $PSScriptRoot)
 try {

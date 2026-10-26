@@ -22,11 +22,14 @@
     What-if doesn't cover the Entra group; it reports it as not supported.
 
 .EXAMPLE
-    ./scripts/infra/azurelocal/provision-infra.ps1 -RegistryName <acr-name>
+    # Usually run by setup-platform.ps1 with the Cluster section of scripts/settings.json. On its own:
+    ./scripts/infra/azurelocal/provision-infra.ps1 -RegistryName <acr-name> -AddressPrefix <subnet> `
+        -Gateway <gateway> -DnsServers <ad-dns> -IpPoolStart <first-node-ip> -IpPoolEnd <last-node-ip> `
+        -ControlPlaneIp <free-ip> -LoadBalancerAddresses <first-ip>-<last-ip>
 
 .EXAMPLE
-    # Preview what the template would change on an existing site.
-    ./scripts/infra/azurelocal/provision-infra.ps1 -RegistryName <acr-name> -WhatIf
+    # Preview what the template would change on an existing site: the same parameters, plus -WhatIf.
+    ./scripts/infra/azurelocal/provision-infra.ps1 -RegistryName <acr-name> <network parameters as above> -WhatIf
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
@@ -47,19 +50,23 @@ param(
     [string]$VmSwitchName = '',
     [string]$SwitchSourceLogicalNetworkName = 'azlocal-lab-InfraLNET',
 
-    # Logical network for the AKS nodes. Shares the infrastructure subnet but uses its own pool.
+    # Logical network for the AKS nodes, on the site network. Every address comes from your network
+    # plan, so none has a default: the subnet, its gateway and DNS servers (the site's Active
+    # Directory DNS, so the cluster can find the domain controller), and a free pool for the nodes.
     [string]$LogicalNetworkName = 'bcd-aks-lnet',
-    [string]$AddressPrefix = '192.168.44.0/24',
-    [string]$Gateway = '192.168.44.1',
-    [string[]]$DnsServers = @('192.168.44.10'),
-    [string]$IpPoolStart = '192.168.44.121',
-    [string]$IpPoolEnd = '192.168.44.180',
+    [string]$AddressPrefix,
+    [string]$Gateway,
+    [string[]]$DnsServers,
+    [string]$IpPoolStart,
+    [string]$IpPoolEnd,
     [int]$Vlan = 0,
 
     [string]$ClusterName = 'bcd-aksarc',
 
-    # Must be in the subnet and OUTSIDE the logical network pool.
-    [string]$ControlPlaneIp = '192.168.44.120',
+    # A free address in the subnet, OUTSIDE the node pool.
+    [string]$ControlPlaneIp,
+    # Address range for pods, inside the cluster only. Empty keeps the template's AKS Arc default.
+    [string]$PodCidr,
     [int]$ControlPlaneCount = 1,
     [string]$ControlPlaneVmSize = 'Standard_A4_v2',
     [int]$NodeCount = 2,
@@ -70,9 +77,10 @@ param(
 
     [string]$AdminGroupName = 'azurelocal-aks-admins',
 
-    # Addresses the Arc load balancer hands out on the site network, outside the node pool.
+    # Free addresses the Arc load balancer hands out on the site network, outside the node pool,
+    # as <first>-<last>. The app's ingress takes the first.
     [string]$LoadBalancerName = 'bcd-lb',
-    [string]$LoadBalancerAddresses = '192.168.44.200-192.168.44.210',
+    [string]$LoadBalancerAddresses,
 
     # Public key installed on the nodes. Generated when missing.
     [string]$SshPublicKeyPath = (Join-Path $HOME '.ssh/id_rsa.pub'),
@@ -101,6 +109,16 @@ function Invoke-Checked {
 
 $parametersFile = $null
 try {
+    $networkPlan = [ordered]@{
+        AddressPrefix = $AddressPrefix; Gateway = $Gateway; DnsServers = @($DnsServers) -join ','
+        IpPoolStart = $IpPoolStart; IpPoolEnd = $IpPoolEnd; ControlPlaneIp = $ControlPlaneIp
+        LoadBalancerAddresses = $LoadBalancerAddresses
+    }
+    $missing = @($networkPlan.Keys | Where-Object { [string]::IsNullOrWhiteSpace($networkPlan[$_]) -or $networkPlan[$_] -like '<*' })
+    if ($missing) {
+        throw "Set these in the Cluster section of scripts/settings.json, from your site's network plan: $($missing -join ', ')."
+    }
+
     if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
         throw "The az CLI is not on PATH."
     }
@@ -194,6 +212,7 @@ try {
         loadBalancerName               = $LoadBalancerName
         loadBalancerAddresses          = $LoadBalancerAddresses
     }
+    if ($PodCidr) { $parameters['podCidr'] = $PodCidr }
     $parametersDocument = [ordered]@{
         '$schema'      = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'
         contentVersion = '1.0.0.0'

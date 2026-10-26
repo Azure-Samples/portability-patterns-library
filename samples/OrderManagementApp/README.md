@@ -95,18 +95,24 @@ Settings for your subscription, if you need them, are listed at the top of
 
 - [ ] An Azure Local instance **connected to Azure**, with its custom location and a running Arc
       resource bridge.
-- [ ] Free addresses on its infrastructure network: one for the cluster's control plane, a pool for
-      the nodes, and a small range for the load balancer.
+- [ ] A **management machine** on the site network to run the scripts from, such as an admin
+      workstation or jump box. Not an Azure Local node: Microsoft recommends keeping CLI extensions
+      and tools off the nodes. It needs PowerShell 7 and the tools for Azure above, except azd.
+- [ ] Free addresses on the site network, from your network plan: one for the cluster's control
+      plane, a pool for the nodes, and a small range for the load balancer. The app gets the first
+      free address of that range.
+- [ ] One unused address in the cluster's service range for the in-cluster registry. AKS enabled
+      by Arc uses 10.96.0.0/12; avoid the first few addresses, which Kubernetes takes.
 - [ ] The site's **Active Directory**, with the app's groups and a bind account for Keycloak. See
       [Connect your Active Directory](./docs/authentication.md#connect-your-active-directory).
 - [ ] Contributor and User Access Administrator on the Azure subscription, and the right to create
       groups in Entra ID.
-- [ ] The tools for Azure above, except azd.
 
-Then:
+Then, on the management machine:
 
 1. Copy [scripts/settings.example.json](./scripts/settings.example.json) to `scripts/settings.json`
-   and fill in the `AzureLocal` section.
+   and fill in the `AzureLocal` section with the names and addresses above. Everything else, such as
+   the app's address and the registry's, the scripts read from the cluster.
 2. In a PowerShell 7 window, run:
 
    ```powershell
@@ -122,11 +128,11 @@ time, trust the site's CA certificates with the commands it printed.
 To deploy a new version of the app later, run `./scripts/deploy.ps1 -Target AzureLocal`. Running
 `up.ps1` again is also safe: each step updates what's already there instead of starting over.
 
-#### When your site machine can't sign in to Azure
+#### When your management machine can't sign in to Azure
 
-The steps above assume one machine that can both sign in to Azure and reach the site's network.
-Often that isn't the case: your workstation can sign in to Azure but can't reach the site, and the
-management machine on the site can reach the cluster but not Azure. Split the run between the two:
+The steps above assume the management machine can both sign in to Azure and reach the site's
+network, which is usual for a connected site. If your policy keeps Azure sign-in off the site
+network, split the run between a machine that can sign in to Azure and the management machine:
 
 1. On the machine that can sign in to Azure:
 
@@ -136,25 +142,26 @@ management machine on the site can reach the cluster but not Azure. Split the ru
 
    This creates the cluster in Azure, fills the registry and builds the app.
 
-2. Copy the `scripts/.handover` folder to the same place in a copy of this repository on the site
-   machine, along with your `scripts/settings.json`. The folder holds the cluster's admin
+2. Copy the `scripts/.handover` folder to the same place in a copy of this repository on the
+   management machine, along with your `scripts/settings.json`. The folder holds the cluster's admin
    credentials and a registry token, so treat it as a secret while you copy it. Git ignores both.
-3. On the site machine, in a PowerShell 7 window, run:
+3. On the management machine, in a PowerShell 7 window, run:
 
    ```powershell
    ./scripts/up.ps1 -Target AzureLocal -Stage Site
    ```
 
    This installs and deploys everything on the cluster, then deletes the credentials from the
-   folder. The site machine needs PowerShell 7, `kubectl`, Helm and the Radius CLI, but no Azure
+   folder. This machine needs PowerShell 7, `kubectl`, Helm and the Radius CLI, but no Azure
    sign-in.
 
 To ship a new version the same way, run `./scripts/deploy.ps1 -Target AzureLocal -Stage Azure` on
-the first machine, copy `scripts/.handover` across again, and run `-Stage Site` on the site machine.
+the first machine, copy `scripts/.handover` across again, and run `-Stage Site` on the management
+machine.
 
 **While the site is cut off from Azure**, the app keeps running, and you can redeploy the last
-version you copied to the site machine with `-Stage Site`. Creating clusters and publishing new
-versions need Azure, so they wait until the link is back.
+version you copied to the management machine with `-Stage Site`. Creating clusters and publishing
+new versions need Azure, so they wait until the link is back.
 
 To see or run each piece yourself, without the scripts, see [Set up by hand](./docs/setup-by-hand.md).
 ## Portability patterns in this sample

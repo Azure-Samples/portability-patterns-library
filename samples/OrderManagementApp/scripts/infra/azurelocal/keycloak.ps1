@@ -33,10 +33,14 @@
 
 .PARAMETER SpaOrigin
     Address users open the app at, such as https://orders.contoso.local. Sign-in redirects back to it.
+    Omit to use https://<ingress address>, read from the ingress controller provision-ingress.ps1
+    installed.
 
 .PARAMETER Registry
-    Registry holding the mirrored Keycloak and PostgreSQL images, normally the in-cluster connected registry.
-    Omit to pull from the public registries, which only works where the cluster has internet.
+    Registry holding the mirrored Keycloak and PostgreSQL images, normally the in-cluster connected
+    registry. Omit to read it from the image pull secret in -ImagePullSecretSourceNamespace; with no
+    such secret, the images come from the public registries, which only works where the cluster has
+    internet.
 
 .PARAMETER UseLdaps
     Bind to the directory over LDAPS on 636, which is the default. The certificate comes from the
@@ -50,8 +54,7 @@
     refreshes.
 
 .EXAMPLE
-    ./scripts/infra/azurelocal/keycloak.ps1 -AdServer dc01.azurelocal.lab -AdDomain azurelocal.lab `
-        -SpaOrigin https://192.168.44.200 -Registry 10.96.0.50 -AllowInClusterIssuer
+    ./scripts/infra/azurelocal/keycloak.ps1 -AdServer dc01.contoso.local -AdDomain contoso.local -AllowInClusterIssuer
 #>
 [CmdletBinding()]
 param(
@@ -59,7 +62,7 @@ param(
     [string]$AdDomain = 'azurelocal.lab',
     [string]$AdOuName = 'OMS',
     [switch]$UseLdaps = $true,
-    [Parameter(Mandatory = $true)][string]$SpaOrigin,
+    [string]$SpaOrigin,
 
     [string]$KubeContext = 'bcd-aksarc',
 
@@ -81,6 +84,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
+. (Join-Path $repoRoot 'scripts/lib/cluster.ps1')
 
 # Names fixed by the files in infra/azurelocal/keycloak.
 $Namespace = 'identity'
@@ -218,6 +222,20 @@ try {
 
     Invoke-Checked 'kubectl cluster-info' {
         kubectl cluster-info --context $KubeContext --request-timeout=30s | Out-Null
+    }
+
+    # Addresses the cluster already knows, unless given.
+    if (-not $SpaOrigin) {
+        $ingressAddress = Get-OmsIngressAddress $KubeContext
+        if (-not $ingressAddress) {
+            throw 'No -SpaOrigin, and no ingress address to derive it from. Run scripts/infra/azurelocal/provision-ingress.ps1 first, or pass -SpaOrigin.'
+        }
+        $SpaOrigin = "https://$ingressAddress"
+        Write-Host "==> App origin $SpaOrigin (the ingress address)" -ForegroundColor DarkGray
+    }
+    if (-not $Registry) {
+        $Registry = Get-OmsPullRegistry $KubeContext $ImagePullSecretSourceNamespace $ImagePullSecretName
+        if ($Registry) { Write-Host "==> Images from the connected registry $Registry" -ForegroundColor DarkGray }
     }
 
     kubectl --context $KubeContext create namespace $Namespace `
@@ -552,6 +570,10 @@ data:
     }
     Write-Host "    secret/$WorkloadCaSecretName" -ForegroundColor DarkGray
 
+    # Sign-in sends the browser to Keycloak, so browsers have to trust the CA behind its certificate.
+    $identityCaFile = Join-Path $repoRoot 'oms-identity-ca.crt'
+    [IO.File]::WriteAllText($identityCaFile, $keycloakCert)
+
     Write-Host "`n================ Identity ready ================" -ForegroundColor Green
     Write-Host "Keycloak realm   : $issuerUrl"
     Write-Host "Directory        : ${ldapScheme}://${AdServer}:${ldapPort} ($usersDn)"
@@ -569,6 +591,9 @@ data:
     Write-Host ''
     Write-Host 'The pod gets that assertion from a projected volume, not from a stored secret:' -ForegroundColor DarkGray
     Write-Host "  serviceAccountToken: { audience: '$issuerUrl', path: token, expirationSeconds: 600 }"
+    Write-Host ''
+    Write-Host 'Trust the identity CA on a machine outside the domain (once; it shows a confirmation prompt):'
+    Write-Host "  Import-Certificate -FilePath $identityCaFile -CertStoreLocation Cert:\CurrentUser\Root"
 }
 finally {
     Pop-Location

@@ -13,9 +13,9 @@
 
       * Push registry  - the Premium ACR in Azure (<acr-name>.azurecr.io). Images are built
                          and Recipes published here, from this machine.
-      * Pull registry  - the connected registry ClusterIP (10.96.0.50). Kubelet and the Radius
-                         control plane pull from here. It syncs from the push registry while the
-                         link is up and keeps serving what it has when it is not.
+      * Pull registry  - the connected registry's ClusterIP inside the cluster. Kubelet and the
+                         Radius control plane pull from here. It syncs from the push registry while
+                         the link is up and keeps serving what it has when it is not.
 
     Prerequisite: ./scripts/setup-platform.ps1 -Target AzureLocal (cluster, image mirror, connected
     registry, Keycloak, ingress and the orders app's sign-in registration). Usually run through
@@ -53,8 +53,9 @@ param(
     [string]$RegistryResourceGroup = 'bcd-azurelocal',
     [string]$KubeContext = 'bcd-aksarc',
 
-    # Connected registry address, its pull secret and CA, as written by connected-registry.ps1.
-    [string]$PullRegistry = '10.96.0.50',
+    # Connected registry address, its pull secret and CA, as written by connected-registry.ps1. An
+    # empty address is read from the pull secret.
+    [string]$PullRegistry,
     [string]$ImagePullSecretName = 'azurelocal-registry',
     [string]$RegistryCaConfigMapName = 'azurelocal-registry-ca',
     [int]$SyncTimeoutMinutes = 20,
@@ -116,6 +117,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 . (Join-Path $repoRoot 'scripts/lib/recipes.ps1')
+. (Join-Path $repoRoot 'scripts/lib/cluster.ps1')
 Push-Location $repoRoot
 
 function Invoke-Checked {
@@ -174,6 +176,10 @@ try {
         # ------------------------------------------------------------------------------------------
         # Connected registry credentials and CA, kept in the cluster by connected-registry.ps1.
         # ------------------------------------------------------------------------------------------
+        if (-not $PullRegistry) { $PullRegistry = Get-OmsPullRegistry $KubeContext $Namespace $ImagePullSecretName }
+        if (-not $PullRegistry) {
+            throw "Pull secret '$ImagePullSecretName' is missing from '$Namespace'. Run scripts/infra/azurelocal/connected-registry.ps1 -Stage Site first."
+        }
         $dockerConfigEncoded = kubectl get secret $ImagePullSecretName --context $KubeContext --namespace $Namespace `
             --ignore-not-found --output 'jsonpath={.data.\.dockerconfigjson}'
         if ([string]::IsNullOrWhiteSpace($dockerConfigEncoded)) {

@@ -36,31 +36,29 @@
       "AzureLocalResourceGroup": "<azure-local-resource-group>",
       "CustomLocationName": "<azure-local-custom-location>",
       "VmSwitchName": "<vm-switch-name>",
-      "AddressPrefix": "192.168.44.0/24",
-      "Gateway": "192.168.44.1",
-      "DnsServers": [ "192.168.44.10" ],
-      "IpPoolStart": "192.168.44.121",
-      "IpPoolEnd": "192.168.44.180",
-      "ControlPlaneIp": "192.168.44.120",
-      "LoadBalancerAddresses": "192.168.44.200-192.168.44.210"
+      "AddressPrefix": "<node-subnet-cidr>",
+      "Gateway": "<subnet-gateway>",
+      "DnsServers": [ "<active-directory-dns-server>" ],
+      "IpPoolStart": "<first-node-address>",
+      "IpPoolEnd": "<last-node-address>",
+      "ControlPlaneIp": "<free-address-outside-the-node-pool>",
+      "LoadBalancerAddresses": "<first-address>-<last-address>"
     },
     "Images": {
       "Mode": "Mirror",
       "Registry": "<acr-name>.azurecr.io"
     },
-    "Registry": {},
+    "Registry": {
+      "ServiceClusterIp": "<unused-address-in-the-cluster-service-range>"
+    },
     "Keycloak": {
       "AdServer": "<domain-controller-fqdn>",
       "AdDomain": "<ad-domain>",
-      "SpaOrigin": "https://192.168.44.200",
-      "Registry": "10.96.0.50",
       "ImagePullSecretSourceNamespace": "oms-azurelocal",
       "WorkloadNamespace": "oms-azurelocal",
       "AllowInClusterIssuer": true
     },
-    "Ingress": {
-      "IngressIp": "192.168.44.200"
-    },
+    "Ingress": {},
     "Deploy": {}
   }
 }

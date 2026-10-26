@@ -10,10 +10,11 @@
 
       1. The Arc load balancer (MetalLB, ARP mode) comes from infra/azurelocal/platform.bicep, with
          its address range outside the AKS logical network pool.
-      2. Installs the ingress-nginx controller from the connected registry, on the fixed address
-         -IngressIp from that range, so it keeps serving if Azure is unreachable. The Helm values
-         are in infra/azurelocal/ingress-nginx/values.yaml; this script sets only the site values.
-      3. Issues a TLS certificate for -IngressIp and -HostNames from a site CA kept in the
+      2. Installs the ingress-nginx controller from the connected registry, so it keeps serving if
+         Azure is unreachable. The load balancer gives it the first free address of its range and
+         later runs keep that address; pass -IngressIp to choose one. The Helm values are in
+         infra/azurelocal/ingress-nginx/values.yaml; this script sets only the site values.
+      3. Issues a TLS certificate for the ingress address and -HostNames from a site CA kept in the
          cluster, into Secret -TlsSecretName in the application namespace. Browsers need HTTPS:
          MSAL.js only runs in a secure context.
 
@@ -31,25 +32,27 @@
 [CmdletBinding()]
 param(
     [string]$KubeContext = 'bcd-aksarc',
-    [string]$IngressIp = '192.168.44.200',
+    # An address from the load balancer's range. Empty keeps the current one, or takes the first free.
+    [string]$IngressIp,
     [string[]]$HostNames = @('orders.azurelocal.lab'),
     [string]$IngressNamespace = 'ingress-nginx',
     [string]$IngressClassName = 'nginx',
     [string]$ChartVersion = '4.15.1',
     [string]$ControllerTag = 'v1.15.1',
     [string]$WebhookCertgenTag = 'v1.6.9',
-    [string]$PullRegistry = '10.96.0.50',
+    # The connected registry's address. Empty reads it from the pull secret connected-registry.ps1 wrote.
+    [string]$PullRegistry,
     [string]$PullSecretName = 'azurelocal-registry',
     [string]$ApplicationNamespace = 'oms-azurelocal',
     [string]$TlsSecretName = 'oms-app-tls',
     [string]$CaSecretName = 'bcd-site-ca',
     [string]$CaCommonName = 'BCD Azure Local Site CA',
-    [string]$IdentityCaSecretName = 'oms-identity-ca',
     [int]$CertificateDays = 365
 )
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
+. (Join-Path $repoRoot 'scripts/lib/cluster.ps1')
 Push-Location $repoRoot
 
 function Invoke-Checked([string]$What, [scriptblock]$Command) {
@@ -79,10 +82,20 @@ data:
 }
 
 try {
+    if (-not $PullRegistry) {
+        $PullRegistry = Get-OmsPullRegistry $KubeContext $ApplicationNamespace $PullSecretName
+        if (-not $PullRegistry) {
+            throw "No pull secret '$PullSecretName' in '$ApplicationNamespace' to read the connected registry's address from. Run scripts/infra/azurelocal/connected-registry.ps1 -Stage Site first, or pass -PullRegistry."
+        }
+    }
+    # Keep the address the app already has, so re-running never moves it.
+    if (-not $IngressIp) { $IngressIp = Get-OmsIngressAddress $KubeContext $IngressNamespace }
+
     # ------------------------------------------------------------------------------------------
     # 1. Ingress controller, pulled from the connected registry
     # ------------------------------------------------------------------------------------------
-    Write-Host "==> Installing ingress-nginx $ChartVersion on $IngressIp" -ForegroundColor Cyan
+    $where = if ($IngressIp) { "on $IngressIp" } else { 'on the first free load balancer address' }
+    Write-Host "==> Installing ingress-nginx $ChartVersion $where" -ForegroundColor Cyan
     Invoke-Checked 'helm repo add' { helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx --force-update | Out-Null }
     # infra/azurelocal/ingress-nginx/values.yaml holds the settings; only the site values are set here.
     $values = Join-Path $repoRoot 'infra/azurelocal/ingress-nginx/values.yaml'
@@ -92,10 +105,11 @@ try {
         '--set', "controller.image.tag=$ControllerTag",
         '--set', "controller.ingressClassResource.name=$IngressClassName",
         '--set', "controller.extraArgs.default-ssl-certificate=$ApplicationNamespace/$TlsSecretName",
-        '--set', "controller.service.annotations.metallb\.io/loadBalancerIPs=$IngressIp",
         '--set', "controller.admissionWebhooks.patch.image.registry=$PullRegistry",
         '--set', "controller.admissionWebhooks.patch.image.tag=$WebhookCertgenTag"
     )
+    # MetalLB refuses a Service that also sets spec.loadBalancerIP, so a chosen address goes in its annotation.
+    if ($IngressIp) { $siteValues += '--set', "controller.service.annotations.metallb\.io/loadBalancerIPs=$IngressIp" }
     # Kubelet retries the pull until the connected registry has the images, hence the long wait.
     Invoke-Checked 'helm upgrade --install ingress-nginx' {
         helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx --version $ChartVersion `
@@ -103,9 +117,14 @@ try {
             --values $values @siteValues --wait --timeout 20m
     }
 
-    $assigned = kubectl get service ingress-nginx-controller -n $IngressNamespace --context $KubeContext `
-        -o 'jsonpath={.status.loadBalancer.ingress[0].ip}'
-    if ($assigned -ne $IngressIp) { throw "The ingress controller got address '$assigned', expected $IngressIp." }
+    $assigned = $null
+    for ($attempt = 0; $attempt -lt 24 -and -not $assigned; $attempt++) {
+        $assigned = Get-OmsIngressAddress $KubeContext $IngressNamespace
+        if (-not $assigned) { Start-Sleep -Seconds 5 }
+    }
+    if (-not $assigned) { throw 'The ingress controller got no address. Check that the cluster has a load balancer with free addresses.' }
+    if ($IngressIp -and $assigned -ne $IngressIp) { throw "The ingress controller got address '$assigned', expected $IngressIp." }
+    $IngressIp = $assigned
 
     # ------------------------------------------------------------------------------------------
     # 2. Site CA and the application's TLS certificate
@@ -168,18 +187,12 @@ try {
         Write-Host "    current certificate still valid until $($current.NotAfter.ToString('yyyy-MM-dd'))" -ForegroundColor DarkGray
     }
 
-    $caFiles = @(Join-Path $repoRoot 'bcd-site-ca.crt')
-    [IO.File]::WriteAllText($caFiles[0], $caCertPem)
-    # Sign-in redirects the browser to Keycloak, whose certificate comes from the identity CA.
-    $identityCaPem = Get-SecretData $ApplicationNamespace $IdentityCaSecretName 'ca.crt'
-    if ($identityCaPem) {
-        $caFiles += Join-Path $repoRoot 'oms-identity-ca.crt'
-        [IO.File]::WriteAllText($caFiles[1], $identityCaPem)
-    }
+    $caFile = Join-Path $repoRoot 'bcd-site-ca.crt'
+    [IO.File]::WriteAllText($caFile, $caCertPem)
 
     Write-Host "`nIngress ready: https://$IngressIp  (class '$IngressClassName', TLS secret '$ApplicationNamespace/$TlsSecretName')" -ForegroundColor Green
-    Write-Host "Trust the site CAs on a machine outside the domain (once, each shows a confirmation prompt):"
-    foreach ($file in $caFiles) { Write-Host "  Import-Certificate -FilePath $file -CertStoreLocation Cert:\CurrentUser\Root" }
+    Write-Host "Trust the site CA on a machine outside the domain (once; it shows a confirmation prompt):"
+    Write-Host "  Import-Certificate -FilePath $caFile -CertStoreLocation Cert:\CurrentUser\Root"
     Write-Host "Opening the .crt and leaving the store on 'automatic' files it under Intermediate CAs, which browsers do not trust." -ForegroundColor DarkGray
 }
 finally {

@@ -56,8 +56,10 @@ param(
     [string]$ConnectedRegistryName = 'bcdazlocalcr',
     [string]$ExtensionName = 'bcd-connected-registry',
 
-    # Must fall inside the cluster's service CIDR and be unused. preflight.ps1 checks it.
-    [string]$ServiceClusterIp = '10.96.0.50',
+    # The registry's address inside the cluster: an unused address in the cluster's service range
+    # (10.96.0.0/12 on AKS enabled by Arc). The Azure stage needs it, since the registry's
+    # certificate is issued for it; the Site stage reads it from the cluster. preflight.ps1 checks it.
+    [string]$ServiceClusterIp,
     [string]$StorageRequest = '40Gi',
     # Storage class for the registry's volume: the one AKS enabled by Arc creates.
     [string]$StorageClassName = 'default',
@@ -133,6 +135,9 @@ $handoverFile = Join-Path $HandoverPath 'registry-pull-credential.json'
 
 try {
     if ($Stage -eq 'Azure') {
+        if (-not $ServiceClusterIp -or $ServiceClusterIp -like '<*') {
+            throw "Set ServiceClusterIp in the Registry settings: an unused address in the cluster's service range (10.96.0.0/12 on AKS enabled by Arc)."
+        }
         $registryLoginServer = az acr show --name $RegistryName --resource-group $ResourceGroup --query loginServer --output tsv
         if ($LASTEXITCODE -ne 0 -or -not $registryLoginServer) { throw "Registry '$RegistryName' not found in '$ResourceGroup'." }
         $storageClass = $StorageClassName
@@ -239,6 +244,14 @@ try {
 
     Write-Host "==> Checking the cluster is reachable" -ForegroundColor Cyan
     Invoke-Checked 'kubectl cluster-info' { kubectl cluster-info --context $KubeContext --request-timeout=20s | Out-Null }
+
+    # The Service the extension created carries the address the Azure stage chose.
+    $registryService = kubectl get services --all-namespaces --context $KubeContext `
+        --field-selector "metadata.name=$ConnectedRegistryName" --output 'jsonpath={.items[0].spec.clusterIP}' 2>$null
+    if ($registryService) { $ServiceClusterIp = $registryService.Trim() }
+    if (-not $ServiceClusterIp) {
+        throw "No Service '$ConnectedRegistryName' in the cluster yet. Run the Azure stage first: ./scripts/setup-platform.ps1 -Target AzureLocal -Stage Azure"
+    }
 
     # ------------------------------------------------------------------------------------------
     # Pull secrets. The client token password lives only in the cluster, never in the repository.

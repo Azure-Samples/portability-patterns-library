@@ -160,32 +160,47 @@ if ($signedIn) {
 }
 
 # --- Network ------------------------------------------------------------------------------------
-Write-Host "`nNetwork" -ForegroundColor Cyan
-try {
-    $prefix = $s.AddressPrefix
-    $lbFirst, $lbLast = $s.LoadBalancerAddresses.Split('-')
-    $ingressIp = if ($s.IngressIp) { $s.IngressIp } else { $lbFirst }
+# The cluster's addresses come from the site's network plan. Only the Azure stage uses them.
+if ($checkAzure) {
+    Write-Host "`nNetwork" -ForegroundColor Cyan
+    $plan = 'AddressPrefix', 'Gateway', 'DnsServers', 'IpPoolStart', 'IpPoolEnd', 'ControlPlaneIp', 'LoadBalancerAddresses'
+    $missing = @($plan | Where-Object { $value = @($s[$_]) -join ','; -not $value -or $value -like '<*' })
+    if ($missing) {
+        Add-Result Network 'Network plan' FAIL "set $($missing -join ', ') in the Cluster settings, from your site's network plan"
+    }
+    else {
+        try {
+            $prefix = $s.AddressPrefix
+            $lbFirst, $lbLast = $s.LoadBalancerAddresses.Split('-')
 
-    foreach ($pair in @(@('Gateway', $s.Gateway), @('Node pool start', $s.IpPoolStart), @('Node pool end', $s.IpPoolEnd),
-            @('Control plane', $s.ControlPlaneIp), @('Load balancer range', $lbFirst), @('Load balancer range', $lbLast))) {
-        if (Test-InSubnet $pair[1] $prefix) { continue }
-        Add-Result Network "$($pair[0]) in $prefix" FAIL "$($pair[1]) is outside the subnet"
+            foreach ($pair in @(@('Gateway', $s.Gateway), @('Node pool start', $s.IpPoolStart), @('Node pool end', $s.IpPoolEnd),
+                    @('Control plane', $s.ControlPlaneIp), @('Load balancer range', $lbFirst), @('Load balancer range', $lbLast))) {
+                if (Test-InSubnet $pair[1] $prefix) { continue }
+                Add-Result Network "$($pair[0]) in $prefix" FAIL "$($pair[1]) is outside the subnet"
+            }
+
+            if (Test-InRange $s.ControlPlaneIp $s.IpPoolStart $s.IpPoolEnd) { Add-Result Network 'Control plane outside node pool' FAIL "$($s.ControlPlaneIp) is inside $($s.IpPoolStart)-$($s.IpPoolEnd)" }
+            else { Add-Result Network 'Control plane outside node pool' PASS $s.ControlPlaneIp }
+
+            if ((Test-InRange $lbFirst $s.IpPoolStart $s.IpPoolEnd) -or (Test-InRange $lbLast $s.IpPoolStart $s.IpPoolEnd) -or
+                (Test-InRange $s.IpPoolStart $lbFirst $lbLast)) { Add-Result Network 'Load balancer outside node pool' FAIL "$($s.LoadBalancerAddresses) overlaps the node pool" }
+            else { Add-Result Network 'Load balancer outside node pool' PASS $s.LoadBalancerAddresses }
+
+            if (-not $s.IngressIp) { Add-Result Network 'Ingress address' PASS "the first free address of $($s.LoadBalancerAddresses)" }
+            elseif (Test-InRange $s.IngressIp $lbFirst $lbLast) { Add-Result Network 'Ingress address in load balancer range' PASS $s.IngressIp }
+            else { Add-Result Network 'Ingress address in load balancer range' FAIL "$($s.IngressIp) is outside $($s.LoadBalancerAddresses)" }
+        }
+        catch {
+            Add-Result Network 'Addresses' FAIL "can't parse the address settings: $($_.Exception.Message)"
+        }
     }
 
-    if (Test-InRange $s.ControlPlaneIp $s.IpPoolStart $s.IpPoolEnd) { Add-Result Network 'Control plane outside node pool' FAIL "$($s.ControlPlaneIp) is inside $($s.IpPoolStart)-$($s.IpPoolEnd)" }
-    else { Add-Result Network 'Control plane outside node pool' PASS $s.ControlPlaneIp }
-
-    if ((Test-InRange $lbFirst $s.IpPoolStart $s.IpPoolEnd) -or (Test-InRange $lbLast $s.IpPoolStart $s.IpPoolEnd) -or
-        (Test-InRange $s.IpPoolStart $lbFirst $lbLast)) { Add-Result Network 'Load balancer outside node pool' FAIL "$($s.LoadBalancerAddresses) overlaps the node pool" }
-    else { Add-Result Network 'Load balancer outside node pool' PASS $s.LoadBalancerAddresses }
-
-    if (Test-InRange $ingressIp $lbFirst $lbLast) { Add-Result Network 'Ingress address in load balancer range' PASS $ingressIp }
-    else { Add-Result Network 'Ingress address in load balancer range' FAIL "$ingressIp is outside $($s.LoadBalancerAddresses)" }
+    # The registry's certificate is issued for this address when the Azure stage installs it.
+    if (-not $s.ServiceClusterIp -or $s.ServiceClusterIp -like '<*') {
+        Add-Result Network 'Registry ClusterIP' FAIL "set ServiceClusterIp in the Registry settings: an unused address in the cluster's service range"
+    }
+    else { Add-Result Network 'Registry ClusterIP' PASS "$($s.ServiceClusterIp); the Site stage checks it against the cluster" }
 }
-catch {
-    Add-Result Network 'Addresses' FAIL "can't parse the address settings: $($_.Exception.Message)"
-}
-
 # --- Directory ----------------------------------------------------------------------------------
 $dns = @($s.DnsServers)[0]
 if (-not $checkSite) {
@@ -197,13 +212,16 @@ elseif (-not $s.AdServer -or $s.AdServer -like '<*') {
 }
 else {
     Write-Host "`nDirectory" -ForegroundColor Cyan
+    # Through the DNS server the cluster nodes use when the settings name it, else this machine's.
     $resolved = $null
+    $through = if ($dns) { $dns } else { "this machine's DNS" }
     if (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue) {
-        $resolved = Resolve-DnsName -Name $s.AdServer -Server $dns -Type A -DnsOnly -QuickTimeout -ErrorAction SilentlyContinue |
+        $server = if ($dns) { @{ Server = $dns } } else { @{} }
+        $resolved = Resolve-DnsName -Name $s.AdServer @server -Type A -DnsOnly -QuickTimeout -ErrorAction SilentlyContinue |
             Where-Object IPAddress | Select-Object -First 1
     }
-    if ($resolved) { Add-Result Directory "Resolves through $dns" PASS "$($s.AdServer) -> $($resolved.IPAddress)" }
-    else { Add-Result Directory "Resolves through $dns" WARN "$($s.AdServer) didn't resolve from here; the cluster nodes use $dns and must resolve it" }
+    if ($resolved) { Add-Result Directory "Resolves through $through" PASS "$($s.AdServer) -> $($resolved.IPAddress)" }
+    else { Add-Result Directory "Resolves through $through" WARN "$($s.AdServer) didn't resolve from here; the cluster nodes must resolve it through the DNS servers of their logical network" }
 
     # The address the site's DNS returned, which is what the cluster nodes will use; this machine's
     # own resolver may not know the site's domain.
@@ -238,16 +256,25 @@ else {
         }
         else { Add-Result Cluster 'Registry storage class' FAIL "'$($s.StorageClassName)' not found; set StorageClassName in the Registry settings (kubectl get storageclass)" }
 
+        # The configured address, or the one the connected registry already serves on.
+        $registryIp = if ($s.ServiceClusterIp -and $s.ServiceClusterIp -notlike '<*') { $s.ServiceClusterIp }
+        else {
+            kubectl --context $s.KubeContext get services --all-namespaces --field-selector "metadata.name=$($s.ConnectedRegistryName)" `
+                --output 'jsonpath={.items[0].spec.clusterIP}' 2>$null
+        }
         $kubernetesServiceIp = kubectl --context $s.KubeContext get service kubernetes --namespace default --output 'jsonpath={.spec.clusterIP}' 2>$null
         $taken = kubectl --context $s.KubeContext get services --all-namespaces --output json 2>$null | ConvertFrom-Json |
-            Select-Object -ExpandProperty items | Where-Object { $_.spec.clusterIP -eq $s.ServiceClusterIp } | Select-Object -First 1
-        if (-not $kubernetesServiceIp -or -not $s.ServiceClusterIp.StartsWith((($kubernetesServiceIp -split '\.')[0..1] -join '.') + '.')) {
-            Add-Result Cluster 'Registry ClusterIP' FAIL "$($s.ServiceClusterIp) doesn't look like it is in the service CIDR (the 'kubernetes' service is '$kubernetesServiceIp')"
+            Select-Object -ExpandProperty items | Where-Object { $_.spec.clusterIP -eq $registryIp } | Select-Object -First 1
+        if (-not $registryIp) {
+            Add-Result Cluster 'Registry ClusterIP' WARN 'no connected registry yet; the Azure stage installs it'
+        }
+        elseif (-not $kubernetesServiceIp -or -not $registryIp.StartsWith((($kubernetesServiceIp -split '\.')[0..1] -join '.') + '.')) {
+            Add-Result Cluster 'Registry ClusterIP' FAIL "$registryIp doesn't look like it is in the service range (the 'kubernetes' service is '$kubernetesServiceIp')"
         }
         elseif ($taken -and $taken.metadata.namespace -notlike '*connected-registry*') {
-            Add-Result Cluster 'Registry ClusterIP' FAIL "$($s.ServiceClusterIp) is taken by $($taken.metadata.namespace)/$($taken.metadata.name)"
+            Add-Result Cluster 'Registry ClusterIP' FAIL "$registryIp is taken by $($taken.metadata.namespace)/$($taken.metadata.name)"
         }
-        else { Add-Result Cluster 'Registry ClusterIP' PASS $s.ServiceClusterIp }
+        else { Add-Result Cluster 'Registry ClusterIP' PASS $registryIp }
 
         foreach ($secret in 'oms-ad-bind', 'oms-ad-ca') {
             if (kubectl --context $s.KubeContext -n identity get secret $secret --ignore-not-found --output name 2>$null) {

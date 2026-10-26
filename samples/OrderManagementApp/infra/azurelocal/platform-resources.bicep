@@ -13,6 +13,7 @@ param ipPoolEnd string
 param vlan int
 param clusterName string
 param controlPlaneIp string
+param podCidr string
 param controlPlaneCount int
 param controlPlaneVmSize string
 param nodeCount int
@@ -145,7 +146,7 @@ resource provisionedCluster 'Microsoft.HybridContainerService/provisionedCluster
     }
     networkProfile: {
       networkPolicy: 'calico'
-      podCidr: '10.244.0.0/16'
+      podCidr: podCidr
     }
     agentPoolProfiles: [
       {

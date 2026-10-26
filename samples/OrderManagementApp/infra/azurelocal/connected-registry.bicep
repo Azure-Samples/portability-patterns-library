@@ -49,8 +49,8 @@ param syncConnectionString string = ''
 @description('Name of the Arc extension.')
 param extensionName string = 'bcd-connected-registry'
 
-@description('ClusterIP the connected registry serves on. Must be unused and inside the service CIDR.')
-param serviceClusterIp string = '10.96.0.50'
+@description('ClusterIP the connected registry serves on. Must be unused and inside the cluster\'s service range.')
+param serviceClusterIp string
 
 @description('StorageClass of the connected registry volume.')
 param storageClassName string = 'default'

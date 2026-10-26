@@ -55,7 +55,7 @@ param switchSourceLogicalNetworkName string = ''
 @description('Name of the logical network for the AKS nodes.')
 param logicalNetworkName string = 'bcd-aks-lnet'
 
-@description('Address prefix of the node subnet, for example 192.168.44.0/24.')
+@description('Address prefix of the node subnet on the site network, in CIDR notation.')
 param addressPrefix string
 
 @description('Default gateway of the node subnet.')
@@ -78,6 +78,12 @@ param clusterName string = 'bcd-aksarc'
 
 @description('API server address. Must be in the subnet and outside the IP pool.')
 param controlPlaneIp string
+
+@description('''
+Address range for pods, used only inside the cluster. Defaults to the AKS enabled by Arc default;
+change it only if it overlaps a network the pods must reach.
+''')
+param podCidr string = '10.244.0.0/16'
 
 @description('Number of control plane nodes.')
 @allowed([
@@ -113,8 +119,8 @@ param adminGroupMemberIds array = []
 param loadBalancerName string = 'bcd-lb'
 
 @description('''
-Address range the load balancer hands out on the site network, for example
-192.168.44.200-192.168.44.210. Must be outside the node IP pool. Empty skips the load balancer.
+Address range the load balancer hands out on the site network, as <first>-<last>. Must be in the
+subnet and outside the node IP pool. Empty skips the load balancer.
 ''')
 param loadBalancerAddresses string = ''
 
@@ -182,6 +188,7 @@ module platform 'platform-resources.bicep' = {
     vlan: vlan
     clusterName: clusterName
     controlPlaneIp: controlPlaneIp
+    podCidr: podCidr
     controlPlaneCount: controlPlaneCount
     controlPlaneVmSize: controlPlaneVmSize
     nodeCount: nodeCount

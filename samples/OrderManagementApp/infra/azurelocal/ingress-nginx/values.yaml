@@ -14,7 +14,7 @@ imagePullSecrets:
 
 controller:
   image:
-    registry: 10.96.0.50                    # your connected registry's address
+    registry: <connected-registry-address>  # the connected registry's ClusterIP
     image: ingress-nginx/controller
     tag: v1.15.1
     digest: ""
@@ -26,14 +26,14 @@ controller:
     default-ssl-certificate: oms-azurelocal/oms-app-tls
   service:
     type: LoadBalancer
-    # An address from the Arc load balancer's range. MetalLB refuses a Service that also sets
-    # spec.loadBalancerIP, so it goes here only.
-    annotations:
-      metallb.io/loadBalancerIPs: 192.168.44.200   # your ingress address
+    # The Arc load balancer gives the Service the first free address of its range. To choose one,
+    # add it as an annotation; MetalLB refuses a Service that also sets spec.loadBalancerIP.
+    # annotations:
+    #   metallb.io/loadBalancerIPs: <address-from-the-load-balancer-range>
   admissionWebhooks:
     patch:
       image:
-        registry: 10.96.0.50                # your connected registry's address
+        registry: <connected-registry-address>  # the connected registry's ClusterIP
         image: ingress-nginx/kube-webhook-certgen
         tag: v1.6.9
         digest: ""

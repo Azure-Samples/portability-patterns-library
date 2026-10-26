@@ -180,5 +180,6 @@ When these exist, the Azure Local Recipe Pack passes them to the Recipes:
 ### Or use the script
 
 [ad-setup.ps1](../scripts/infra/azurelocal/ad-setup.ps1) does steps 1, 2 and 4 in one go, plus a test
-user, when the domain controller is a Hyper-V VM on the machine you run it from (it uses PowerShell
-Direct). To redo only step 4, run it with `-KerberosOnly`, then redeploy.
+user. Run it from the site's management machine with `-ComputerName <domain controller>`; it reaches
+the controller over PowerShell remoting (WinRM) and needs a domain administrator. To redo only step
+4, run it with `-KerberosOnly`, then redeploy.

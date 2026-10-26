@@ -91,9 +91,11 @@ ACR, one command per line:
 az acr import --name <acr-name> --source <source> --image <target>
 ```
 
-**3. Connected registry.** Deploy [connected-registry.bicep](../infra/azurelocal/connected-registry.bicep).
-It can't be done in one pass: the Arc extension needs a sync password, which only exists once the
-connected registry does. Deploy it, generate the sync token's password
+**3. Connected registry.** Deploy [connected-registry.bicep](../infra/azurelocal/connected-registry.bicep)
+with `serviceClusterIp` set to an unused address in the cluster's service range
+(`kubectl get service kubernetes` shows where it starts); the registry's certificate is issued for
+that address. It can't be done in one pass: the Arc extension needs a sync password, which only
+exists once the connected registry does. Deploy it, generate the sync token's password
 (`az acr token credential generate`), then deploy it again with the connection string.
 [connected-registry.ps1](../scripts/infra/azurelocal/connected-registry.ps1) does this in its Azure
 stage, and in its Site stage writes the `azurelocal-registry` pull secret into each namespace that
