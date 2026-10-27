@@ -34,11 +34,16 @@ flowchart LR
 | Database | Azure Database for PostgreSQL flexible server | PostgreSQL container |
 | App's sign-in to the database | Microsoft Entra workload identity | password, kept in a Kubernetes Secret |
 | API key | Key Vault, mounted by the Secrets Store CSI driver | Key Vault, synced into the cluster by the Secret Store extension |
-| Telemetry | Application Insights | Grafana on site |
+| Telemetry | Application Insights | Prometheus (metrics), Loki (logs) and Tempo (traces) in the cluster, viewed in Grafana |
 
 The app reads the API key from a file and sends OpenTelemetry to the address the platform gives it,
-so its code is the same on both. On Azure Local the key and the telemetry stay on site, so both keep
-working without Azure. A changed key reaches the site once the link is back.
+so its code is the same on both. On Azure Local the key and the telemetry stay on site, so the app
+keeps running and people keep seeing its dashboards without Azure. A changed key reaches the site
+once the link is back.
+
+Microsoft's own option for Azure Local, [Azure Monitor](https://learn.microsoft.com/azure/azure-monitor/containers/kubernetes-monitoring-enable-arc),
+stores telemetry in Azure, so its dashboards stop when the link is down. The sample keeps telemetry
+on site instead, with the open-source stack Grafana provides.
 
 ## API
 
@@ -67,7 +72,8 @@ cluster that sample sets up.
 docker compose up --build
 ```
 
-This starts the API, PostgreSQL and a Grafana stack. The local API key is `local-dev-key`.
+This starts the API, PostgreSQL and the same telemetry stack as on Azure Local (Prometheus, Loki,
+Tempo and Grafana). The local API key is `local-dev-key`.
 
 ## Try it
 
@@ -101,7 +107,7 @@ first. Then, on the same management machine:
 ./scripts/deploy.ps1 -Target AzureLocal
 ```
 
-It adds the Secret Store extension and the Grafana stack to the cluster, then deploys the app with
+It adds the Secret Store extension and the telemetry stack to the cluster, then deploys the app with
 PostgreSQL.
 
 ## Clean up
@@ -118,3 +124,4 @@ PostgreSQL.
 | [Microsoft Entra authentication for PostgreSQL](https://learn.microsoft.com/azure/postgresql/flexible-server/concepts-azure-ad-authentication) | how the app signs in on Azure |
 | [Key Vault Secret Store extension](https://learn.microsoft.com/azure/azure-arc/kubernetes/secret-store-extension) | Key Vault secrets on Azure Local, offline |
 | [OpenTelemetry for .NET](https://opentelemetry.io/docs/languages/dotnet/) | the telemetry the app emits |
+| [Grafana LGTM stack](https://github.com/grafana/docker-otel-lgtm) | Grafana, Loki, Tempo and Prometheus behind one OpenTelemetry endpoint |
