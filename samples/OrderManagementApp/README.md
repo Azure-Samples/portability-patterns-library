@@ -66,8 +66,11 @@ All commands run from this folder, `samples/OrderManagementApp`.
 
 **To deploy to Azure Local:**
 
-- An Azure Local instance connected to Azure, with its custom location and a running Arc resource
-  bridge.
+- An Azure Local instance, [deployed](https://learn.microsoft.com/azure/azure-local/deploy/deployment-introduction)
+  and connected to Azure, with its custom location and a running Arc resource bridge. See the
+  [system requirements](https://learn.microsoft.com/azure/azure-local/concepts/system-requirements-23h2).
+- Free capacity on the instance for the cluster: three VMs of 4 vCPUs and 8 GB each (one control
+  plane, two nodes), plus about 50 GB of storage for the in-cluster registry and Keycloak's database.
 - A management machine on the site network, not an Azure Local node, with the same tools as for
   Azure except azd. Microsoft recommends managing AKS on Azure Local from such a
   [client machine](https://learn.microsoft.com/azure/aks-hybrid-edge/local/aks-create-clusters-cli#install-the-azure-cli-extension)
@@ -95,6 +98,11 @@ Keycloak container can read the certificate.
 
 Open http://localhost:8080 and sign in as `demo`, password `demo`.
 
+The build downloads packages from nuget.org and images from mcr.microsoft.com, docker.io and quay.io.
+If your network blocks them, ask for access, or point the build at your own NuGet feed with a
+[NuGet.Config](https://learn.microsoft.com/nuget/reference/nuget-config-file) in this folder; the
+build uses it when it's there, and Git ignores it.
+
 ## Deploy to Azure
 
 ```powershell
@@ -112,6 +120,18 @@ address. Your account gets both app roles, so you can sign in and place orders s
 
 Settings for your subscription, if you need them, are listed at the top of
 [azure.yaml](./azure.yaml) (`azd env set ...`).
+
+If `azd up` fails because a VM size or service isn't available in your region
+([SkuNotAvailable](https://learn.microsoft.com/azure/azure-resource-manager/troubleshooting/error-sku-not-available)
+or a capacity error), pick another size or region, then run `azd up` again:
+
+```powershell
+azd env set AKS_NODE_VM_SIZE <size>   # the cluster's nodes, Standard_D4s_v7 by default
+azd env set SQL_LOCATION <region>     # Azure SQL only
+```
+
+To move everything to another region, start a new environment there: `azd env new <name> --location <region>`.
+List the VM sizes a region offers with `az vm list-skus --location <region> --resource-type virtualMachines -o table`.
 
 ## Deploy to Azure Local
 
@@ -146,7 +166,7 @@ az group delete --name bcd-azurelocal
 The cluster's Entra admin group and the objects `ad-setup.ps1` added to Active Directory stay;
 remove them by hand if you no longer need them.
 
-## Next steps
+## Understand how it works
 
 | | |
 |---|---|
