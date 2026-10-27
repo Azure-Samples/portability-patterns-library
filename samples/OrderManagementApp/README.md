@@ -6,7 +6,7 @@ Arc on Azure Local, where the app keeps running when the site loses its link to 
 
 Use it as a template for moving your own app: [Move your app in five steps](./docs/move-your-app.md).
 
-## What the app does
+## Architecture
 
 Users sign in to a browser app and place orders. The **API** publishes each order to a **queue**;
 the **processor** archives the order as JSON in **object storage** and records it in **SQL**.
@@ -43,19 +43,45 @@ flowchart LR
 The Azure Local column runs nothing in Azure at runtime. That is what lets the app keep working when
 the site is cut off from Azure.
 
-## Run it
+## Prerequisites
 
 All commands run from this folder, `samples/OrderManagementApp`.
 
-| Where | What you need | How long |
-|---|---|---|
-| [Your machine](#on-your-machine) | Docker or Podman, .NET 9 SDK | 10 minutes |
-| [Azure](#on-azure) | an Azure subscription | 20 minutes |
-| [Azure Local](#on-azure-local) | an Azure Local instance and its Active Directory | an afternoon, the first time |
+**To run the app locally:**
 
-### On your machine
+- [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0)
+- [Docker](https://docs.docker.com/get-docker/) or [Podman](https://podman.io/docs/installation)
 
-The app with RabbitMQ, SQL Server, Azurite and Keycloak in containers: the same services as on
+**To deploy to Azure:**
+
+- Owner on an Azure subscription (the template assigns roles), and the right to register apps in
+  Microsoft Entra ID.
+- [Azure Developer CLI](https://aka.ms/azd-install)
+- [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli), with `kubectl` and
+  `kubelogin` (`az aks install-cli`)
+- [Helm](https://helm.sh/docs/intro/install/)
+- [Radius CLI 0.60](https://docs.radapp.io/installation/)
+- [PowerShell 7](https://learn.microsoft.com/powershell/scripting/install/installing-powershell)
+- Docker or Podman
+
+**To deploy to Azure Local:**
+
+- An Azure Local instance connected to Azure, with its custom location and a running Arc resource
+  bridge.
+- A management machine on the site network, not an Azure Local node, with the same tools as for
+  Azure except azd. Microsoft recommends managing AKS on Azure Local from such a
+  [client machine](https://learn.microsoft.com/azure/aks-hybrid-edge/local/aks-create-clusters-cli#install-the-azure-cli-extension)
+  rather than from the nodes.
+- Free addresses on the site network for the cluster: its control plane, a pool for the nodes and a
+  small range for the load balancer.
+- The site's Active Directory, with the app's groups and a bind account for Keycloak. See
+  [Connect your Active Directory](./docs/authentication.md#connect-your-active-directory).
+- Contributor and User Access Administrator on the subscription, and the right to create groups in
+  Entra ID.
+
+## Run the app locally
+
+The app runs with RabbitMQ, SQL Server, Azurite and Keycloak in containers: the same services as on
 Azure Local, with no cluster and no Radius.
 
 ```powershell
@@ -67,15 +93,9 @@ docker compose up --build
 On Linux and macOS, also run `chmod 644 local/certs/localhost.*` before `docker compose up`, so the
 Keycloak container can read the certificate.
 
-Open http://localhost:8080 and sign in as `demo`, password `demo`. Stop it with `docker compose down`.
+Open http://localhost:8080 and sign in as `demo`, password `demo`.
 
-### On Azure
-
-**You need:** Owner on an Azure subscription (the template assigns roles), the right to register
-apps in Microsoft Entra ID, and these tools: [Azure Developer CLI](https://aka.ms/azd-install),
-[Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) with `kubectl` and `kubelogin`
-(`az aks install-cli`), [Helm](https://helm.sh/docs/intro/install/),
-[Radius CLI 0.60](https://docs.radapp.io/installation/), PowerShell 7, and Docker or Podman.
+## Deploy to Azure
 
 ```powershell
 azd auth login
@@ -91,24 +111,9 @@ ingress, registers the app in Entra ID, then builds and deploys the app. It prin
 address. Your account gets both app roles, so you can sign in and place orders straight away.
 
 Settings for your subscription, if you need them, are listed at the top of
-[azure.yaml](./azure.yaml) (`azd env set ...`). Remove everything with `azd down`.
+[azure.yaml](./azure.yaml) (`azd env set ...`).
 
-### On Azure Local
-
-**You need:**
-
-- An Azure Local instance connected to Azure, with its custom location and a running Arc resource
-  bridge.
-- A management machine on the site network, not an Azure Local node, with PowerShell 7 and the
-  tools for Azure above, except azd. Microsoft recommends managing AKS on Azure Local from such a
-  [client machine](https://learn.microsoft.com/azure/aks-hybrid-edge/local/aks-create-clusters-cli#install-the-azure-cli-extension)
-  rather than from the nodes.
-- Free addresses on the site network for the cluster: its control plane, a pool for the nodes and a
-  small range for the load balancer.
-- The site's Active Directory, with the app's groups and a bind account for Keycloak. See
-  [Connect your Active Directory](./docs/authentication.md#connect-your-active-directory).
-- Contributor and User Access Administrator on the subscription, and the right to create groups in
-  Entra ID.
+## Deploy to Azure Local
 
 On the management machine, copy [scripts/settings.example.json](./scripts/settings.example.json) to
 `scripts/settings.json`, fill in the `AzureLocal` section, then run:
@@ -123,7 +128,24 @@ time, trust the site's CA certificates with the commands it printed.
 
 To deploy a new version later, run `./scripts/deploy.ps1 -Target AzureLocal`.
 
-## Learn more
+## Clean up
+
+**Locally:** `docker compose down`.
+
+**Azure:** `azd down`. It deletes the resource group, including what the Recipes created in it, and
+the app registrations.
+
+**Azure Local:** delete the resource group the scripts created (`ResourceGroup` in the settings,
+`bcd-azurelocal` by default), which holds the cluster, the registry and the logical network:
+
+```powershell
+az group delete --name bcd-azurelocal
+```
+
+The cluster's Entra admin group and the objects `ad-setup.ps1` added to Active Directory stay;
+remove them by hand if you no longer need them.
+
+## Next steps
 
 | | |
 |---|---|
