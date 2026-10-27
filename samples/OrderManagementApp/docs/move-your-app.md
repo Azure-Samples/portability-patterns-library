@@ -1,6 +1,6 @@
 # Move your app in five steps
 
-The Order Management sample is a worked example of each step. Paths are relative to the sample
+The Order Management App is a worked example of each step. Paths are relative to the sample
 folder, [samples/OrderManagementApp](../).
 
 ## 1. Declare what the app needs, not which Azure service
@@ -55,17 +55,12 @@ return options.Provider switch
 };
 ```
 
-Everything else in the app sees only `IMessagePublisher` / `IMessageSubscriber`. Storage follows the
-same rule: a connection string means the on-site container, none means managed identity. SQL picks
-by the identity the platform attached to the pod, in this order: an Entra workload identity means an
-Entra token for Azure SQL, a Kerberos keytab means integrated authentication as the pod's Active
-Directory account, and otherwise the SQL login the connection carries
-([SqlOptions.cs](../src/OrderManagement.Shared/Configuration/SqlOptions.cs)).
-[compose.yaml](../compose.yaml) sets the same variables to run the app locally.
+Everything else in the app sees only `IMessagePublisher` / `IMessageSubscriber`. Storage and SQL work
+the same way; [How authentication works](./authentication.md#workloads) shows how each picks its
+credential. [compose.yaml](../compose.yaml) sets the same variables to run the app locally.
 
 Sign-in stays an ordinary Entra app: MSAL.js in the browser and Microsoft.Identity.Web in the API.
-On Azure Local, Keycloak issues tokens shaped like Entra's, so only settings change. See
-[How authentication works](./authentication.md).
+On Azure Local, Keycloak issues tokens shaped like Entra's, so only settings change.
 
 ## 3. Write one Recipe per resource for each platform
 
@@ -91,7 +86,6 @@ differs between platforms. An **Environment** is a deployment target that points
 | Recipes from | your ACR | the connected registry in the cluster |
 | Pod identity | service account + Entra Workload ID label | service account + Keycloak token and CA; Kerberos keytab for SQL |
 | Image pulls | AcrPull on the cluster | image pull secret |
-| Radius's stock secrets Recipe | from ghcr.io | mirrored into ACR and synced into the cluster |
 | Environment | [azure.bicep](../deploy/environments/azure.bicep): also names the subscription and resource group for PaaS resources | [azurelocal.bicep](../deploy/environments/azurelocal.bicep): no Azure settings |
 
 ## 5. Deploy the same app to either environment
