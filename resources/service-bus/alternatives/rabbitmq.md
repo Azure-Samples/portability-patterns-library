@@ -16,7 +16,8 @@
 | Max delivery count and dead-letter queue | [Quorum queue](https://www.rabbitmq.com/docs/quorum-queues) delivery limit and a [dead-letter exchange](https://www.rabbitmq.com/docs/dlx) | Not automatic on classic queues: a failing message is redelivered indefinitely. |
 | Message ID, content type, subject | `message_id`, `content_type`, `type` properties | |
 | Sessions, scheduled messages, duplicate detection | No built-in equivalent | Handle them in the application, or use a plugin. |
-| Entra ID authentication | [OAuth 2.0 plugin](https://www.rabbitmq.com/docs/oauth2) with your identity provider, or username and password | The access token is sent as the password. The broker closes the connection when the token expires, so the client reconnects with a new one. |
+| Shared access key (connection string) | Username and password | Stored in a Kubernetes Secret; the sample's Recipe generates them when no identity provider is set. |
+| Entra ID with workload identity federation | [OAuth 2.0 plugin](https://www.rabbitmq.com/docs/oauth2) with your own identity provider | The pod's service account token is exchanged for an access token, which is sent as the password. The broker closes the connection when the token expires, so the client reconnects with a new one. |
 
 RabbitMQ 4.0 and later also speak [AMQP 1.0](https://www.rabbitmq.com/docs/amqp), the protocol Service Bus uses. That doesn't make the Service Bus SDK a drop-in client: addresses, authentication and management operations differ. This project didn't evaluate it.
 
