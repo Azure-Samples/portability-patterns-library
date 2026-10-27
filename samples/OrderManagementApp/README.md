@@ -151,4 +151,3 @@ remove them by hand if you no longer need them.
 |---|---|
 | [Move your app in five steps](./docs/move-your-app.md) | resource types, connections, Recipes, Recipe Packs, environments |
 | [How authentication works](./docs/authentication.md) | user sign-in, the app's access to its services, connecting Active Directory |
-| [Configuration](./docs/configuration.md) | the environment variables the app reads |
