@@ -34,16 +34,36 @@ flowchart LR
 | Database | Azure Database for PostgreSQL flexible server | PostgreSQL container |
 | App's sign-in to the database | Microsoft Entra workload identity | password, kept in a Kubernetes Secret |
 | API key | Key Vault, mounted by the Secrets Store CSI driver | Key Vault, synced into the cluster by the Secret Store extension |
-| Telemetry | Application Insights | Prometheus (metrics), Loki (logs) and Tempo (traces) in the cluster, viewed in Grafana |
+| Telemetry | Application Insights | an observability stack in the cluster (below) |
 
 The app reads the API key from a file and sends OpenTelemetry to the address the platform gives it,
 so its code is the same on both. On Azure Local the key and the telemetry stay on site, so the app
 keeps running and people keep seeing its dashboards without Azure. A changed key reaches the site
 once the link is back.
 
-Microsoft's own option for Azure Local, [Azure Monitor](https://learn.microsoft.com/azure/azure-monitor/containers/kubernetes-monitoring-enable-arc),
-stores telemetry in Azure, so its dashboards stop when the link is down. The sample keeps telemetry
-on site instead, with the open-source stack Grafana provides.
+## Observability on Azure Local
+
+The site has to keep watching the app when the link to Azure is down, so its telemetry is stored and
+viewed in the cluster. Each part is the standard open-source project, installed from its own Helm
+chart with persistent storage:
+
+| Job | Component |
+|---|---|
+| Collect | [OpenTelemetry Collector](https://opentelemetry.io/docs/platforms/kubernetes/helm/collector/): a gateway that receives the app's telemetry, and an agent on each node for pod logs and node metrics |
+| Metrics and alerts | [kube-prometheus-stack](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack): Prometheus, and Alertmanager to send alerts such as low stock to email or Teams |
+| Logs | [Loki](https://grafana.com/docs/loki/latest/setup/install/helm/) |
+| Traces | [Tempo](https://grafana.com/docs/tempo/latest/setup/helm-chart/) |
+| Dashboards | Grafana, signed in to with the site's Active Directory accounts through Keycloak |
+
+While the link is up, Prometheus can also send its metrics to an
+[Azure Monitor workspace](https://learn.microsoft.com/azure/azure-monitor/containers/kubernetes-monitoring-enable-arc),
+for one view across all sites.
+
+Before running it in production, size it for your site: how long to keep metrics, logs and traces,
+the disk that needs, and backups of Grafana's dashboards and alert rules. Loki and Tempo store data
+on a persistent volume, which suits one site; running them highly available needs an S3-compatible
+object store on site. Customers who already run their own tools, such as Elastic or Splunk, can point
+the app's OpenTelemetry there instead: the app doesn't change.
 
 ## API
 
@@ -72,8 +92,8 @@ cluster that sample sets up.
 docker compose up --build
 ```
 
-This starts the API, PostgreSQL and the same telemetry components as on Azure Local: an OpenTelemetry
-Collector, Prometheus, Loki, Tempo and Grafana. The local API key is `local-dev-key`.
+This starts the API, PostgreSQL, and the same observability components as on Azure Local. The local
+API key is `local-dev-key`.
 
 ## Try it
 
@@ -107,10 +127,8 @@ first. Then, on the same management machine:
 ./scripts/deploy.ps1 -Target AzureLocal
 ```
 
-It adds the Secret Store extension and the telemetry stack to the cluster, each part from its own Helm
-chart with persistent storage: an OpenTelemetry Collector, Prometheus, Loki, Tempo and Grafana. Then
-it deploys the app with
-PostgreSQL.
+It adds the Secret Store extension and the [observability stack](#observability-on-azure-local) to
+the cluster, then deploys the app with PostgreSQL.
 
 ## Clean up
 
@@ -126,4 +144,3 @@ PostgreSQL.
 | [Microsoft Entra authentication for PostgreSQL](https://learn.microsoft.com/azure/postgresql/flexible-server/concepts-azure-ad-authentication) | how the app signs in on Azure |
 | [Key Vault Secret Store extension](https://learn.microsoft.com/azure/azure-arc/kubernetes/secret-store-extension) | Key Vault secrets on Azure Local, offline |
 | [OpenTelemetry for .NET](https://opentelemetry.io/docs/languages/dotnet/) | the telemetry the app emits |
-| [OpenTelemetry Collector](https://opentelemetry.io/docs/platforms/kubernetes/helm/collector/), [Loki](https://grafana.com/docs/loki/latest/setup/install/helm/), [Tempo](https://grafana.com/docs/tempo/latest/setup/helm-chart/) | the Helm charts for the on-site telemetry stack |
