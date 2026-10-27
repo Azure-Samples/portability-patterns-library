@@ -70,13 +70,13 @@ All commands run from this folder, `samples/OrderManagementApp`.
 - An Azure Local instance, [deployed](https://learn.microsoft.com/azure/azure-local/deploy/deployment-introduction)
   and connected to Azure, with its custom location and a running Arc resource bridge. See the
   [system requirements](https://learn.microsoft.com/azure/azure-local/concepts/system-requirements-23h2).
-- Free capacity on the instance for the cluster: three VMs of 4 vCPUs and 8 GB each (one control
+- Free capacity on the instance for the AKS cluster: three VMs of 4 vCPUs and 8 GB each (one control
   plane, two nodes), plus about 50 GB of storage for the in-cluster registry and Keycloak's database.
 - A management machine on the site network, not an Azure Local node, with the same tools as for
   Azure except azd. Microsoft recommends managing AKS on Azure Local from such a
   [client machine](https://learn.microsoft.com/azure/aks-hybrid-edge/local/aks-create-clusters-cli#install-the-azure-cli-extension)
   rather than from the nodes.
-- Free addresses on the site network for the cluster: its control plane, a pool for the nodes and a
+- Free addresses on the site network for the AKS cluster: its control plane, a pool for the nodes and a
   small range for the load balancer.
 - The site's Active Directory, with the app's groups and a bind account for Keycloak. See
   [Connect your Active Directory](./docs/authentication.md#connect-your-active-directory).
@@ -151,7 +151,7 @@ says where to find each value. Then run:
 ./scripts/up.ps1 -Target AzureLocal
 ```
 
-It checks the site, creates the cluster and everything the app needs on it, and deploys the app.
+It checks the site, creates the AKS cluster and everything the app needs on it, and deploys the app.
 Open the address it prints and sign in with an AD account in one of the app's groups. The first
 time, trust the site's CA certificates with the commands it printed.
 
@@ -165,13 +165,13 @@ To deploy a new version later, run `./scripts/deploy.ps1 -Target AzureLocal`.
 the app registrations.
 
 **Azure Local:** delete the resource group the scripts created (`ResourceGroup` in the settings,
-`bcd-azurelocal` by default), which holds the cluster, the registry and the logical network:
+`bcd-azurelocal` by default), which holds the AKS cluster, the registry and the logical network:
 
 ```powershell
 az group delete --name bcd-azurelocal
 ```
 
-The cluster's Entra admin group and the objects `ad-setup.ps1` added to Active Directory stay;
+The AKS cluster's Entra admin group and the objects `ad-setup.ps1` added to Active Directory stay;
 remove them by hand if you no longer need them.
 
 ## Understand how it works
