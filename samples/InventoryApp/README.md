@@ -72,8 +72,8 @@ cluster that sample sets up.
 docker compose up --build
 ```
 
-This starts the API, PostgreSQL and the same telemetry stack as on Azure Local (Prometheus, Loki,
-Tempo and Grafana). The local API key is `local-dev-key`.
+This starts the API, PostgreSQL and the same telemetry components as on Azure Local: an OpenTelemetry
+Collector, Prometheus, Loki, Tempo and Grafana. The local API key is `local-dev-key`.
 
 ## Try it
 
@@ -107,7 +107,9 @@ first. Then, on the same management machine:
 ./scripts/deploy.ps1 -Target AzureLocal
 ```
 
-It adds the Secret Store extension and the telemetry stack to the cluster, then deploys the app with
+It adds the Secret Store extension and the telemetry stack to the cluster, each part from its own Helm
+chart with persistent storage: an OpenTelemetry Collector, Prometheus, Loki, Tempo and Grafana. Then
+it deploys the app with
 PostgreSQL.
 
 ## Clean up
@@ -124,4 +126,4 @@ PostgreSQL.
 | [Microsoft Entra authentication for PostgreSQL](https://learn.microsoft.com/azure/postgresql/flexible-server/concepts-azure-ad-authentication) | how the app signs in on Azure |
 | [Key Vault Secret Store extension](https://learn.microsoft.com/azure/azure-arc/kubernetes/secret-store-extension) | Key Vault secrets on Azure Local, offline |
 | [OpenTelemetry for .NET](https://opentelemetry.io/docs/languages/dotnet/) | the telemetry the app emits |
-| [Grafana LGTM stack](https://github.com/grafana/docker-otel-lgtm) | Grafana, Loki, Tempo and Prometheus behind one OpenTelemetry endpoint |
+| [OpenTelemetry Collector](https://opentelemetry.io/docs/platforms/kubernetes/helm/collector/), [Loki](https://grafana.com/docs/loki/latest/setup/install/helm/), [Tempo](https://grafana.com/docs/tempo/latest/setup/helm-chart/) | the Helm charts for the on-site telemetry stack |
