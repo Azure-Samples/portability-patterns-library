@@ -39,6 +39,7 @@ flowchart LR
 | User sign-in | Microsoft Entra ID | Keycloak, federated to the site's Active Directory |
 | How the app authenticates to services | Entra Workload ID (no secrets) | Keycloak token for the queue; Recipe-issued credentials for SQL and storage |
 | Images and Recipes | Azure Container Registry | ACR connected registry inside the cluster |
+| HTTPS address | Managed NGINX ingress (app routing add-on) on a public IP, `<label>.<region>.cloudapp.azure.com`, certificate from Let's Encrypt | NGINX ingress on an address from the Arc load balancer on the site network, certificate from a CA the setup creates |
 
 The Azure Local column runs nothing in Azure at runtime. That is what lets the app keep working when
 the site is cut off from Azure.
@@ -113,6 +114,13 @@ azd up
 
 azd and the Azure CLI keep separate sign-ins, and `azd up` uses both, so sign in to the same tenant
 with each.
+
+If your Entra tenant requires a service management reference on app registrations (the Microsoft
+corporate tenant does), set it before `azd up`:
+
+```powershell
+azd env set SERVICE_MANAGEMENT_REFERENCE <service tree ID>
+```
 
 `azd up` creates AKS, a container registry and managed identities, installs Radius and an HTTPS
 ingress, registers the app in Entra ID, then builds and deploys the app. It prints the app's
