@@ -1,54 +1,11 @@
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using OrderManagement.Shared.Models;
 using Dapper;
 using Microsoft.Data.SqlClient;
 
 namespace OrderManagement.Shared.Persistence;
 
-/// <summary>An order as recorded by the processor.</summary>
-public sealed record StoredOrder
-{
-    [JsonPropertyName("orderId")]
-    public required Guid OrderId { get; init; }
-
-    [JsonPropertyName("customerName")]
-    public required string CustomerName { get; init; }
-
-    [JsonPropertyName("lines")]
-    public required IReadOnlyList<OrderLine> Lines { get; init; }
-
-    [JsonPropertyName("total")]
-    public required decimal Total { get; init; }
-
-    [JsonPropertyName("currency")]
-    public required string Currency { get; init; }
-
-    [JsonPropertyName("placedAt")]
-    public required DateTimeOffset PlacedAt { get; init; }
-
-    [JsonPropertyName("processedAt")]
-    public required DateTimeOffset ProcessedAt { get; init; }
-
-    [JsonPropertyName("archiveUri")]
-    public required string ArchiveUri { get; init; }
-
-    [JsonPropertyName("status")]
-    public string Status => "Processed";
-}
-
-/// <summary>Records processed orders and reads them back for their customer.</summary>
-public interface IOrderStore
-{
-    Task InitializeAsync(CancellationToken cancellationToken);
-
-    Task RecordAsync(Order order, string archiveUri, CancellationToken cancellationToken);
-
-    Task<IReadOnlyList<StoredOrder>> ListForCustomerAsync(string customerId, int top, CancellationToken cancellationToken);
-
-    Task<StoredOrder?> GetForCustomerAsync(Guid orderId, string customerId, CancellationToken cancellationToken);
-}
-
+/// <summary>SQL Server and Azure SQL Database implementation of <see cref="IOrderStore"/>.</summary>
 public sealed class SqlOrderStore(SqlConnectionFactory connections) : IOrderStore
 {
     // SQL Server error 208: invalid object name. The processor creates the table on start-up, so a

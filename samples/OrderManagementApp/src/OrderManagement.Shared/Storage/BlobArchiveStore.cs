@@ -8,15 +8,6 @@ using Microsoft.Extensions.Logging;
 
 namespace OrderManagement.Shared.Storage;
 
-/// <summary>Writes each consumed order to object storage as a JSON blob.</summary>
-public interface IArchiveStore
-{
-    Task InitializeAsync(CancellationToken cancellationToken);
-
-    /// <returns>The absolute URI of the blob that was written.</returns>
-    Task<string> ArchiveAsync(Order order, CancellationToken cancellationToken);
-}
-
 /// <summary>
 /// Azure Blob Storage implementation. Backed by a real storage account in Azure (authenticated with
 /// Workload Identity) and by Azurite locally (authenticated with the well-known dev connection
