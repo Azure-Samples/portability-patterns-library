@@ -29,8 +29,8 @@ param imagePullSecretName string = ''
 
 @description('''
 Extra pod volumes, as Kubernetes volume objects, added to every pod. The Recipe Pack uses these to
-hand the platform's identity material to the application: a projected ServiceAccount token, a CA
-certificate, a Kerberos keytab and so on. The Recipe doesn't interpret them.
+hand the platform's identity material to the application, such as a projected ServiceAccount token
+or a CA certificate. The Recipe doesn't interpret them.
 ''')
 param platformPodVolumes array = []
 

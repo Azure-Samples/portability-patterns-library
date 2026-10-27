@@ -37,7 +37,7 @@ flowchart LR
 | Object storage | Azure Blob Storage | Azurite container |
 | SQL | Azure SQL Database | SQL Server container |
 | User sign-in | Microsoft Entra ID | Keycloak, federated to the site's Active Directory |
-| How the app authenticates to services | Entra Workload ID (no secrets) | Keycloak token for the queue; Kerberos (Active Directory) for SQL; Recipe-issued credentials for storage |
+| How the app authenticates to services | Entra Workload ID (no secrets) | Keycloak token for the queue; Recipe-issued credentials for SQL and storage |
 | Images and Recipes | Azure Container Registry | ACR connected registry inside the cluster |
 
 The Azure Local column runs nothing in Azure at runtime. That is what lets the app keep working when

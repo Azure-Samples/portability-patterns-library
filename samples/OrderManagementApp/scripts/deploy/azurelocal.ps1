@@ -85,13 +85,6 @@ param(
     [string]$IdentityCaSecretName = 'oms-identity-ca',
     [switch]$SkipOAuth,
 
-    # SQL Kerberos material written by scripts/infra/azurelocal/ad-setup.ps1. When all three exist in the
-    # application namespace, the application signs in to SQL Server as its AD account.
-    [string]$KerberosConfigMapName = 'oms-krb5',
-    [string]$AppKeytabSecretName = 'oms-app-kerberos',
-    [string]$SqlKeytabSecretName = 'oms-sql-kerberos',
-    [switch]$SkipKerberos,
-
     # Keycloak clients for user sign-in, defined in infra/azurelocal/keycloak/realm.json.
     [string]$OrdersApiClientId = 'oms-api',
     [string]$OrdersSpaClientId = 'oms-spa',
@@ -429,31 +422,6 @@ try {
         }
     }
 
-    $kerberosConfig = ''
-    $sqlKerberosAccount = ''
-    $directoryAddress = ''
-    $directoryHostNames = ''
-    $sqlWindowsLogin = ''
-    if (-not $SkipKerberos) {
-        $krb5Config = kubectl --context $KubeContext -n $Namespace get configmap $KerberosConfigMapName `
-            --ignore-not-found --output json 2>$null | ConvertFrom-Json
-        $appKeytab = kubectl --context $KubeContext -n $Namespace get secret $AppKeytabSecretName `
-            --ignore-not-found --output json 2>$null | ConvertFrom-Json
-        $sqlKeytab = kubectl --context $KubeContext -n $Namespace get secret $SqlKeytabSecretName `
-            --ignore-not-found --output json 2>$null | ConvertFrom-Json
-        if ($krb5Config -and $appKeytab -and $sqlKeytab) {
-            $kerberosConfig = $KerberosConfigMapName
-            $directoryAddress = $krb5Config.data.'kdc-address'
-            $directoryHostNames = $krb5Config.data.'kdc-hostnames'
-            $sqlKerberosAccount = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($sqlKeytab.data.account))
-            $sqlWindowsLogin = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($appKeytab.data.login))
-            Write-Host "==> SQL authentication: Kerberos as $sqlWindowsLogin" -ForegroundColor Cyan
-        }
-        else {
-            Write-Host "==> No Kerberos keytabs in '$Namespace'; SQL uses a SQL login (run scripts/infra/azurelocal/ad-setup.ps1 -KerberosOnly)" -ForegroundColor Yellow
-        }
-    }
-
     Write-Host "==> Deploying the Recipe Pack" -ForegroundColor Cyan
     $ingressAddress = kubectl get service ingress-nginx-controller -n $IngressNamespace --context $KubeContext `
         --ignore-not-found -o 'jsonpath={.status.loadBalancer.ingress[0].ip}' 2>$null
@@ -472,14 +440,7 @@ try {
             --parameters oauthClientId=$(if ($oauthIssuer) { $WorkloadClientId } else { '' }) `
             --parameters serviceAccountName=$WorkloadServiceAccount `
             --parameters ingressClassName=$(if ($useIngress) { $IngressClassName } else { '' }) `
-            --parameters ingressTlsSecretName=$(if ($useIngress) { $IngressTlsSecretName } else { '' }) `
-            --parameters kerberosConfigMapName=$kerberosConfig `
-            --parameters kerberosClientKeytabSecretName=$(if ($kerberosConfig) { $AppKeytabSecretName } else { '' }) `
-            --parameters sqlKerberosKeytabSecretName=$(if ($kerberosConfig) { $SqlKeytabSecretName } else { '' }) `
-            --parameters sqlKerberosAccount=$sqlKerberosAccount `
-            --parameters sqlWindowsLogins=$sqlWindowsLogin `
-            --parameters kerberosDirectoryAddress=$directoryAddress `
-            --parameters kerberosDirectoryHostNames=$directoryHostNames
+            --parameters ingressTlsSecretName=$(if ($useIngress) { $IngressTlsSecretName } else { '' })
     }
 
     # The connected registry always requires authentication, so Recipe pulls always need it. The
