@@ -1,6 +1,6 @@
-# Keycloak as an alternative to workload identity federation
+# Keycloak as an alternative to Microsoft Entra ID for workload identity
 
-[Keycloak](https://www.keycloak.org/documentation) is an open-source identity provider you run yourself, here in the Azure Local cluster. With its Kubernetes service account feature, it validates a pod's service account token and issues an access token, as Entra ID does for a federated identity credential. Applications request the token with standard OAuth 2.0 rather than the Azure SDK.
+[Keycloak](https://www.keycloak.org/documentation) is an open-source identity provider you run yourself, here in the Azure Local cluster. With [federated client authentication](https://www.keycloak.org/2026/01/federated-client-authentication), it validates a pod's Kubernetes service account token and issues an access token, as Entra ID does through a federated identity credential. Applications request the token with standard OAuth 2.0 rather than the Azure SDK.
 
 ## Entra concepts in Keycloak
 
@@ -9,7 +9,7 @@
 | User-assigned managed identity | Confidential client with a service account | One client per workload identity. |
 | Federated identity credential: issuer | Kubernetes identity provider in the realm, set to the cluster's issuer | Requires the `kubernetes-service-accounts` feature. |
 | Federated identity credential: subject | The client's federated JWT authenticator, matching `system:serviceaccount:<namespace>:<service account>` | |
-| Federated identity credential: audience `api://AzureADTokenExchange` | The realm's issuer URL, used as the token's audience | Set on the projected token in the pod. |
+| Federated identity credential: audience `api://AzureADTokenExchange` | The realm's issuer URL, used as the token's audience | Set on the projected token in the pod. Keycloak recommends tokens valid for at most 10 minutes; the sample uses 600 seconds. |
 | AKS OIDC issuer | The cluster API server's issuer and signing keys | Keycloak needs the `system:service-account-issuer-discovery` role and the cluster CA to read them. |
 | Workload identity webhook | A projected service account token volume in the pod spec | Nothing injects it for you. |
 | `WorkloadIdentityCredential` in the Azure SDK | Your own token client | `client_credentials` grant, with the service account token as a JWT bearer client assertion. |
@@ -41,12 +41,14 @@ The sample's Keycloak setup is sample code. Before production, add:
 
 - more than one Keycloak replica, and a highly available, backed-up database;
 - certificates from your organization's CA, rather than the CA the setup script generates;
-- an externally reachable service account issuer for the cluster if Keycloak runs outside it (the sample runs Keycloak in the same cluster);
 - protection for the Keycloak administrator account and a plan for rotating signing keys.
+
+**Where Keycloak runs:** the sample runs Keycloak in the same cluster as the application, so it can read the cluster's signing keys through the API server. Running it outside the cluster, for example on a VM, needs a cluster token issuer that Keycloak can reach without authentication. AKS on Azure Local offers that only through its Azure-hosted OIDC issuer, which depends on the link to Azure. This project hasn't tested running Keycloak outside the cluster.
 
 ## References
 
 - [Workload identity federation](https://learn.microsoft.com/entra/workload-id/workload-identity-federation)
+- [Keycloak federated client authentication](https://www.keycloak.org/2026/01/federated-client-authentication)
 - [Keycloak documentation](https://www.keycloak.org/documentation)
 - [Kubernetes service account token volume projection](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/#serviceaccount-token-volume-projection)
 - [OAuth 2.0 JWT client assertion (RFC 7523)](https://www.rfc-editor.org/rfc/rfc7523)

@@ -1,10 +1,10 @@
-# Workload identity federation → Azure Local
+# Microsoft Entra Workload ID → Azure Local
 
-On Azure, a federated identity credential on a managed identity lets a pod swap its Kubernetes service account token for a Microsoft Entra token, so the workload holds no secret. This guide shows how to keep that pattern on Azure Local with an identity provider on site, so workloads keep authenticating when the link to Azure is down.
+On Azure, Microsoft Entra Workload ID lets a pod swap its Kubernetes service account token for a Microsoft Entra token, so the workload holds no secret. The trust is a federated identity credential on a managed identity. This guide shows how to keep that pattern on Azure Local with an identity provider on site in place of Entra ID, so workloads keep authenticating when the link to Azure is down.
 
 | Target | Alternative | Portability class | Availability | Summary |
 |---|---|---|---|---|
-| Azure Local | [Keycloak](./alternatives/keycloak.md) | `adapter-required` | Sample available | Open-source identity provider you run on site. It trusts the cluster's tokens the way Entra does, but the client code and permission model change. |
+| Azure Local | [Keycloak](./alternatives/keycloak.md) | `adapter-required` | Sample available | Open-source identity provider you run on site in place of Entra ID. Each federated identity credential becomes a Keycloak client that trusts the cluster's tokens; the client code and permission model change. |
 
 ## What carries over
 
