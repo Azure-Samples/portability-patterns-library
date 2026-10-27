@@ -20,6 +20,33 @@ public sealed class WorkloadTokenOptions
 
     /// <summary>PEM certificate authority of the issuer, when it does not chain to a public root.</summary>
     public string? CaFile { get; init; }
+
+    /// <summary>
+    /// Reads the identity the platform gave this pod: <c>IDENTITY_TOKEN_FILE</c>,
+    /// <c>IDENTITY_CLIENT_ID</c> and <c>IDENTITY_TOKEN_ENDPOINT</c>, set by the Azure Local Recipe
+    /// Pack the way Entra Workload ID sets <c>AZURE_*</c> on Azure. Returns null when any is
+    /// missing, so the pod has no such identity.
+    /// </summary>
+    public static WorkloadTokenOptions? FromEnvironment()
+    {
+        var tokenFile = Environment.GetEnvironmentVariable("IDENTITY_TOKEN_FILE");
+        var clientId = Environment.GetEnvironmentVariable("IDENTITY_CLIENT_ID");
+        var tokenEndpoint = Environment.GetEnvironmentVariable("IDENTITY_TOKEN_ENDPOINT");
+
+        if (string.IsNullOrWhiteSpace(tokenFile) ||
+            string.IsNullOrWhiteSpace(clientId) ||
+            string.IsNullOrWhiteSpace(tokenEndpoint))
+        {
+            return null;
+        }
+
+        return new WorkloadTokenOptions
+        {
+            TokenEndpoint = tokenEndpoint,
+            ClientId = clientId,
+            AssertionFile = tokenFile
+        };
+    }
 }
 
 /// <summary>

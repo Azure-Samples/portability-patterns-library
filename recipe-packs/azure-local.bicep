@@ -48,16 +48,16 @@ param azuriteTag string = '3.35.0'
 @description('Existing image pull secret in the application namespace for the connected registry.')
 param imagePullSecretName string = ''
 
-@description('Issuer URL of the on-site identity provider, for example a Keycloak realm. Setting this switches the queue to token authentication.')
+@description('Issuer URL of the on-site identity provider, for example a Keycloak realm. Setting this gives every pod a token for it and switches the queue to token authentication.')
 param oauthIssuer string = ''
 
-@description('Token endpoint of that identity provider. Empty uses the Keycloak path under oauthIssuer.')
+@description('Token endpoint of that identity provider, published to pods as IDENTITY_TOKEN_ENDPOINT. Empty uses the Keycloak path under oauthIssuer.')
 param oauthTokenEndpoint string = ''
 
 @description('Existing Secret in the application namespace holding the identity provider CA under `ca.crt`.')
 param oauthCaSecretName string = ''
 
-@description('Client at the identity provider that the workloads authenticate as.')
+@description('Client at the identity provider that the workloads authenticate as, published to pods as IDENTITY_CLIENT_ID.')
 param oauthClientId string = ''
 
 @description('Kubernetes service account the identity provider trusts for that client; must match its federated subject.')
@@ -98,10 +98,13 @@ param ingressTlsSecretName string = ''
 // parameters empty, and the containers get nothing extra.
 
 // Identity provider (for example Keycloak): every container runs as the trusted service account,
-// gets a ServiceAccount token minted for the issuer, and trusts the issuer's CA. That is all the
-// queue needs to authenticate without a password.
+// gets a ServiceAccount token minted for the issuer, and trusts the issuer's CA. The IDENTITY_*
+// variables tell the application where to exchange that token, the way Entra Workload ID's
+// AZURE_* variables do on Azure. Identity belongs to the pod, so the queue and any other service
+// that accepts the issuer's tokens use the same one.
 var useIdentityProvider = !empty(oauthIssuer)
 var identityTokenPath = '/var/run/secrets/identity/token'
+var identityTokenEndpoint = empty(oauthTokenEndpoint) ? '${oauthIssuer}/protocol/openid-connect/token' : oauthTokenEndpoint
 var identityProviderVolumes = !useIdentityProvider ? [] : concat([
   {
     name: 'identity-token'
@@ -129,9 +132,13 @@ var identityProviderMounts = !useIdentityProvider ? [] : concat([
   { name: 'identity-ca', mountPath: '/etc/identity-ca', readOnly: true }
 ])
 // .NET and most runtimes read SSL_CERT_FILE, so the application trusts the issuer with no code.
-var identityProviderEnv = !useIdentityProvider || empty(oauthCaSecretName) ? [] : [
+var identityProviderEnv = !useIdentityProvider ? [] : concat([
+  { name: 'IDENTITY_TOKEN_FILE', value: identityTokenPath }
+  { name: 'IDENTITY_CLIENT_ID', value: oauthClientId }
+  { name: 'IDENTITY_TOKEN_ENDPOINT', value: identityTokenEndpoint }
+], empty(oauthCaSecretName) ? [] : [
   { name: 'SSL_CERT_FILE', value: '/etc/identity-ca/ca.crt' }
-]
+])
 
 // Active Directory (Kerberos): every container gets krb5.conf and the application account's keytab.
 // MIT Kerberos acquires tickets from the keytab on its own, so the application signs in to SQL
@@ -175,12 +182,10 @@ var sqlKerberosParameters = !useKerberos ? {} : {
   directoryHostAddress: kerberosDirectoryAddress
   directoryHostNames: kerberosDirectoryHostNames
 }
+// The broker only needs to know which issuer to trust; workloads get their identity from the pod.
 var queueOAuthParameters = empty(oauthIssuer) ? {} : {
   oauthIssuer: oauthIssuer
-  oauthTokenEndpoint: oauthTokenEndpoint
   oauthCaSecretName: oauthCaSecretName
-  oauthClientId: oauthClientId
-  oauthAssertionFile: identityTokenPath
 }
 
 resource azureLocalRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {

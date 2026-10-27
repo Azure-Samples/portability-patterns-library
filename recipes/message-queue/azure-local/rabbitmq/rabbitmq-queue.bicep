@@ -44,17 +44,9 @@ param oauthScopesKey string = 'rabbitmq_scopes'
 @description('Existing Secret holding the issuer certificate authority under the key `ca.crt`.')
 param oauthCaSecretName string = ''
 
-@description('''
-Token endpoint where workloads exchange their ServiceAccount token. Empty uses the Keycloak path under
-the issuer, `<oauthIssuer>/protocol/openid-connect/token`; set it for any other identity provider.
-''')
-param oauthTokenEndpoint string = ''
-
-@description('Client the workload authenticates as at the issuer.')
-param oauthClientId string = ''
-
-@description('Path of the ServiceAccount token the container Recipe projects into each workload.')
-param oauthAssertionFile string = '/var/run/secrets/identity/token'
+// How a workload obtains its token is not this Recipe's concern: the Recipe Pack gives every pod
+// its identity (token file, client and token endpoint). This Recipe only configures the broker to
+// accept tokens from the issuer.
 
 var image = empty(imageRegistry) ? '${imageRepository}:${tag}' : '${imageRegistry}/${imageRepository}:${tag}'
 
@@ -72,7 +64,6 @@ var managementPort = 15672
 var password = uniqueString(context.resource.id, 'rabbitmq-password')
 
 var oauthEnabled = !empty(oauthIssuer)
-var effectiveTokenEndpoint = empty(oauthTokenEndpoint) ? '${oauthIssuer}/protocol/openid-connect/token' : oauthTokenEndpoint
 var configName = '${uniqueName}-oauth'
 
 // The internal backend stays second so the generated password still reaches the management UI
@@ -284,20 +275,13 @@ output result object = {
     '/planes/kubernetes/local/namespaces/${svc.metadata.namespace}/providers/core/Service/${svc.metadata.name}'
     '/planes/kubernetes/local/namespaces/${rabbitmq.metadata.namespace}/providers/apps/Deployment/${rabbitmq.metadata.name}'
   ]
-  values: union(
-    {
-      provider: 'rabbitmq'
-      queueName: queueName
-      endpoint: '${svc.metadata.name}.${svc.metadata.namespace}.svc.cluster.local:${amqpPort}'
-    },
-    oauthEnabled ? {
-      oauthTokenEndpoint: effectiveTokenEndpoint
-      oauthClientId: oauthClientId
-      oauthAssertionFile: oauthAssertionFile
-    } : {}
-  )
-  // With OAuth the workloads authenticate with a token, so the broker password stays with the
-  // broker (management interface only) and is not handed to the application.
+  values: {
+    provider: 'rabbitmq'
+    queueName: queueName
+    endpoint: '${svc.metadata.name}.${svc.metadata.namespace}.svc.cluster.local:${amqpPort}'
+  }
+  // With OAuth the workloads authenticate with their own identity, so the broker password stays
+  // with the broker (management interface only) and is not handed to the application.
   secrets: oauthEnabled ? {} : {
     username: username
     #disable-next-line outputs-should-not-contain-secrets
