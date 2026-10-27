@@ -1,84 +1,61 @@
 # RabbitMQ as an alternative to Azure Service Bus
 
-> **Draft.** Based on the [Order Management sample](../../../samples/OrderManagementApp/README.md).
+[RabbitMQ](https://www.rabbitmq.com/docs) is an open-source message broker you run yourself, here as a container in the Azure Local cluster. It provides the same point-to-point queue as Service Bus, but with its own client, protocol details and failure handling. Your application reaches it through an adapter rather than the Service Bus SDK.
 
-On Azure Local, RabbitMQ provides the queue that Azure Service Bus provides on Azure. The sample runs it as a container in the cluster, created by a Recipe.
+## Service Bus features in RabbitMQ
 
-## How it fits together
+| Service Bus | RabbitMQ | Notes |
+|---|---|---|
+| Namespace | Broker (virtual host) | You deploy and operate it. |
+| Queue | Durable queue | Declare it as durable and publish messages as persistent. |
+| Send | Publish to the default exchange with the queue name as routing key | |
+| Receive in peek-lock mode | Consume with manual acknowledgement | |
+| Complete | Acknowledge (`ack`) | |
+| Abandon | Negative-acknowledge with requeue (`nack`) | Add your own delay; RabbitMQ redelivers immediately. |
+| Lock duration | None | A message is redelivered when its channel closes or after the [consumer timeout](https://www.rabbitmq.com/docs/consumers#acknowledgement-timeout) (30 minutes by default). |
+| Max delivery count and dead-letter queue | [Quorum queue](https://www.rabbitmq.com/docs/quorum-queues) delivery limit and a [dead-letter exchange](https://www.rabbitmq.com/docs/dlx) | Not automatic on classic queues: a failing message is redelivered indefinitely. |
+| Message ID, content type, subject | `message_id`, `content_type`, `type` properties | |
+| Sessions, scheduled messages, duplicate detection | No built-in equivalent | Handle them in the application, or use a plugin. |
+| Entra ID authentication | [OAuth 2.0 plugin](https://www.rabbitmq.com/docs/oauth2) with your identity provider, or username and password | The access token is sent as the password. The broker closes the connection when the token expires, so the client reconnects with a new one. |
+
+RabbitMQ 4.0 and later also speak [AMQP 1.0](https://www.rabbitmq.com/docs/amqp), the protocol Service Bus uses. That doesn't make the Service Bus SDK a drop-in client: addresses, authentication and management operations differ. This project didn't evaluate it.
+
+## How the Order Management sample does it
+
+The sample keeps one codebase and one set of images for both targets by putting the broker behind an adapter:
 
 ```text
-API / processor                       declare a queue, never name a broker
-        │
-        ▼
-Resource Type                         Portability.Messaging/messageQueues
-        │   (the environment's Recipe Pack chooses the Recipe)
-        ├── Azure pack                Service Bus Recipe  → Azure Service Bus
-        └── Azure Local pack          RabbitMQ Recipe     → RabbitMQ container
+API and processor  ──►  IMessagePublisher / IMessageSubscriber
+                               │  chosen at startup from `provider`
+                ┌──────────────┴──────────────┐
+      ServiceBusMessageBroker          RabbitMqMessageBroker
+       (Azure Service Bus SDK)          (RabbitMQ.Client)
 ```
 
-At startup the application reads the `provider` value that the Recipe returns (`rabbitmq` or `servicebus`) and creates the matching client. The rest of the application only sees a publish interface and a subscribe interface.
+| Step | In the sample |
+|---|---|
+| Interfaces the application codes against | [IMessagePublisher.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Messaging/IMessagePublisher.cs) |
+| One adapter per broker | [ServiceBusMessageBroker.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Messaging/ServiceBusMessageBroker.cs), [RabbitMqMessageBroker.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Messaging/RabbitMqMessageBroker.cs): acknowledge, requeue after 5 seconds, reconnect |
+| Choosing the adapter at startup | [ServiceCollectionExtensions.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/DependencyInjection/ServiceCollectionExtensions.cs) reads `provider` (`servicebus` or `rabbitmq`) |
+| Idempotent handling | [SqlOrderStore.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Persistence/SqlOrderStore.cs) writes with `MERGE`, so a redelivered order isn't stored twice |
+| Token instead of a password | [WorkloadTokenProvider.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Identity/WorkloadTokenProvider.cs) exchanges the pod's token at Keycloak; see the sample's [authentication page](../../../samples/OrderManagementApp/docs/authentication.md) |
+| Same deployment definition on both targets | The app declares a portable queue type, [`Portability.Messaging/messageQueues`](../../../recipes/message-queue/messageQueues.yaml). Each target's Radius Recipe creates the broker and returns `provider` and `endpoint`: [Service Bus](../../../recipes/message-queue/azure/service-bus/servicebus-queue.bicep), [RabbitMQ](../../../recipes/message-queue/azure-local/rabbitmq/rabbitmq-queue.bicep). |
 
-### Why not the upstream `Radius.Messaging/rabbitMQ` type?
+The sample doesn't use Radius's [`Radius.Messaging/rabbitMQ`](https://github.com/radius-project/resource-types-contrib/tree/main/Messaging/rabbitMQ) type. That type is RabbitMQ-specific, so Service Bus can't back it, and it supports passwords only.
 
-Radius ships a community [`Radius.Messaging/rabbitMQ`](https://github.com/radius-project/resource-types-contrib/tree/main/Messaging/rabbitMQ) type. It promises the application a RabbitMQ broker, so a Recipe can't return Service Bus for it, and the application definition would have to change between targets. Its Kubernetes Recipe also only supports a password and pulls from Docker Hub, which rules out token authentication and the connected registry on Azure Local.
+## Not covered by the sample
 
-The sample therefore defines its own type, [`Portability.Messaging/messageQueues`](../../../recipes/message-queue/messageQueues.yaml), which describes a durable queue rather than a protocol. The trade-off: the type can only promise settings that both brokers can honour, and the application still needs a client per broker. If the application only ever needs RabbitMQ with a password, the upstream type is simpler.
+The [RabbitMQ Recipe](../../../recipes/message-queue/azure-local/rabbitmq/rabbitmq-queue.bicep) is sample code. Before production, add:
 
-## Differences the application will notice
-
-| | Azure Service Bus (Azure) | RabbitMQ (Azure Local) |
-|---|---|---|
-| Protocol and client | AMQP 1.0, Azure Service Bus SDK, over WebSockets | The sample uses RabbitMQ's AMQP 0-9-1 client. RabbitMQ 4.0+ also supports AMQP 1.0 (see below) |
-| Authentication | Entra workload identity; local keys disabled; the identity needs the Data Sender and Data Receiver roles | OAuth 2.0 access token from a customer-operated identity provider, obtained with the same federated flow, or a generated username and password |
-| Failed message | Abandoned, redelivered up to a maximum delivery count (default 10), then dead-lettered | Negative-acknowledged and requeued after a 5 second delay |
-| Poison message | Ends in the dead-letter queue | Redelivered indefinitely unless a dead-letter policy is added |
-| Duplicate delivery | Possible after a lock expires | Possible when a channel closes before the acknowledgement; the sample's SQL `MERGE` makes processing idempotent on both |
-| Message properties | Message ID, content type, and the message type as `Subject` | Message ID, content type, and the message type as `type`; marked persistent |
-| Lock or visibility | 1 minute lock per message | Unacknowledged messages are redelivered when the channel closes |
-| Connection lifetime | Managed by the SDK | With OAuth, the broker closes the connection when the token expires; the application reconnects with a new token |
-
-## Can RabbitMQ 4 be used with the Service Bus client?
-
-RabbitMQ supports [AMQP 1.0 natively](https://www.rabbitmq.com/docs/amqp) since version 4.0, alongside AMQP 0-9-1. That narrows the protocol gap, but it does not make RabbitMQ a Service Bus look-alike, because AMQP 1.0 leaves several things to each broker:
-
-| Area | Azure Service Bus | RabbitMQ 4 |
-|---|---|---|
-| Addresses | An entity path such as the queue name | Its own format, such as `/queues/<name>`; the AMQP specification does not define how addresses resolve |
-| Authentication | Claims-based security: the client sends tokens over the AMQP connection, so the SDK can use Entra identities | SASL is required; mechanisms include PLAIN, ANONYMOUS, EXTERNAL and OAuth 2.0 tokens |
-| Management operations | Lock renewal, message browsing and sessions are request and response exchanges on top of AMQP | Not the same operations |
-| Features | Dead-letter queues, sessions, scheduled messages, duplicate detection | Queue types, exchanges and policies of its own |
-
-The Service Bus SDK is built for Service Bus. Whether it works against RabbitMQ unchanged was not evaluated here. The sample uses RabbitMQ's AMQP 0-9-1 client, which is why the first table shows 0-9-1.
-
-## Authentication options
-
-1. **Password.** The Recipe generates a username and password. Radius stores them in a Kubernetes Secret, and the application receives them through its connection to the queue.
-2. **OAuth 2.0 with a customer-operated identity provider.** This is the same federated pattern Entra workload identity uses, with a different issuer. Set the issuer on the Azure Local Recipe Pack (`oauthIssuer`). The application sends its projected Kubernetes service account token to the issuer's token endpoint as a client assertion (`client_credentials` grant with a JWT bearer assertion), receives an access token, and presents it to RabbitMQ as the password. No secret is stored: the cluster issues and rotates the service account token. Authorization travels in the token, so RabbitMQ keeps no user record for the workload. The sample uses Keycloak federated with Active Directory; see its [authentication page](../../../samples/OrderManagementApp/docs/authentication.md) and the [RabbitMQ OAuth 2.0 guide](https://www.rabbitmq.com/docs/oauth2).
-
-## Observed limitations of the reference Recipe
-
-The [reference Recipe](../../../recipes/message-queue/azure-local/rabbitmq/rabbitmq-queue.bicep) is sample code. As written it has these limitations:
-
-- **No data volume.** Queues and messages are declared durable, but nothing persists the broker's data directory, so messages are lost if the pod is rescheduled.
-- **Single pod.** The Recipe does not set replicas or a clustered queue type.
-- **No dead-lettering.** The queue type's `maxDeliveryCount` setting is not applied by this Recipe.
-- **No TLS on the AMQP listener.**
-- **Management interface** is exposed on its own port and still uses the generated password.
-
-## Required application changes
-
-Each item links to where the Order Management sample does it.
-
-- A RabbitMQ implementation of the publish and subscribe interfaces, with its own acknowledge, retry and reconnect behaviour: [RabbitMqMessageBroker.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Messaging/RabbitMqMessageBroker.cs).
-- A selector that chooses the implementation from the `provider` value: [ServiceCollectionExtensions.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/DependencyInjection/ServiceCollectionExtensions.cs).
-- With OAuth, a small token provider that reads the projected service account token and refreshes access tokens: [WorkloadTokenProvider.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Identity/WorkloadTokenProvider.cs).
-- Idempotent processing, because both brokers can deliver a message more than once: [SqlOrderStore.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Persistence/SqlOrderStore.cs).
+- a persistent volume, so queued messages survive a pod restart;
+- more than one replica, with quorum queues;
+- a delivery limit and dead-lettering (the queue type's `maxDeliveryCount` isn't applied);
+- TLS on the AMQP listener;
+- separate credentials for the management interface.
 
 ## References
 
-- [RabbitMQ AMQP 1.0 support](https://www.rabbitmq.com/docs/amqp)
-- [RabbitMQ OAuth 2.0 authentication and authorization](https://www.rabbitmq.com/docs/oauth2)
-- [RabbitMQ persistence configuration](https://www.rabbitmq.com/docs/persistence-conf)
-- [AMQP 1.0 in Azure Service Bus](https://learn.microsoft.com/en-us/azure/service-bus-messaging/service-bus-amqp-overview)
-- [AMQP 1.0 protocol guide for Azure Service Bus](https://learn.microsoft.com/en-us/azure/service-bus-messaging/service-bus-amqp-protocol-guide)
-- [Service Bus dead-letter queues](https://learn.microsoft.com/en-us/azure/service-bus-messaging/service-bus-dead-letter-queues)
+- [RabbitMQ documentation](https://www.rabbitmq.com/docs)
+- [Asynchronous messaging options on Azure](https://learn.microsoft.com/azure/architecture/guide/technology-choices/messaging)
+- [Anti-corruption Layer pattern](https://learn.microsoft.com/azure/architecture/patterns/anti-corruption-layer), the idea behind the adapter
+- [Service Bus dead-letter queues](https://learn.microsoft.com/azure/service-bus-messaging/service-bus-dead-letter-queues)

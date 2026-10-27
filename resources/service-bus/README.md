@@ -1,42 +1,40 @@
 # Azure Service Bus → Azure Local
 
+Azure Service Bus isn't available on Azure Local. This guide shows what you can use instead, what stays the same, and what you change in your workload.
+
 | Target | Alternative | Portability class | Availability | Summary |
 |---|---|---|---|---|
-| Azure Local | [RabbitMQ](./alternatives/rabbitmq.md) | `adapter-required` | Sample available | Self-hosted broker with its own addressing, authentication and failure handling. |
+| Azure Local | [RabbitMQ](./alternatives/rabbitmq.md) | `adapter-required` | Sample available | Open-source broker you run in the cluster. Different client and failure handling, so the application talks to it through an adapter. |
 | Azure Local | [Apache Kafka](https://kafka.apache.org/documentation/) | — | Documentation available | Not evaluated by this project. See the linked documentation. |
 
 ## What carries over
 
-- Point-to-point queue semantics: send, receive, acknowledge, redeliver on failure.
-- JSON message payloads, message ID, content type and message type, and the application's handler logic.
-- The application definition. The application declares a queue through the portable Resource Type `Portability.Messaging/messageQueues`, not Service Bus by name. Each environment's Recipe Pack chooses the Recipe that provides it.
-- Secret-free authentication. On both targets the pod's Kubernetes service account token is exchanged for an access token; only the issuer changes.
+- **Queue semantics:** send, receive, acknowledge, redeliver on failure.
+- **Messages:** JSON payloads, message ID, content type and message type.
+- **Business logic:** your message handlers don't change.
+- **Secret-free authentication:** the pod's Kubernetes token is exchanged for an access token on both targets. Only the issuer changes: Entra ID on Azure, your own identity provider on Azure Local.
 
-## Required application changes
+## What you need to change
 
-A second broker implementation behind the same publish and subscribe interfaces, plus code that chooses one at startup from the `provider` value the Recipe returns. The handler logic is unchanged. Redelivery must be safe on both brokers, so the handler has to be idempotent. Details are in the [RabbitMQ page](./alternatives/rabbitmq.md).
+1. **Hide the broker behind your own interface.** Define publish and subscribe interfaces in your code and move the Service Bus calls into one implementation of them (an adapter).
+2. **Add a RabbitMQ adapter** behind the same interfaces, using the RabbitMQ client library. It handles acknowledgement, retry and reconnection itself.
+3. **Choose the adapter at startup** from configuration, not with build flags or separate images.
+4. **Make handlers idempotent.** Both brokers can deliver a message twice.
+5. **Replace Entra authentication** with OAuth 2.0 tokens from your identity provider, or with a broker username and password.
+6. **Run and operate RabbitMQ** in the cluster: storage, high availability, dead-lettering, TLS and monitoring are yours to set up.
+
+How to map Service Bus features to RabbitMQ, and how the sample does each step: [RabbitMQ as an alternative](./alternatives/rabbitmq.md).
 
 ## Observed limitations, by pattern
 
 | Pattern (Microsoft Learn) | Limitation for this resource |
 |---|---|
-| Messaging | RabbitMQ 4.0+ also speaks AMQP 1.0, but addressing, authentication and management are broker-specific, so the Service Bus SDK is not a drop-in client. The sample uses RabbitMQ's own AMQP 0-9-1 client. The broker is hosted, patched and monitored by the customer. Dead-lettering, lock duration and delivery counts are not provided automatically. |
-| Identity | Entra workload identity itself is not available. The same federated, secret-free pattern works through OAuth 2.0 with the customer's own identity provider (Keycloak in the sample). The alternative is a generated password. |
-| Storage | The reference Recipe does not mount a data volume, so queued messages are lost if the broker pod is rescheduled. |
+| [Messaging](https://learn.microsoft.com/azure/architecture/guide/technology-choices/messaging) | Not a drop-in replacement: the Service Bus SDK doesn't work against RabbitMQ. Sessions, scheduled messages and duplicate detection have no built-in equivalent. Dead-lettering and a maximum delivery count need RabbitMQ policies or queue arguments. |
+| [Workload identity](https://learn.microsoft.com/entra/workload-id/workload-identities-overview) | Entra workload identity isn't available. The same federated, secret-free flow works with your own identity provider (Keycloak in the sample) through RabbitMQ's OAuth 2.0 plugin. Otherwise use a broker password. |
+| [Reliability](https://learn.microsoft.com/azure/well-architected/reliability/) | You host, patch and scale the broker. The sample's broker is a single pod with no data volume, so queued messages are lost if the pod moves. |
 
-**Data:** messages waiting in Service Bus are not carried to the new broker. Drain the queue before switching, or accept that in-flight messages are lost.
+**Data:** messages waiting in Service Bus don't move to RabbitMQ. Drain the queue before you switch.
 
-## Examples
+## Sample
 
-The [Order Management sample](../../samples/OrderManagementApp/README.md) covers this resource, so there is no separate example. It runs the same API and processor against Service Bus on Azure and RabbitMQ on Azure Local:
-
-| What | Where |
-|---|---|
-| Resource Type | [messageQueues.yaml](../../recipes/message-queue/messageQueues.yaml) |
-| Recipe, Azure | [servicebus-queue.bicep](../../recipes/message-queue/azure/service-bus/servicebus-queue.bicep): namespace and queue, local authentication disabled, Data Sender and Data Receiver roles for the workload identity |
-| Recipe, Azure Local | [rabbitmq-queue.bicep](../../recipes/message-queue/azure-local/rabbitmq/rabbitmq-queue.bicep): RabbitMQ container, OAuth 2.0 when an issuer is set, otherwise a generated password |
-| Recipe Packs | [azure.bicep](../../recipe-packs/azure.bicep), [azure-local.bicep](../../recipe-packs/azure-local.bicep) |
-| Application definition | [app.bicep](../../samples/OrderManagementApp/deploy/app.bicep): the `orders` queue and the connections to it |
-| Broker implementations | [ServiceBusMessageBroker.cs](../../samples/OrderManagementApp/src/OrderManagement.Shared/Messaging/ServiceBusMessageBroker.cs), [RabbitMqMessageBroker.cs](../../samples/OrderManagementApp/src/OrderManagement.Shared/Messaging/RabbitMqMessageBroker.cs) |
-| Choosing the broker | [ServiceCollectionExtensions.cs](../../samples/OrderManagementApp/src/OrderManagement.Shared/DependencyInjection/ServiceCollectionExtensions.cs) |
-| Authentication | [authentication.md](../../samples/OrderManagementApp/docs/authentication.md) |
+The [Order Management sample](../../samples/OrderManagementApp/README.md) runs the same API and processor against Service Bus on Azure and RabbitMQ on Azure Local. [RabbitMQ as an alternative](./alternatives/rabbitmq.md#how-the-order-management-sample-does-it) points to the code for each step above.
