@@ -17,7 +17,7 @@ caller's API key, and warns when an item drops below its minimum.
 
 ```mermaid
 flowchart LR
-    caller(["Point-of-sale system or script"])
+    caller(["Caller<br/>curl or another system"])
     api["Inventory API"]
     db[("PostgreSQL<br/>items and movements")]
     key["API key<br/>from Key Vault"]
