@@ -1,22 +1,28 @@
 # RabbitMQ as an alternative to Azure Service Bus
 
-> **Draft.** Based on the Order Management sample.
+> **Draft.** Based on the [Order Management sample](../../../samples/OrderManagementApp/README.md).
 
-On Azure Local, RabbitMQ provides the queue that Azure Service Bus provides on Azure. The sample runs it as a container in the cluster, created by a recipe.
+On Azure Local, RabbitMQ provides the queue that Azure Service Bus provides on Azure. The sample runs it as a container in the cluster, created by a Recipe.
 
 ## How it fits together
 
 ```text
-Order Intake / Order Processor      declare a queue, never name a broker
+API / processor                       declare a queue, never name a broker
         │
         ▼
-Resource Type                       BusinessContinuity.Messaging/messageQueues
-        │   (the environment's recipe pack chooses the recipe)
-        ├── Azure pack                Service Bus recipe  → Azure Service Bus
-        └── Azure Local pack          RabbitMQ recipe     → RabbitMQ container
+Resource Type                         Portability.Messaging/messageQueues
+        │   (the environment's Recipe Pack chooses the Recipe)
+        ├── Azure pack                Service Bus Recipe  → Azure Service Bus
+        └── Azure Local pack          RabbitMQ Recipe     → RabbitMQ container
 ```
 
-At startup the worker reads the `provider` value that the recipe publishes (`rabbitmq` or `servicebus`) and creates the matching client. The rest of the worker only sees a publish interface and a subscribe interface.
+At startup the application reads the `provider` value that the Recipe returns (`rabbitmq` or `servicebus`) and creates the matching client. The rest of the application only sees a publish interface and a subscribe interface.
+
+### Why not the upstream `Radius.Messaging/rabbitMQ` type?
+
+Radius ships a community [`Radius.Messaging/rabbitMQ`](https://github.com/radius-project/resource-types-contrib/tree/main/Messaging/rabbitMQ) type. It promises the application a RabbitMQ broker, so a Recipe can't return Service Bus for it, and the application definition would have to change between targets. Its Kubernetes Recipe also only supports a password and pulls from Docker Hub, which rules out token authentication and the connected registry on Azure Local.
+
+The sample therefore defines its own type, [`Portability.Messaging/messageQueues`](../../../recipes/message-queue/messageQueues.yaml), which describes a durable queue rather than a protocol. The trade-off: the type can only promise settings that both brokers can honour, and the application still needs a client per broker. If the application only ever needs RabbitMQ with a password, the upstream type is simpler.
 
 ## Differences the application will notice
 
@@ -26,9 +32,10 @@ At startup the worker reads the `provider` value that the recipe publishes (`rab
 | Authentication | Entra workload identity; local keys disabled; the identity needs the Data Sender and Data Receiver roles | OAuth 2.0 access token from a customer-operated identity provider, obtained with the same federated flow, or a generated username and password |
 | Failed message | Abandoned, redelivered up to a maximum delivery count (default 10), then dead-lettered | Negative-acknowledged and requeued after a 5 second delay |
 | Poison message | Ends in the dead-letter queue | Redelivered indefinitely unless a dead-letter policy is added |
-| Message properties | `region` and `severity` are sent as application properties | The sample's RabbitMQ publisher sets message id, content type and type, but not these two |
+| Duplicate delivery | Possible after a lock expires | Possible when a channel closes before the acknowledgement; the sample's SQL `MERGE` makes processing idempotent on both |
+| Message properties | Message ID, content type, and the message type as `Subject` | Message ID, content type, and the message type as `type`; marked persistent |
 | Lock or visibility | 1 minute lock per message | Unacknowledged messages are redelivered when the channel closes |
-| Connection lifetime | Managed by the SDK | With OAuth, the broker closes the connection when the token expires; the worker reconnects with a new token |
+| Connection lifetime | Managed by the SDK | With OAuth, the broker closes the connection when the token expires; the application reconnects with a new token |
 
 ## Can RabbitMQ 4 be used with the Service Bus client?
 
@@ -45,25 +52,27 @@ The Service Bus SDK is built for Service Bus. Whether it works against RabbitMQ 
 
 ## Authentication options
 
-1. **Password.** The recipe generates a username and password. Radius stores them in a Kubernetes Secret, and the application binds them as environment variables.
-2. **OAuth 2.0 with a customer-operated identity provider.** This is the same federated pattern Entra workload identity uses, with a different issuer. Set the issuer on the recipe. The worker sends its projected Kubernetes service account token to the issuer's token endpoint as a client assertion (`client_credentials` grant with a JWT bearer assertion), receives an access token, and presents it to RabbitMQ as the password. No secret is stored: the cluster issues and rotates the service account token. Authorization travels in the token, so RabbitMQ keeps no user record for the workload. The sample uses Keycloak federated with Active Directory. See the [RabbitMQ OAuth 2.0 guide](https://www.rabbitmq.com/docs/oauth2).
+1. **Password.** The Recipe generates a username and password. Radius stores them in a Kubernetes Secret, and the application receives them through its connection to the queue.
+2. **OAuth 2.0 with a customer-operated identity provider.** This is the same federated pattern Entra workload identity uses, with a different issuer. Set the issuer on the Azure Local Recipe Pack (`oauthIssuer`). The application sends its projected Kubernetes service account token to the issuer's token endpoint as a client assertion (`client_credentials` grant with a JWT bearer assertion), receives an access token, and presents it to RabbitMQ as the password. No secret is stored: the cluster issues and rotates the service account token. Authorization travels in the token, so RabbitMQ keeps no user record for the workload. The sample uses Keycloak federated with Active Directory; see its [authentication page](../../../samples/OrderManagementApp/docs/authentication.md) and the [RabbitMQ OAuth 2.0 guide](https://www.rabbitmq.com/docs/oauth2).
 
-## Observed limitations of the reference recipe
+## Observed limitations of the reference Recipe
 
-The reference recipe is sample code. As written it has these limitations:
+The [reference Recipe](../../../recipes/message-queue/azure-local/rabbitmq/rabbitmq-queue.bicep) is sample code. As written it has these limitations:
 
 - **No data volume.** Queues and messages are declared durable, but nothing persists the broker's data directory, so messages are lost if the pod is rescheduled.
-- **Single pod.** The recipe does not set replicas or a clustered queue type.
-- **No dead-lettering.** The queue type's `maxDeliveryCount` setting is not applied by this recipe.
+- **Single pod.** The Recipe does not set replicas or a clustered queue type.
+- **No dead-lettering.** The queue type's `maxDeliveryCount` setting is not applied by this Recipe.
 - **No TLS on the AMQP listener.**
 - **Management interface** is exposed on its own port and still uses the generated password.
 
 ## Required application changes
 
-- A RabbitMQ implementation of the publish and subscribe interfaces, with its own acknowledge, retry and reconnect behaviour.
-- A selector that chooses the implementation from the `provider` value.
-- With OAuth, a small token provider that reads the projected service account token and refreshes access tokens.
+Each item links to where the Order Management sample does it.
 
+- A RabbitMQ implementation of the publish and subscribe interfaces, with its own acknowledge, retry and reconnect behaviour: [RabbitMqMessageBroker.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Messaging/RabbitMqMessageBroker.cs).
+- A selector that chooses the implementation from the `provider` value: [ServiceCollectionExtensions.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/DependencyInjection/ServiceCollectionExtensions.cs).
+- With OAuth, a small token provider that reads the projected service account token and refreshes access tokens: [WorkloadTokenProvider.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Identity/WorkloadTokenProvider.cs).
+- Idempotent processing, because both brokers can deliver a message more than once: [SqlOrderStore.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Persistence/SqlOrderStore.cs).
 
 ## References
 

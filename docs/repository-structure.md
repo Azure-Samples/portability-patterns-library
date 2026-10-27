@@ -49,7 +49,7 @@ portability-patterns-library/
 │   └── <slug>/                               # e.g. service-bus, blob-storage, postgresql
 │       ├── README.md                         # Guide
 │       ├── alternatives/                     # One page per alternative
-│       └── examples/                         # Smallest single-resource deployment per target
+│       └── examples/                         # Only when no sample covers the resource
 ├── targets/                                  # One page per target environment
 ├── recipes/                                  # <capability>/<platform>/<implementation>
 │   └── object-storage/azure-local/azurite/   # Recipe source, README, test app
@@ -59,13 +59,13 @@ portability-patterns-library/
 
 | Folder | Purpose |
 |---|---|
-| `resources/<slug>/examples/` | The smallest deployment of that one resource on each target. For SQL: a small app that writes and reads one row, with no queue or backend. |
+| `resources/<slug>/examples/` | The smallest deployment of that one resource on each target, added only when no sample under `samples/` covers the resource. For SQL: a small app that writes and reads one row, with no queue or backend. When a sample covers the resource, the guide's Examples section links to the sample's Recipes, Recipe Packs and code instead. |
 | `samples/` | Multi-resource apps that combine identity, messaging, storage and SQL across targets. The business-continuity demo runs from here. |
 | `targets/` | One page per environment (Azure Local, Kubernetes, what works offline): links to the official Microsoft documentation for prerequisites, how the environment differs from Azure (connectivity, identity model), and which recipe pack sample applies. |
 
 ## 4. Resource guide
 
-Every Azure resource has one guide, `resources/<slug>/README.md`. It summarizes the resource across all targets and alternatives, and links to `alternatives/` and `examples/` for detail.
+Every Azure resource has one guide, `resources/<slug>/README.md`. It summarizes the resource across all targets and alternatives, and links to `alternatives/` for detail and to a sample or `examples/` for working code.
 
 An **alternative** is how the capability is provided on a target. It can be a different product (RabbitMQ in place of Service Bus), the same engine hosted by the customer (SQL Server in a container), or the Azure service itself where it is still reachable.
 
