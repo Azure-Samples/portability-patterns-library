@@ -33,6 +33,7 @@
       "RegistryName": "<acr-name>"
     },
     "Cluster": {
+      "Location": "<azure-local-instance-region>",
       "AzureLocalResourceGroup": "<azure-local-resource-group>",
       "CustomLocationName": "<azure-local-custom-location>",
       "VmSwitchName": "<vm-switch-name>",

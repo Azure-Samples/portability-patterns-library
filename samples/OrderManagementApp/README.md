@@ -116,7 +116,8 @@ Settings for your subscription, if you need them, are listed at the top of
 ## Deploy to Azure Local
 
 On the management machine, copy [scripts/settings.example.json](./scripts/settings.example.json) to
-`scripts/settings.json`, fill in the `AzureLocal` section, then run:
+`scripts/settings.json` and fill in the `AzureLocal` section. [Azure Local settings](./docs/azure-local-settings.md)
+says where to find each value. Then run:
 
 ```powershell
 ./scripts/up.ps1 -Target AzureLocal
