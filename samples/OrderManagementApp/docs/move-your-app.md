@@ -84,7 +84,7 @@ differs between platforms. An **Environment** is a deployment target that points
 | | [Azure pack](../../../recipe-packs/azure.bicep) | [Azure Local pack](../../../recipe-packs/azure-local.bicep) |
 |---|---|---|
 | Recipes from | your ACR | the connected registry in the cluster |
-| Pod identity | service account + Entra Workload ID label | service account + Keycloak token and CA; Kerberos keytab for SQL |
+| Pod identity | service account + Entra Workload ID label | service account + Keycloak token and CA |
 | Image pulls | AcrPull on the cluster | image pull secret |
 | Environment | [azure.bicep](../deploy/environments/azure.bicep): also names the subscription and resource group for PaaS resources | [azurelocal.bicep](../deploy/environments/azurelocal.bicep): no Azure settings |
 

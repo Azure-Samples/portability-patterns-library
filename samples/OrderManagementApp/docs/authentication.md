@@ -33,7 +33,7 @@ credential from what the platform provides, with no platform switch:
 |---|---|---|---|
 | Queue | [Entra Workload ID](https://learn.microsoft.com/azure/aks/workload-identity-overview) | the pod's Kubernetes token, exchanged at Keycloak for a token RabbitMQ accepts | [ServiceCollectionExtensions.cs](../src/OrderManagement.Shared/DependencyInjection/ServiceCollectionExtensions.cs) |
 | Object storage | Entra Workload ID | Azurite connection string from the Recipe | [ArchiveOptions.cs](../src/OrderManagement.Shared/Configuration/ArchiveOptions.cs) |
-| SQL | Entra Workload ID | Kerberos as the app's Active Directory account | [SqlOptions.cs](../src/OrderManagement.Shared/Configuration/SqlOptions.cs) |
+| SQL | Entra Workload ID | SQL login (`sa`) with the password set at deployment | [SqlOptions.cs](../src/OrderManagement.Shared/Configuration/SqlOptions.cs) |
 
 On Azure Local, Keycloak plays Entra's part: it trusts the cluster's token issuer, the way Entra
 trusts it through a federated credential, so the exchange works the same way and needs nothing in
@@ -63,13 +63,9 @@ needs:
   Granting access is adding people to these groups.
 - A bind account for Keycloak, `svc-keycloak`. It needs no privileged group.
 - LDAPS on the domain controller, which needs a server certificate from a certificate authority.
-- For SQL with Kerberos: a service account for SQL Server with its service principal names, an
-  account for the app, and their keytabs. See
-  [Active Directory authentication for SQL Server on Linux](https://learn.microsoft.com/sql/linux/containers/tutorial-adutil).
-  Without them, SQL falls back to a SQL login.
 
 [ad-setup.ps1](../scripts/infra/azurelocal/ad-setup.ps1) creates all of this and hands the bind
-account, the CA certificate and the keytabs to the cluster. Run it from the management machine as a
+account and the CA certificate to the cluster. Run it from the management machine as a
 domain administrator:
 
 ```powershell
