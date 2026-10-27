@@ -5,7 +5,6 @@ Azure Service Bus isn't available on Azure Local. This guide shows what you can 
 | Target | Alternative | Portability class | Availability | Summary |
 |---|---|---|---|---|
 | Azure Local | [RabbitMQ](./alternatives/rabbitmq.md) | `adapter-required` | Sample available | Open-source broker you run in the cluster. Different client and failure handling, so the application talks to it through an adapter. |
-| Azure Local | [Apache Kafka](https://kafka.apache.org/documentation/) | — | Documentation available | Not evaluated by this project. See the linked documentation. |
 
 ## What carries over
 
