@@ -583,10 +583,11 @@ try {
     }
     $temporaryFiles += $applicationParameters
 
-    # Earlier versions of the Recipes ran SQL Server, RabbitMQ and Azurite as Deployments; they're
-    # StatefulSets now. Radius doesn't remove what a Recipe no longer creates, so the old Deployments
-    # are removed here, and their pods must be gone before the StatefulSets mount the same volumes.
-    $backingServices = 'mssql', 'rabbitmq', 'azurite'
+    # Earlier versions of the Recipes ran SQL Server and RabbitMQ as Deployments; they're
+    # StatefulSets now. Radius doesn't remove what a Recipe no longer creates, and both carry the
+    # labels the Services select on, so traffic would be split between the old and the new servers.
+    # The old Deployments are removed here, once per site, and their pods must stop first.
+    $backingServices = 'mssql', 'rabbitmq'
     $deployments = (kubectl get deployments --context $KubeContext --namespace $Namespace --output json | ConvertFrom-Json).items
     $replaced = @($deployments | Where-Object { $_.spec.selector.matchLabels.app -in $backingServices })
     foreach ($deployment in $replaced) {
@@ -599,7 +600,7 @@ try {
         $deadline = (Get-Date).AddMinutes(5)
         while (kubectl get pods --context $KubeContext --namespace $Namespace --output name `
                 --selector "app in ($($backingServices -join ','))") {
-            if ((Get-Date) -gt $deadline) { throw 'The old SQL Server, RabbitMQ or Azurite pods did not stop within 5 minutes.' }
+            if ((Get-Date) -gt $deadline) { throw 'The old SQL Server or RabbitMQ pods did not stop within 5 minutes.' }
             Start-Sleep -Seconds 5
         }
     }

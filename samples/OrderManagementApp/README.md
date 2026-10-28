@@ -157,18 +157,19 @@ time, trust the site CA with the command it printed.
 
 To deploy a new version later, run `./scripts/deploy.ps1 -Target AzureLocal`.
 
-RabbitMQ, SQL Server and Azurite each keep their data on a persistent volume on the cluster's
-default storage class, so a restarted pod keeps its queued messages, orders and archived files. An
-order that fails `maxDeliveryCount` times (10) moves to the `orders.dead-letter` queue, as it moves
-to the dead-letter queue in Service Bus on Azure. cert-manager renews the app's and Keycloak's
+RabbitMQ and SQL Server each keep their data on a persistent volume on the cluster's default storage
+class, so a restarted pod keeps its queued messages and orders. Azurite, a stand-in to be replaced,
+keeps none: the archived order files are lost when its pod restarts. An order that fails
+`maxDeliveryCount` times (10) moves to the `orders.dead-letter` queue, as it moves to the
+dead-letter queue in Service Bus on Azure. cert-manager renews the app's and Keycloak's
 certificates on site, from the site CA, 30 days before they expire. For production, you would also
 need:
 
 - **High availability:** each service runs as a single pod. Use a RabbitMQ cluster (for example the
   RabbitMQ Cluster Operator) and a SQL Server availability group.
 - **Backups:** nothing backs up the volumes. Schedule SQL Server backups and copy them off the cluster.
-- **A supported object store:** Azurite is an emulator. Use an S3- or Blob-compatible store supported
-  for production.
+- **A supported object store:** Azurite is an emulator that keeps no data. Use an S3- or
+  Blob-compatible store supported for production.
 - **Sizing:** the volume sizes and CPU and memory limits are small defaults; set them from your load.
 - **Upgrades:** the image tags float (`2022-latest`, `4-management-alpine`). Pin them, and test
   upgrades before rolling them out.

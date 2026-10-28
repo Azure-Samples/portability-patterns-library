@@ -114,6 +114,24 @@ public sealed class BlobArchiveStore : IArchiveStore
         // Date-partitioned layout keeps listings cheap as the archive grows.
         var blobClient = _containerClient.GetBlobClient($"{order.PlacedAt:yyyy/MM/dd}/{order.OrderId}.json");
 
+        try
+        {
+            await UploadAsync(blobClient, order, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Azure.RequestFailedException ex) when (ex.ErrorCode == BlobErrorCode.ContainerNotFound)
+        {
+            // The container can disappear after startup, for example when an emulator that keeps no
+            // data restarts. Without this every later order would fail until the worker restarts.
+            _logger.LogWarning("Object storage container {Container} is missing; creating it again", _options.ContainerName);
+            await _containerClient.CreateIfNotExistsAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            await UploadAsync(blobClient, order, cancellationToken).ConfigureAwait(false);
+        }
+
+        return blobClient.Uri.ToString();
+    }
+
+    private static async Task UploadAsync(BlobClient blobClient, Order order, CancellationToken cancellationToken)
+    {
         using var content = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(order.ToJson()));
 
         // Overwrite: a redelivered message must not fail on the blob it already wrote.
@@ -129,7 +147,5 @@ public sealed class BlobArchiveStore : IArchiveStore
                 }
             },
             cancellationToken).ConfigureAwait(false);
-
-        return blobClient.Uri.ToString();
     }
 }
