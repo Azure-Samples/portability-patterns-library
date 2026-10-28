@@ -165,8 +165,8 @@ dead-letter queue in Service Bus on Azure. cert-manager renews the app's and Key
 certificates on site, from the site CA, 30 days before they expire. For production, you would also
 need:
 
-- **High availability:** each service runs as a single pod. Use a RabbitMQ cluster (for example the
-  RabbitMQ Cluster Operator) and a SQL Server availability group.
+- **High availability:** this is a sample app with onre replica of each service running. For production, consider running multiple replicas of each
+  service for HA.
 - **Backups:** nothing backs up the volumes. Schedule SQL Server backups and copy them off the cluster.
 - **A supported object store:** Azurite is an emulator that keeps no data. Use an S3- or
   Blob-compatible store supported for production.
