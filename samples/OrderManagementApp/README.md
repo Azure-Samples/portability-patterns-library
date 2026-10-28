@@ -39,7 +39,7 @@ flowchart LR
 | User sign-in | Microsoft Entra ID | Keycloak, federated to the site's Active Directory |
 | How the app authenticates to services | Entra Workload ID (no secrets) | Keycloak token for the queue; Recipe-issued credentials for SQL and storage |
 | Images and Recipes | Azure Container Registry | ACR connected registry inside the cluster |
-| HTTPS address | Managed NGINX ingress (app routing add-on) on a public IP, `<label>.<region>.cloudapp.azure.com`, certificate from Let's Encrypt | NGINX ingress on an address from the Arc load balancer on the site network, certificate from a CA the setup creates |
+| HTTPS address | Managed NGINX ingress (app routing add-on) on a public IP, `<label>.<region>.cloudapp.azure.com`, certificate from Let's Encrypt | NGINX ingress on an address from the Arc load balancer on the site network, certificate from a site CA, renewed by cert-manager in the cluster |
 
 The Azure Local column runs nothing in Azure at runtime. That is what lets the app keep working when
 the site is cut off from Azure.
@@ -153,9 +153,31 @@ says where to find each value. Then run:
 
 It checks the site, creates the AKS cluster and everything the app needs on it, and deploys the app.
 Open the address it prints and sign in with an AD account in one of the app's groups. The first
-time, trust the site's CA certificates with the commands it printed.
+time, trust the site CA with the command it printed.
 
 To deploy a new version later, run `./scripts/deploy.ps1 -Target AzureLocal`.
+
+RabbitMQ, SQL Server and Azurite each keep their data on a persistent volume on the cluster's
+default storage class, so a restarted pod keeps its queued messages, orders and archived files. An
+order that fails `maxDeliveryCount` times (10) moves to the `orders.dead-letter` queue, as it moves
+to the dead-letter queue in Service Bus on Azure. cert-manager renews the app's and Keycloak's
+certificates on site, from the site CA, 30 days before they expire. For production, you would also
+need:
+
+- **High availability:** each service runs as a single pod. Use a RabbitMQ cluster (for example the
+  RabbitMQ Cluster Operator) and a SQL Server availability group.
+- **Backups:** nothing backs up the volumes. Schedule SQL Server backups and copy them off the cluster.
+- **A supported object store:** Azurite is an emulator. Use an S3- or Blob-compatible store supported
+  for production.
+- **Sizing:** the volume sizes and CPU and memory limits are small defaults; set them from your load.
+- **Upgrades:** the image tags float (`2022-latest`, `4-management-alpine`). Pin them, and test
+  upgrades before rolling them out.
+- **Hardening:** traffic to RabbitMQ and Azurite is not encrypted, the app does not verify SQL
+  Server's certificate, and it signs in to SQL Server as `sa`. Add TLS with trusted certificates and a
+  least-privilege SQL login.
+
+To change the SQL administrator password, run
+`./scripts/deploy.ps1 -Target AzureLocal -Stage Site -SkipRadiusInstall -RotateSqlPassword`.
 
 ## Clean up
 

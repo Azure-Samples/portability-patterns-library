@@ -29,12 +29,12 @@
     secret changes, since 'rad install kubernetes' otherwise leaves an existing installation alone.
 
 .PARAMETER RotateSqlPassword
-    Generate a new SQL administrator password instead of reusing the one in 'oms-sql-admin'. The
-    SQL container keeps no volume, so rotating restarts it empty; use it when the password leaked.
+    Generate a new SQL administrator password instead of reusing the one in 'oms-sql-admin', set it
+    in the running SQL Server, then redeploy the application with it. Use it when the password leaked.
 
 .PARAMETER Stage
     Azure builds and pushes the images and publishes the Recipes to the cloud registry, and writes
-    the image digests to <HandoverPath>/release.json. Site runs on the site network with no Azure
+    their digests to <HandoverPath>/release.json. Site runs on the site network with no Azure
     sign-in: it reads release.json, waits for the connected registry to hold that release, and runs
     rad install and rad deploy. ./scripts/deploy.ps1 runs both in a row unless told otherwise.
 
@@ -100,7 +100,7 @@ param(
     [switch]$SkipRadiusInstall,
 
     # Azure where Azure is reachable (build, push, publish), Site on the site network (rad). They
-    # hand over through -HandoverPath (image digests only, no secrets).
+    # hand over through -HandoverPath (image and Recipe digests only, no secrets).
     [Parameter(Mandatory)]
     [ValidateSet('Azure', 'Site')]
     [string]$Stage,
@@ -258,15 +258,16 @@ try {
         Write-Host "==> Publishing Recipes to $pushRegistry" -ForegroundColor Cyan
         ./scripts/deploy/publish-recipes.ps1 -Registry $pushRegistry -Platform azure-local -Tag $ImageTag
 
-        # The cluster pulls latest-tagged images by tag, so a stale digest would still answer 200. The
-        # digest in the cloud registry is compared for the images rebuilt by this run.
+        # The cluster pulls latest-tagged images and Recipes by tag, so a stale digest would still
+        # answer 200. Their digests in the cloud registry are what the Site stage waits for.
         $expectedDigests = @{}
-        foreach ($worker in @('api', 'processor')) {
-            $expectedDigests["oms/${worker}:$ImageTag"] = az acr manifest show-metadata "$pushRegistry/oms/${worker}:$ImageTag" --query digest --output tsv 2>$null
-            if (-not $expectedDigests["oms/${worker}:$ImageTag"]) { throw "Could not read the digest of oms/${worker}:$ImageTag in $pushRegistry." }
+        $published = @('oms/api', 'oms/processor') + (Get-LibraryRecipe -Platform azure-local | ForEach-Object { "recipes/$($_.BaseName)" })
+        foreach ($repository in $published) {
+            $expectedDigests["${repository}:$ImageTag"] = az acr manifest show-metadata "$pushRegistry/${repository}:$ImageTag" --query digest --output tsv 2>$null
+            if (-not $expectedDigests["${repository}:$ImageTag"]) { throw "Could not read the digest of ${repository}:$ImageTag in $pushRegistry." }
         }
 
-        # What the Site stage deploys. No secrets: image digests only.
+        # What the Site stage deploys. No secrets: digests only.
         New-Item -ItemType Directory -Force -Path $HandoverPath | Out-Null
         [System.IO.File]::WriteAllText($releaseFile,
             (@{ imageTag = $ImageTag; digests = $expectedDigests } | ConvertTo-Json -Depth 5),
@@ -497,14 +498,16 @@ try {
     if ($SqlAdminPassword -and $RotateSqlPassword) {
         throw 'Pass either -SqlAdminPassword or -RotateSqlPassword, not both.'
     }
+    $storedSqlPassword = kubectl get secret $sqlSecretName --context $KubeContext --namespace $Namespace `
+        --ignore-not-found --output jsonpath='{.data.password}'
+    $previousSqlPassword = if ([string]::IsNullOrWhiteSpace($storedSqlPassword)) { $null }
+    else { [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($storedSqlPassword)) }
     if ($SqlAdminPassword) {
         $plainSqlPassword = [System.Net.NetworkCredential]::new('', $SqlAdminPassword).Password
     }
     else {
-        $storedSqlPassword = kubectl get secret $sqlSecretName --context $KubeContext --namespace $Namespace `
-            --ignore-not-found --output jsonpath='{.data.password}'
-        if (-not $RotateSqlPassword -and -not [string]::IsNullOrWhiteSpace($storedSqlPassword)) {
-            $plainSqlPassword = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($storedSqlPassword))
+        if (-not $RotateSqlPassword -and $previousSqlPassword) {
+            $plainSqlPassword = $previousSqlPassword
             Write-Host "==> Reusing the SQL administrator password from secret '$sqlSecretName'" -ForegroundColor DarkGray
         }
         else {
@@ -512,10 +515,33 @@ try {
             $randomBytes = [byte[]]::new(24)
             [System.Security.Cryptography.RandomNumberGenerator]::Fill($randomBytes)
             $plainSqlPassword = 'Oms1!' + [Convert]::ToBase64String($randomBytes)
-            $verb = if ($RotateSqlPassword) { 'Rotated' } else { 'Generated' }
-            Write-Host "==> $verb the SQL administrator password and stored it in secret '$sqlSecretName'" -ForegroundColor DarkGray
+            Write-Host "==> Generated a new SQL administrator password, kept in secret '$sqlSecretName'" -ForegroundColor DarkGray
         }
     }
+
+    # SQL Server reads MSSQL_SA_PASSWORD only when it first creates its databases on the volume, so
+    # a new password must also be set inside the running server. The passwords go over stdin, never
+    # on a command line.
+    if ($previousSqlPassword -and $plainSqlPassword -ne $previousSqlPassword) {
+        $sqlPods = @(kubectl get pods --context $KubeContext --namespace $Namespace --selector app=mssql `
+                --field-selector status.phase=Running --output jsonpath='{.items[*].metadata.name}' |
+            ForEach-Object { $_ -split ' ' } | Where-Object { $_ })
+        foreach ($sqlPod in $sqlPods) {
+            Write-Host "==> Changing the SQL administrator password in $sqlPod" -ForegroundColor Cyan
+            $alterLogin = "ALTER LOGIN sa WITH PASSWORD = N'$($plainSqlPassword.Replace("'", "''"))';`nGO"
+            "$previousSqlPassword`n$alterLogin" |
+                kubectl exec --stdin $sqlPod --container mssql --context $KubeContext --namespace $Namespace -- `
+                    bash -c 'IFS= read -r P; export SQLCMDPASSWORD="${P%$''\r''}"; /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -b' |
+                Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                throw "Changing the SQL administrator password in $sqlPod failed; secret '$sqlSecretName' still holds the old one."
+            }
+        }
+    }
+    elseif (-not $previousSqlPassword -and $SqlAdminPassword) {
+        Write-Warning "Secret '$sqlSecretName' did not exist, so an existing SQL Server keeps the password it was created with."
+    }
+    $previousSqlPassword = $null
 
     kubectl create secret generic $sqlSecretName --context $KubeContext --namespace $Namespace `
         --from-literal=password=$plainSqlPassword --dry-run=client --output yaml |
@@ -557,6 +583,27 @@ try {
     }
     $temporaryFiles += $applicationParameters
 
+    # Earlier versions of the Recipes ran SQL Server, RabbitMQ and Azurite as Deployments; they're
+    # StatefulSets now. Radius doesn't remove what a Recipe no longer creates, so the old Deployments
+    # are removed here, and their pods must be gone before the StatefulSets mount the same volumes.
+    $backingServices = 'mssql', 'rabbitmq', 'azurite'
+    $deployments = (kubectl get deployments --context $KubeContext --namespace $Namespace --output json | ConvertFrom-Json).items
+    $replaced = @($deployments | Where-Object { $_.spec.selector.matchLabels.app -in $backingServices })
+    foreach ($deployment in $replaced) {
+        Write-Host "==> Removing Deployment $($deployment.metadata.name), now a StatefulSet" -ForegroundColor Cyan
+        Invoke-Checked "deleting $($deployment.metadata.name)" {
+            kubectl delete deployment $deployment.metadata.name --context $KubeContext --namespace $Namespace | Out-Null
+        }
+    }
+    if ($replaced) {
+        $deadline = (Get-Date).AddMinutes(5)
+        while (kubectl get pods --context $KubeContext --namespace $Namespace --output name `
+                --selector "app in ($($backingServices -join ','))") {
+            if ((Get-Date) -gt $deadline) { throw 'The old SQL Server, RabbitMQ or Azurite pods did not stop within 5 minutes.' }
+            Start-Sleep -Seconds 5
+        }
+    }
+
     Write-Host "==> Deploying the application" -ForegroundColor Cyan
     Invoke-Checked 'rad deploy application' {
         rad deploy deploy/app.bicep `
@@ -571,6 +618,10 @@ try {
     Write-Host "==> Waiting for the application to roll out (images come from $PullRegistry)" -ForegroundColor Cyan
     Invoke-Checked 'kubectl rollout status' {
         kubectl rollout status deployment --namespace $Namespace --context $KubeContext `
+            --timeout="${RolloutTimeoutSeconds}s" | Out-Null
+    }
+    Invoke-Checked 'kubectl rollout status' {
+        kubectl rollout status statefulset --namespace $Namespace --context $KubeContext `
             --timeout="${RolloutTimeoutSeconds}s" | Out-Null
     }
 

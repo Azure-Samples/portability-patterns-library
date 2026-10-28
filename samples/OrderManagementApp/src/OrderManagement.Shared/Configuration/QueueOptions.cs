@@ -29,6 +29,12 @@ public sealed class QueueOptions
     public string? Username { get; init; }
     public string? Password { get; init; }
 
+    /// <summary>
+    /// How many times a message is delivered before the broker dead-letters it. Service Bus applies
+    /// it on its own; the RabbitMQ client stops requeueing a message on its last attempt.
+    /// </summary>
+    public int MaxDeliveryCount { get; init; } = 10;
+
     public bool HasCredentials => !string.IsNullOrWhiteSpace(Password);
 
     public static QueueOptions FromConfiguration(IConfiguration configuration, string connectionName = "queue")
@@ -48,7 +54,8 @@ public sealed class QueueOptions
             QueueName = values.Get("queueName") ?? "orders",
             Endpoint = values.GetRequired("endpoint"),
             Username = values.Get("username"),
-            Password = values.Get("password")
+            Password = values.Get("password"),
+            MaxDeliveryCount = values.GetInt32("maxDeliveryCount", 10)
         };
     }
 }

@@ -196,6 +196,20 @@ public sealed class RabbitMqMessageBroker : IMessageBroker
             }
             catch (Exception ex)
             {
+                // A quorum queue reports how many times the message was delivered before. A requeue
+                // doesn't count towards the queue's delivery limit, so on the last attempt the message
+                // is rejected instead, and the queue's dead-letter policy moves it aside, as Service
+                // Bus does once DeliveryCount reaches MaxDeliveryCount.
+                var attempt = DeliveryAttempt(args.BasicProperties);
+                if (attempt >= _options.MaxDeliveryCount)
+                {
+                    _logger.LogError(ex, "Failed to process RabbitMQ message {MessageId} on attempt {Attempt} of {MaxDeliveryCount}; dead-lettering",
+                        messageId, attempt, _options.MaxDeliveryCount);
+                    await channel.BasicNackAsync(args.DeliveryTag, multiple: false, requeue: false, cancellationToken)
+                        .ConfigureAwait(false);
+                    return;
+                }
+
                 _logger.LogError(ex, "Failed to process RabbitMQ message {MessageId}; requeueing", messageId);
 
                 // Back off before requeueing. Without this a poison or transient-failure message is
@@ -225,6 +239,13 @@ public sealed class RabbitMqMessageBroker : IMessageBroker
         // Unacknowledged deliveries on a closed channel are redelivered; the SQL MERGE makes that safe.
         return await closed.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
     }
+
+    // 1 on the first delivery. Classic queues don't report earlier deliveries, so a message from one
+    // always counts as a first attempt and is never dead-lettered here.
+    private static long DeliveryAttempt(IReadOnlyBasicProperties properties) =>
+        properties.Headers?.TryGetValue("x-acquired-count", out var acquired) == true && acquired is not null
+            ? Convert.ToInt64(acquired, System.Globalization.CultureInfo.InvariantCulture) + 1
+            : 1;
 
     private async Task CloseQuietlyAsync()
     {
