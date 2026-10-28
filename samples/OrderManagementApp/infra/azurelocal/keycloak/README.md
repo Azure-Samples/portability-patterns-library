@@ -39,8 +39,12 @@ Run these from the `samples/OrderManagementApp` folder.
    kubectl -n identity create secret generic cluster-ca --from-file=cluster-ca.pem
    ```
 
-3. Give Keycloak a TLS certificate. Use one your site's CA issues, with the node address and
-   `keycloak.identity.svc` in its names:
+3. Give Keycloak a TLS certificate with the node address and `keycloak.identity.svc` in its names.
+   With cert-manager and the site's ClusterIssuer from
+   [provision-ingress.ps1](../../../scripts/infra/azurelocal/provision-ingress.ps1), create a
+   `Certificate` for Secret `keycloak-tls` (as [keycloak.ps1](../../../scripts/infra/azurelocal/keycloak.ps1)
+   does), and it's renewed before it expires. Or supply one your site's CA issued, which you then
+   renew yourself:
 
    ```powershell
    kubectl -n identity create secret tls keycloak-tls --cert <keycloak.crt> --key <keycloak.key>
@@ -71,8 +75,8 @@ Also add the `azurelocal-registry` pull secret to the `identity` namespace.
 ## Or use the script
 
 [keycloak.ps1](../../../scripts/infra/azurelocal/keycloak.ps1) does all of the steps above. It
-generates the passwords and the certificate for you and fills in the settings from the cluster.
-It also prepares the app's namespace.
+generates the passwords, gets the certificate from the site's ClusterIssuer and fills in the
+settings from the cluster. It also prepares the app's namespace.
 
 ## Changing the realm
 

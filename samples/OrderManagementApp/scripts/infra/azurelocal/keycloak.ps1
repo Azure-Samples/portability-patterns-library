@@ -53,6 +53,11 @@
     signing keys, so restart the app's pods afterwards or they reject tokens until their key cache
     refreshes.
 
+.PARAMETER CertificateIssuer
+    cert-manager ClusterIssuer that issues and renews Keycloak's certificate, 'site-ca' from
+    provision-ingress.ps1 by default. Pass '' to supply Secret identity/keycloak-tls yourself, which
+    then isn't renewed.
+
 .EXAMPLE
     ./scripts/infra/azurelocal/keycloak.ps1 -AdServer dc01.contoso.local -AdDomain contoso.local -AllowInClusterIssuer
 #>
@@ -72,6 +77,10 @@ param(
     [string]$WorkloadNamespace = 'oms-azurelocal',
     [string]$WorkloadServiceAccount = 'oms-workload',
     [string]$WorkloadCaSecretName = 'oms-identity-ca',
+
+    # ClusterIssuer for Keycloak's certificate, which provision-ingress.ps1 creates. Empty to supply
+    # Secret identity/keycloak-tls yourself.
+    [string]$CertificateIssuer = 'site-ca',
 
     [switch]$ReimportRealm,
     [switch]$SkipVerify,
@@ -95,7 +104,6 @@ $NodePort = 30443
 $ImagePullSecretName = 'azurelocal-registry'
 $BindSecretName = 'oms-ad-bind'
 $CaSecretName = 'oms-ad-ca'
-$IssuerCaSecretName = 'keycloak-ca'
 Push-Location $repoRoot
 
 # Windows PowerShell does not load this assembly by default.
@@ -127,14 +135,6 @@ function Get-SecretValue {
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($encoded)) { return $null }
 
     return [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encoded))
-}
-
-function ConvertTo-Pem {
-    param([Parameter(Mandatory = $true)][System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate)
-
-    return "-----BEGIN CERTIFICATE-----`n" +
-        [Convert]::ToBase64String($Certificate.RawData, 'InsertLineBreaks') +
-        "`n-----END CERTIFICATE-----"
 }
 
 function New-RandomSecret {
@@ -387,93 +387,52 @@ data:
     }
 
     # Keycloak refuses to start 'start' mode over plain HTTP, so it needs a certificate before the
-    # Deployment is applied.
-    if (-not (kubectl --context $KubeContext -n $Namespace get secret keycloak-tls --ignore-not-found --output name)) {
-        Write-Host "==> Issuing a certificate for Keycloak" -ForegroundColor Cyan
-
-        # ExportPkcs8PrivateKey arrived with .NET Core, so Windows PowerShell cannot write the key.
-        if ($PSVersionTable.PSEdition -ne 'Core') {
-            throw @"
-Generating the Keycloak certificate needs PowerShell 7. Either re-run this script under 'pwsh',
-or create the Secret yourself and re-run:
-  kubectl --context $KubeContext -n $Namespace create secret tls keycloak-tls --cert <crt> --key <key>
-"@
+    # Deployment is applied. cert-manager issues it from the site CA and renews it 30 days before it
+    # expires; Keycloak re-reads the files every 10 minutes (keycloak.yaml), so no restart is needed.
+    if ($CertificateIssuer) {
+        if (-not (kubectl --context $KubeContext get clusterissuer $CertificateIssuer --ignore-not-found --output name)) {
+            throw "No ClusterIssuer '$CertificateIssuer'. Run ./scripts/infra/azurelocal/provision-ingress.ps1 first, or pass -CertificateIssuer '' and create Secret $Namespace/keycloak-tls yourself."
         }
+        Write-Host "==> Certificate for Keycloak from ClusterIssuer '$CertificateIssuer'" -ForegroundColor Cyan
 
         $nodeIp = kubectl --context $KubeContext get nodes `
             --output 'jsonpath={.items[0].status.addresses[?(@.type=="InternalIP")].address}'
-
-        # Built with .NET rather than New-SelfSignedCertificate, which only exists in Windows
-        # PowerShell's PKI module, so this works under PowerShell 7 on any OS and touches no store.
-        $X509 = 'System.Security.Cryptography.X509Certificates'
-        $sha256 = [System.Security.Cryptography.HashAlgorithmName]::SHA256
-        $pkcs1 = [System.Security.Cryptography.RSASignaturePadding]::Pkcs1
-        $now = [DateTimeOffset]::UtcNow
-
-        # A small CA signs the serving certificate rather than the certificate signing itself.
-        # Erlang's TLS client, which RabbitMQ uses to fetch the signing keys, rejects a self-signed
-        # peer outright ('Bad Certificate - selfsigned_peer') because a trust anchor has to be a CA.
-        # Clients therefore trust this CA, not the certificate Keycloak presents.
-        $caKey = [System.Security.Cryptography.RSA]::Create(2048)
-        $caRequest = New-Object "$X509.CertificateRequest" 'CN=BCD Identity Issuing CA', $caKey, $sha256, $pkcs1
-        $caRequest.CertificateExtensions.Add((New-Object "$X509.X509BasicConstraintsExtension" $true, $true, 0, $true))
-        $caRequest.CertificateExtensions.Add((New-Object "$X509.X509KeyUsageExtension" (
-                    [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]'KeyCertSign, CrlSign, DigitalSignature'), $true))
-        $caRequest.CertificateExtensions.Add((New-Object "$X509.X509SubjectKeyIdentifierExtension" $caRequest.PublicKey, $false))
-        $ca = $caRequest.CreateSelfSigned($now.AddDays(-1), $now.AddYears(5))
-
         # The node address goes in as a real iPAddress entry: browsers reject an address listed as a
         # DNS name when the URL is an address.
-        $san = New-Object "$X509.SubjectAlternativeNameBuilder"
-        foreach ($name in $ReleaseName, "$ReleaseName.$Namespace", "$ReleaseName.$Namespace.svc", "$ReleaseName.$Namespace.svc.cluster.local") {
-            $san.AddDnsName($name)
-        }
-        $san.AddIpAddress([System.Net.IPAddress]::Parse($nodeIp))
-
-        $key = [System.Security.Cryptography.RSA]::Create(2048)
-        $request = New-Object "$X509.CertificateRequest" "CN=$ReleaseName.$Namespace.svc", $key, $sha256, $pkcs1
-        $request.CertificateExtensions.Add($san.Build())
-        $serverAuth = New-Object System.Security.Cryptography.OidCollection
-        [void]$serverAuth.Add([System.Security.Cryptography.Oid]::new('1.3.6.1.5.5.7.3.1'))
-        $request.CertificateExtensions.Add((New-Object "$X509.X509EnhancedKeyUsageExtension" $serverAuth, $false))
-        $request.CertificateExtensions.Add((New-Object "$X509.X509BasicConstraintsExtension" $false, $false, 0, $false))
-        $serial = [byte[]]::new(16); [System.Security.Cryptography.RandomNumberGenerator]::Fill($serial)
-        $cert = $request.Create($ca, $now.AddDays(-1), $now.AddYears(2), $serial)
-
-        $certPem = ConvertTo-Pem -Certificate $cert
-        $caPem = ConvertTo-Pem -Certificate $ca
-        $keyPem = "-----BEGIN PRIVATE KEY-----`n" +
-            [Convert]::ToBase64String($key.ExportPkcs8PrivateKey(), 'InsertLineBreaks') +
-            "`n-----END PRIVATE KEY-----"
-
-        # Keycloak serves the issuer alongside the leaf so a client that holds only the CA can
-        # still build the path.
-        $chainPem = "$certPem`n$caPem"
-
-        $tlsManifest = @"
-apiVersion: v1
-kind: Secret
+        @"
+apiVersion: cert-manager.io/v1
+kind: Certificate
 metadata:
   name: keycloak-tls
   namespace: $Namespace
-type: kubernetes.io/tls
-data:
-  tls.crt: $([Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($chainPem)))
-  tls.key: $([Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($keyPem)))
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: $IssuerCaSecretName
-  namespace: $Namespace
-data:
-  ca.crt: $([Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($caPem)))
-"@
-        $tlsManifest | kubectl --context $KubeContext apply -f - | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw 'Writing the Keycloak certificate Secrets failed.' }
-        $caKey.Dispose(); $key.Dispose()
+spec:
+  secretName: keycloak-tls
+  commonName: $ReleaseName.$Namespace.svc
+  dnsNames:
+    - $ReleaseName
+    - $ReleaseName.$Namespace
+    - $ReleaseName.$Namespace.svc
+    - $ReleaseName.$Namespace.svc.cluster.local
+  ipAddresses:
+    - $nodeIp
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    algorithm: RSA
+    size: 2048
+    rotationPolicy: Always
+  issuerRef:
+    kind: ClusterIssuer
+    name: $CertificateIssuer
+"@ | kubectl --context $KubeContext apply -f - | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'Creating the Keycloak Certificate failed.' }
+        Invoke-Checked 'certificate keycloak-tls' {
+            kubectl --context $KubeContext -n $Namespace wait certificate/keycloak-tls --for=condition=Ready --timeout=180s | Out-Null
+        }
     }
-
+    elseif (-not (kubectl --context $KubeContext -n $Namespace get secret keycloak-tls --ignore-not-found --output name)) {
+        throw "With -CertificateIssuer '', create the Keycloak certificate yourself: kubectl --context $KubeContext -n $Namespace create secret tls keycloak-tls --cert <crt> --key <key>"
+    }
     Write-Host "==> Deploying PostgreSQL and Keycloak from infra/azurelocal/keycloak" -ForegroundColor Cyan
     $rendered = kubectl kustomize (Join-Path $repoRoot 'infra/azurelocal/keycloak')
     if ($LASTEXITCODE -ne 0) { throw 'Could not render infra/azurelocal/keycloak.' }
@@ -547,13 +506,14 @@ data:
     # Keycloak serves a certificate issued by a CA the cluster does not know, so the workload and
     # RabbitMQ both need that CA. Publishing the issuer rather than the serving certificate is what
     # lets a strict TLS client, such as the Erlang one RabbitMQ uses, build a valid path.
-    $keycloakCert = Get-SecretValue -Name $IssuerCaSecretName -Key 'ca.crt'
+    # cert-manager writes the issuing CA next to the certificate, as ca.crt.
+    $keycloakCert = Get-SecretValue -Name 'keycloak-tls' -Key 'ca.crt'
     if (-not $keycloakCert) {
-        # An externally supplied certificate has no separate CA secret; fall back to what it serves.
+        # A certificate supplied by hand may have no ca.crt; fall back to what Keycloak serves.
         $keycloakCert = Get-SecretValue -Name 'keycloak-tls' -Key 'tls.crt'
     }
     if (-not $keycloakCert) {
-        throw "Neither '$IssuerCaSecretName' nor 'keycloak-tls' in namespace '$Namespace' yields a certificate, so nothing can be published to '$WorkloadNamespace'."
+        throw "Secret 'keycloak-tls' in namespace '$Namespace' yields no certificate, so nothing can be published to '$WorkloadNamespace'."
     }
 
     $caFile = Join-Path ([IO.Path]::GetTempPath()) "keycloak-ca-$([guid]::NewGuid().ToString('N')).crt"
@@ -592,7 +552,7 @@ data:
     Write-Host 'The pod gets that assertion from a projected volume, not from a stored secret:' -ForegroundColor DarkGray
     Write-Host "  serviceAccountToken: { audience: '$issuerUrl', path: token, expirationSeconds: 600 }"
     Write-Host ''
-    Write-Host 'Trust the identity CA on a machine outside the domain (once; it shows a confirmation prompt):'
+    Write-Host 'Trust the CA behind Keycloak''s certificate on a machine outside the domain (once; it shows a confirmation prompt). With the site CA, this is the same CA the ingress uses:'
     Write-Host "  Import-Certificate -FilePath $identityCaFile -CertStoreLocation Cert:\CurrentUser\Root"
 }
 finally {
