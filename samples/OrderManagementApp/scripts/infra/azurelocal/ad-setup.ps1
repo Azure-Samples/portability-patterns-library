@@ -15,6 +15,8 @@
         enrols a server certificate and LDAPS works on 636. An existing CA is reused.
       * The OMS OU, the oms-app-readers / oms-app-writers groups, the Keycloak bind account and a
         sample user in both groups.
+      * Limits on the bind account: it can sign in only at the domain controllers, can't be
+        delegated, and is denied listing every container outside the OMS OU.
       * Two Kubernetes Secrets in the cluster: the bind and sample-user credentials, and the CA
         root certificate for Keycloak to trust LDAPS.
 
@@ -31,7 +33,8 @@
     instead; docs/authentication.md lists them under "Connect your Active Directory".
 
     The script is safe to re-run. Re-running resets the passwords of the accounts it manages and
-    rewrites the Secrets.
+    rewrites the Secrets. The bind account's limits cover the containers and domain controllers that
+    exist when it runs, so re-run it after adding either.
 
 .PARAMETER VmName
     Name of the domain controller VM, when this runs on its Hyper-V host (PowerShell Direct).
@@ -176,6 +179,75 @@ function Invoke-Guest {
 
     $connection = if ($ComputerName) { @{ ComputerName = $ComputerName } } else { @{ VMName = $VmName } }
     Invoke-Command @connection -Credential $Credential -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
+}
+
+# Keycloak signs in to the domain controllers over LDAP and reads the users and groups in the app's
+# OU. The bind account is limited to exactly that.
+function Set-BindAccountRestriction {
+    param([Parameter(Mandatory = $true)][pscredential]$Credential)
+
+    Write-Host "==> Limiting '$BindAccountName' to reading the '$OuName' OU" -ForegroundColor Cyan
+    $result = Invoke-Guest -Credential $Credential -ArgumentList $BindAccountName, $OuName -ScriptBlock {
+        param($bindName, $ouName)
+        $ErrorActionPreference = 'Stop'
+        Import-Module ActiveDirectory
+
+        $domain = Get-ADDomain
+        $ouDn = "OU=$ouName,$($domain.DistinguishedName)"
+        $bind = Get-ADUser -Identity $bindName
+
+        # An LDAP bind is a sign-in at the controller that answers it, so the account may sign in at
+        # the controllers and nowhere else. Controllers allow interactive and Remote Desktop sign-in
+        # to administrators only, which leaves the network sign-in LDAP uses. Nothing acts on the
+        # account's behalf, so delegation is off.
+        $controllers = @(Get-ADDomainController -Filter * | ForEach-Object { $_.Name })
+        Set-ADUser -Identity $bind -LogonWorkstations ($controllers -join ',') -AccountNotDelegated $true
+
+        # Every account can list most of the domain, through permissions AD puts on each container.
+        # A deny for this account on every container outside the OU takes precedence and hides
+        # everything else from its searches. The domain root stays listable, or the OU could not be
+        # found. Group Policy objects are skipped: Group Policy Management flags a GPO whose
+        # permissions differ from its SYSVOL folder.
+        $parents = @{}
+        $policies = @{}
+        Get-ADObject -Filter * -SearchBase $domain.DistinguishedName -SearchScope Subtree -ResultPageSize 1000 |
+            ForEach-Object {
+                if ($_.ObjectClass -eq 'groupPolicyContainer') { $policies[$_.DistinguishedName] = $true }
+                if ($_.DistinguishedName -match '^(?:\\.|[^,\\])+,(.+)$') { $parents[$Matches[1]] = $true }
+            }
+        $containers = @($parents.Keys | Where-Object {
+                $_.EndsWith(",$($domain.DistinguishedName)", [StringComparison]::OrdinalIgnoreCase) -and
+                -not $policies.ContainsKey($_) -and
+                $_ -ne $ouDn -and -not $_.EndsWith(",$ouDn", [StringComparison]::OrdinalIgnoreCase)
+            })
+
+        $rights = [System.DirectoryServices.ActiveDirectoryRights]'ListChildren, ListObject'
+        $added = 0
+        foreach ($dn in $containers) {
+            # Through psbase: PowerShell's ADSI adapter otherwise reads these names as LDAP attributes.
+            $entry = [System.DirectoryServices.DirectoryEntry]::new("LDAP://$($dn.Replace('/', '\/'))")
+            try {
+                $entry.psbase.Options.SecurityMasks = [System.DirectoryServices.SecurityMasks]::Dacl
+                $security = $entry.psbase.ObjectSecurity
+                $present = $security.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier]) |
+                    Where-Object {
+                        $_.AccessControlType -eq 'Deny' -and $_.IdentityReference -eq $bind.SID -and
+                        ($_.ActiveDirectoryRights -band $rights) -eq $rights
+                    }
+                if (-not $present) {
+                    $security.AddAccessRule([System.DirectoryServices.ActiveDirectoryAccessRule]::new($bind.SID, $rights, 'Deny'))
+                    $entry.psbase.ObjectSecurity = $security
+                    $entry.psbase.CommitChanges()
+                    $added++
+                }
+            }
+            catch { throw "Could not restrict '$bindName' on '$dn': $($_.Exception.Message)" }
+            finally { $entry.psbase.Dispose() }
+        }
+
+        [pscustomobject]@{ Controllers = $controllers -join ', '; Containers = $containers.Count; Added = $added }
+    }
+    Write-Host "    sign-in only at $($result.Controllers); listing denied on $($result.Containers) containers ($($result.Added) new)" -ForegroundColor DarkGray
 }
 
 
@@ -327,8 +399,8 @@ try {
             }
         }
 
-        # Keycloak reads the directory over LDAP with this account. It needs nothing beyond the
-        # read access every authenticated account already has, so it joins no privileged group.
+        # Keycloak reads the directory over LDAP with this account. It joins no group, and
+        # Set-BindAccountRestriction below narrows it further.
         $bindSecure = ConvertTo-SecureString $bindPw -AsPlainText -Force
         if (Get-ADUser -Filter "SamAccountName -eq '$bindName'" -ErrorAction SilentlyContinue) {
             Set-ADAccountPassword -Identity $bindName -NewPassword $bindSecure -Reset
@@ -366,6 +438,8 @@ try {
             DcFqdn           = "$env:COMPUTERNAME.$($domain.DNSRoot)".ToLowerInvariant()
         }
     } -ArgumentList $OuName, $BindAccountName, $bindPassword, $DemoUserName, $demoPassword
+
+    Set-BindAccountRestriction -Credential $domainCredential
 
     if (-not $SkipBindSecret) {
         if (-not (Get-Command kubectl -ErrorAction SilentlyContinue)) {

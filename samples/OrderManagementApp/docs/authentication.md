@@ -62,7 +62,10 @@ needs:
 - An OU for the app, `OMS`. Keycloak reads users and groups only from it.
 - Two groups in it: `oms-app-readers` (`Orders.Read`) and `oms-app-writers` (`Orders.Create`).
   Granting access is adding people to these groups.
-- A bind account for Keycloak, `svc-keycloak`. It needs no privileged group.
+- A bind account for Keycloak, `svc-keycloak`, limited to what Keycloak does: sign in to a domain
+  controller over LDAP and read the users and groups in the OU. It's in no group, can sign in only
+  at the domain controllers, can't be delegated, and is denied listing every container outside the
+  OU. Keycloak's connection is read-only too, so it never writes to the directory.
 - LDAPS on the domain controller, which needs a server certificate from a certificate authority.
 
 [ad-setup.ps1](../scripts/infra/azurelocal/ad-setup.ps1) creates all of this and hands the bind
@@ -74,8 +77,16 @@ domain administrator:
     -NetbiosName <NETBIOS name> -KubeContext <cluster context>
 ```
 
-To create the objects yourself instead, give Keycloak the bind account and the CA's root
-certificate as Secrets:
+The listing limits cover the containers and domain controllers that exist when the script runs, so
+run it again after adding either. That resets the bind password, so then run `keycloak.ps1
+-ReimportRealm` and restart the app's pods.
+Some things stay readable, as they are for every account in the domain: the names of the containers
+directly under the domain root (Keycloak has to find the OU there), the sub-containers of Group
+Policy objects, the forest's configuration, schema and DNS partitions, and the domain controllers'
+SYSVOL share.
+
+To create the objects yourself instead, give the bind account the same limits, then give Keycloak
+the bind account and the CA's root certificate as Secrets:
 
 ```powershell
 kubectl create namespace identity
