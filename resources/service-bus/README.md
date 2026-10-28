@@ -28,7 +28,7 @@ How to map Service Bus features to RabbitMQ, and how the sample does each step: 
 
 ## Observed limitations
 
-| References | Limitation for this resource |
+| Pattern | Limitation for this resource |
 |---|---|
 | [Messaging](https://learn.microsoft.com/azure/architecture/guide/technology-choices/messaging) | Not a drop-in replacement: the Service Bus SDK doesn't work against RabbitMQ. Sessions, scheduled messages and duplicate detection have no built-in equivalent. Dead-lettering and a maximum delivery count need RabbitMQ policies or queue arguments. |
 | [Workload identity](https://learn.microsoft.com/entra/workload-id/workload-identities-overview) | Entra ID isn't available. If you use workload identity federation, the same secret-free flow works with your own identity provider (Keycloak in the sample) through RabbitMQ's OAuth 2.0 plugin. If you use a shared access key, use a broker username and password instead. |
