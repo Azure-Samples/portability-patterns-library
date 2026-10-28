@@ -23,9 +23,9 @@ On Azure, Microsoft Entra Workload ID lets a pod swap its Kubernetes service acc
 
 How Entra concepts map to Keycloak, and how the sample does each step: [Keycloak as an alternative](./alternatives/keycloak.md).
 
-## Observed limitations, by pattern
+## Observed limitations
 
-| Pattern (Microsoft Learn) | Limitation for this resource |
+| References | Limitation for this resource |
 |---|---|
 | [Workload identity](https://learn.microsoft.com/entra/workload-id/workload-identities-overview) | Only services that accept OAuth 2.0 tokens from your identity provider can use it. In the sample RabbitMQ does, but SQL Server signs in with Kerberos and the storage emulator with a key. |
 | [Reliability](https://learn.microsoft.com/azure/well-architected/reliability/) | The identity provider becomes a critical dependency on site. If it's down, pods can't get new tokens once their current ones expire. |
