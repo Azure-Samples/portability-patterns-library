@@ -82,9 +82,9 @@ Illustrative example (not final content):
 >
 > **Required application changes:** a second broker implementation behind the same publish and subscribe interfaces, and code to choose it at startup.
 >
-> **Observed limitations, by pattern:**
+> **Observed limitations:**
 >
-> | Pattern (Microsoft Learn) | Limitation for this resource |
+> | References | Limitation for this resource |
 > |---|---|
 > | Messaging | RabbitMQ 4.0+ also speaks AMQP 1.0, but addressing, authentication and management are broker-specific, so the Service Bus SDK is not a drop-in client. The broker is hosted and operated by the customer. |
 > | Identity | Entra workload identity is unavailable. The same federated token flow works against the customer's own identity provider (Keycloak in the sample), or the broker uses its own credentials. |
