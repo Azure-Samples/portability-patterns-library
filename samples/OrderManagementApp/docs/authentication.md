@@ -43,6 +43,7 @@ Azure.
 |---|---|---|
 | Trusts the pod's token | Entra, through a federated identity credential | Keycloak client `oms-workloads` (`federated-jwt`) |
 | Puts the token in the pod | Workload ID webhook | the Recipe Pack, through the container Recipe |
+| Tells the app where to use it | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_FEDERATED_TOKEN_FILE` | `IDENTITY_CLIENT_ID`, `IDENTITY_TOKEN_ENDPOINT`, `IDENTITY_TOKEN_FILE`, set by the Recipe Pack |
 | Checks permissions | Azure RBAC | the `rabbitmq_scopes` claim in the token |
 
 If RabbitMQ refuses the token, check these first:

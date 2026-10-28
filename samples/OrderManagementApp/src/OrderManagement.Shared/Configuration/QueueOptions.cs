@@ -24,25 +24,12 @@ public sealed class QueueOptions
     /// </summary>
     public required string Endpoint { get; init; }
 
-    // RabbitMQ credentials, present only when the Recipe issues them.
+    // RabbitMQ credentials, present only when the Recipe issues them. When it doesn't, the broker
+    // accepts the pod's own identity instead (see WorkloadTokenOptions.FromEnvironment).
     public string? Username { get; init; }
     public string? Password { get; init; }
 
-    /// <summary>
-    /// Token endpoint used to obtain an access token for the broker. When set the broker is
-    /// authenticated with that token instead of a password.
-    /// </summary>
-    public string? OAuthTokenEndpoint { get; init; }
-
-    public string? OAuthClientId { get; init; }
-
-    /// <summary>Projected ServiceAccount token presented to the issuer as a client assertion.</summary>
-    public string? OAuthAssertionFile { get; init; }
-
-    public bool UseOAuth =>
-        !string.IsNullOrWhiteSpace(OAuthTokenEndpoint) &&
-        !string.IsNullOrWhiteSpace(OAuthClientId) &&
-        !string.IsNullOrWhiteSpace(OAuthAssertionFile);
+    public bool HasCredentials => !string.IsNullOrWhiteSpace(Password);
 
     public static QueueOptions FromConfiguration(IConfiguration configuration, string connectionName = "queue")
     {
@@ -61,10 +48,7 @@ public sealed class QueueOptions
             QueueName = values.Get("queueName") ?? "orders",
             Endpoint = values.GetRequired("endpoint"),
             Username = values.Get("username"),
-            Password = values.Get("password"),
-            OAuthTokenEndpoint = values.Get("oauthTokenEndpoint"),
-            OAuthClientId = values.Get("oauthClientId"),
-            OAuthAssertionFile = values.Get("oauthAssertionFile")
+            Password = values.Get("password")
         };
     }
 }

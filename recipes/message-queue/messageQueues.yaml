@@ -9,6 +9,11 @@ types:
       A container connected to the queue as `queue` receives `CONNECTION_QUEUE_*` environment
       variables, starting with `CONNECTION_QUEUE_PROVIDER` (`servicebus` or `rabbitmq`), which the
       application uses to pick its client. The Order Management sample (samples/OrderManagementApp) shows a complete example.
+
+      Workload identity is not part of this type. The platform gives it to every pod, the same way
+      on each target: Entra Workload ID sets `AZURE_*` variables on Azure, and the Azure Local Recipe
+      Pack sets `IDENTITY_TOKEN_FILE`, `IDENTITY_CLIENT_ID` and `IDENTITY_TOKEN_ENDPOINT`. When the
+      broker accepts that identity, the Recipe issues no credentials.
     apiVersions:
       '2025-08-01-preview':
         schema:
@@ -34,21 +39,9 @@ types:
               type: string
               description: "(Read Only) Where to reach the broker: `host:port` for RabbitMQ, the namespace host name for Azure Service Bus. Set by the Recipe."
               readOnly: true
-            oauthTokenEndpoint:
-              type: string
-              description: "(Read Only) Token endpoint of the identity provider the broker trusts. Set only when the broker accepts OAuth 2.0 tokens."
-              readOnly: true
-            oauthClientId:
-              type: string
-              description: "(Read Only) Client the workload authenticates as at the token endpoint."
-              readOnly: true
-            oauthAssertionFile:
-              type: string
-              description: "(Read Only) Path of the projected ServiceAccount token the workload presents as its client assertion."
-              readOnly: true
             secrets:
               type: object
-              description: "(Read Only) Broker credentials, when the Recipe issues any. Injected into connected containers as CONNECTION_<NAME>_USERNAME and _PASSWORD."
+              description: "(Read Only) Broker credentials, when the Recipe issues any. Injected into connected containers as CONNECTION_<NAME>_USERNAME and _PASSWORD. Absent when the broker accepts the workload's own identity, which the platform gives every pod rather than this queue."
               properties:
                 name:
                   type: string

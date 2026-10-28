@@ -43,19 +43,25 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
+    // Credentials issued by the queue Recipe win: the broker expects them. Without any, the broker
+    // accepts tokens, so the pod's own identity is used, as Service Bus does with Entra on Azure.
+    // With neither, the broker's default login applies, as for a local broker under `dotnet run`.
     private static WorkloadTokenProvider? CreateTokenProvider(
         QueueOptions options, ILoggerFactory loggerFactory)
     {
-        if (!options.UseOAuth) { return null; }
+        if (options.HasCredentials) { return null; }
 
-        return new WorkloadTokenProvider(
-            new WorkloadTokenOptions
-            {
-                TokenEndpoint = options.OAuthTokenEndpoint!,
-                ClientId = options.OAuthClientId!,
-                AssertionFile = options.OAuthAssertionFile!
-            },
-            loggerFactory.CreateLogger<WorkloadTokenProvider>());
+        var identity = WorkloadTokenOptions.FromEnvironment();
+        if (identity is null)
+        {
+            loggerFactory.CreateLogger(typeof(ServiceCollectionExtensions)).LogWarning(
+                "The queue has no credentials and the pod has no workload identity " +
+                "(IDENTITY_TOKEN_FILE, IDENTITY_CLIENT_ID, IDENTITY_TOKEN_ENDPOINT); " +
+                "using the broker's default login.");
+            return null;
+        }
+
+        return new WorkloadTokenProvider(identity, loggerFactory.CreateLogger<WorkloadTokenProvider>());
     }
 
     public static IServiceCollection AddOrderArchive(this IServiceCollection services)
