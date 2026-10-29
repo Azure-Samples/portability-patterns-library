@@ -22,7 +22,7 @@ Azure Service Bus isn't available on Azure Local. This guide shows what you can 
 3. **Choose the adapter at startup** from configuration, not with build flags or separate images.
 4. **Make handlers idempotent.** Both brokers can deliver a message twice.
 5. **Switch the credential** your adapter uses: a username and password, or an access token from your identity provider, matching how you authenticate today (see above).
-6. **Run and operate RabbitMQ** in the cluster: storage, high availability, dead-lettering, TLS and monitoring are yours to set up.
+6. **Run and operate RabbitMQ** in the cluster: storage, backups, high availability, dead-lettering, TLS and monitoring are yours to set up.
 
 How to map Service Bus features to RabbitMQ, and how the sample does each step: [RabbitMQ as an alternative](./alternatives/rabbitmq.md).
 
@@ -30,9 +30,9 @@ How to map Service Bus features to RabbitMQ, and how the sample does each step: 
 
 | Pattern | Limitation for this resource |
 |---|---|
-| [Messaging](https://learn.microsoft.com/azure/architecture/guide/technology-choices/messaging) | Not a drop-in replacement: the Service Bus SDK doesn't work against RabbitMQ. Sessions, scheduled messages and duplicate detection have no built-in equivalent. Dead-lettering and a maximum delivery count need RabbitMQ policies or queue arguments. |
+| [Messaging](https://learn.microsoft.com/azure/architecture/guide/technology-choices/messaging) | Not a drop-in replacement: the Service Bus SDK doesn't work against RabbitMQ. Sessions, scheduled messages and duplicate detection have no built-in equivalent. Dead-lettering and a maximum delivery count need a quorum queue with a dead-letter policy, and the application has to count failed attempts itself. |
 | [Workload identity](https://learn.microsoft.com/entra/workload-id/workload-identities-overview) | Entra ID isn't available. If you use workload identity federation, the same secret-free flow works with your own identity provider (Keycloak in the sample) through RabbitMQ's OAuth 2.0 plugin. If you use a shared access key, use a broker username and password instead. |
-| [Reliability](https://learn.microsoft.com/azure/well-architected/reliability/) | You host, patch and scale the broker. The sample's broker is a single pod with no data volume, so queued messages are lost if the pod moves. |
+| [Reliability](https://learn.microsoft.com/azure/well-architected/reliability/) | You host, patch, back up and scale the broker. The sample's broker keeps its data on a persistent volume, but runs as a single replica, so the queue is unavailable while its pod restarts. |
 
 **Data:** messages waiting in Service Bus don't move to RabbitMQ. Drain the queue before you switch.
 

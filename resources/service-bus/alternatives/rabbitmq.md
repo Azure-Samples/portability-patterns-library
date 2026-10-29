@@ -7,13 +7,13 @@
 | Service Bus | RabbitMQ | Notes |
 |---|---|---|
 | Namespace | Broker (virtual host) | You deploy and operate it. |
-| Queue | Durable queue | Declare it as durable and publish messages as persistent. |
+| Queue | Durable [quorum queue](https://www.rabbitmq.com/docs/quorum-queues) | Publish messages as persistent, and keep the broker's data on a persistent volume. |
 | Send | Publish to the default exchange with the queue name as routing key | |
 | Receive in peek-lock mode | Consume with manual acknowledgement | |
 | Complete | Acknowledge (`ack`) | |
 | Abandon | Negative-acknowledge with requeue (`nack`) | Add your own delay; RabbitMQ redelivers immediately. |
 | Lock duration | None | A message is redelivered when its channel closes or after the [consumer timeout](https://www.rabbitmq.com/docs/consumers#acknowledgement-timeout) (30 minutes by default). |
-| Max delivery count and dead-letter queue | [Quorum queue](https://www.rabbitmq.com/docs/quorum-queues) delivery limit and a [dead-letter exchange](https://www.rabbitmq.com/docs/dlx) | Not automatic on classic queues: a failing message is redelivered indefinitely. |
+| Max delivery count and dead-letter queue | A second queue, and a policy with a delivery limit and a [dead-letter exchange](https://www.rabbitmq.com/docs/dlx) | A requeue doesn't count towards the limit, so the consumer reads the delivery count (`x-acquired-count`) and rejects the message without requeue on the last attempt. Classic queues report no count, so a failing message is redelivered indefinitely. |
 | Message ID, content type, subject | `message_id`, `content_type`, `type` properties | |
 | Sessions, scheduled messages, duplicate detection | No built-in equivalent | Handle them in the application, or use a plugin. |
 | Shared access key (connection string) | Username and password | Stored in a Kubernetes Secret; the sample's Recipe generates them when no identity provider is set. |
@@ -35,8 +35,9 @@ API and processor  ──►  IMessagePublisher / IMessageSubscriber
 
 | Step | In the sample |
 |---|---|
-| Interfaces the application codes against | [IMessagePublisher.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Messaging/IMessagePublisher.cs) |
+| Interfaces the application codes against | [Messaging](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Messaging/): `IMessagePublisher`, `IMessageSubscriber` |
 | One adapter per broker | [ServiceBusMessageBroker.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Messaging/ServiceBusMessageBroker.cs), [RabbitMqMessageBroker.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Messaging/RabbitMqMessageBroker.cs): acknowledge, requeue after 5 seconds, reconnect |
+| Dead-lettering after `maxDeliveryCount` (10) attempts, as on Service Bus | The [RabbitMQ Recipe](../../../recipes/message-queue/azure-local/rabbitmq/rabbitmq-queue.bicep) creates `orders` and `orders.dead-letter` as quorum queues with a dead-letter policy; [RabbitMqMessageBroker.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Messaging/RabbitMqMessageBroker.cs) rejects the message on the last attempt |
 | Choosing the adapter at startup | [ServiceCollectionExtensions.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/DependencyInjection/ServiceCollectionExtensions.cs) reads `provider` (`servicebus` or `rabbitmq`) |
 | Idempotent handling | [SqlOrderStore.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Persistence/SqlOrderStore.cs) writes with `MERGE`, so a redelivered order isn't stored twice |
 | Token instead of a password | [WorkloadTokenProvider.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Identity/WorkloadTokenProvider.cs) exchanges the pod's token at Keycloak; see the sample's [authentication page](../../../samples/OrderManagementApp/docs/authentication.md) |
@@ -46,11 +47,10 @@ The sample doesn't use Radius's [`Radius.Messaging/rabbitMQ`](https://github.com
 
 ## Not covered by the sample
 
-The [RabbitMQ Recipe](../../../recipes/message-queue/azure-local/rabbitmq/rabbitmq-queue.bicep) is sample code. Before production, add:
+The [RabbitMQ Recipe](../../../recipes/message-queue/azure-local/rabbitmq/rabbitmq-queue.bicep) is sample code. It keeps the broker's data on a persistent volume and dead-letters failed messages. Before production, add:
 
-- a persistent volume, so queued messages survive a pod restart;
-- more than one replica, with quorum queues;
-- a delivery limit and dead-lettering (the queue type's `maxDeliveryCount` isn't applied);
+- more than one replica, so the queue stays available while a pod restarts;
+- backups of the broker's volume;
 - TLS on the AMQP listener;
 - separate credentials for the management interface.
 
