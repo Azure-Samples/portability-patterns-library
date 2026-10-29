@@ -17,3 +17,19 @@ function Get-OmsIngressAddress([string]$KubeContext, [string]$Namespace = 'ingre
         --output 'jsonpath={.status.loadBalancer.ingress[0].ip}' 2>$null
     if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($address)) { $address.Trim() }
 }
+
+# Waits until cert-manager has issued a Certificate for its current spec. 'kubectl wait
+# --for=condition=Ready' would accept the condition left from before a change, such as a new
+# issuer, and so return before the Secret holds the new certificate.
+function Wait-OmsCertificate([string]$KubeContext, [string]$Namespace, [string]$Name, [int]$TimeoutSeconds = 180) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ($true) {
+        $certificate = kubectl get certificate $Name --namespace $Namespace --context $KubeContext --output json | ConvertFrom-Json
+        $ready = $certificate.status.conditions | Where-Object { $_.type -eq 'Ready' }
+        if ($ready.status -eq 'True' -and $ready.observedGeneration -eq $certificate.metadata.generation) { return }
+        if ((Get-Date) -gt $deadline) {
+            throw "Certificate $Namespace/$Name was not issued within $TimeoutSeconds seconds: $($ready.message)"
+        }
+        Start-Sleep -Seconds 5
+    }
+}

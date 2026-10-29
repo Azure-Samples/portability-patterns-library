@@ -18,7 +18,7 @@
       Cluster   infra/azurelocal/provision-infra.ps1         AKS Arc cluster, ACR, load balancer
       Images    infra/azurelocal/import-images.ps1           third-party images mirrored into the ACR
       Registry  infra/azurelocal/connected-registry.ps1      in-cluster registry that keeps serving offline
-      Ingress   infra/azurelocal/provision-ingress.ps1       NGINX ingress, site CA certificate
+      Ingress   infra/azurelocal/provision-ingress.ps1       NGINX ingress, site CA, renewed certificates
       Keycloak  infra/azurelocal/keycloak.ps1                on-site sign-in and token issuer, federated to Active Directory
     Values come from the target's section of scripts/settings.json (see settings.example.json):
     'Common' goes to every step that takes the parameter, a section named after the step to that

@@ -14,8 +14,9 @@
 
     Azure Local deploys in two stages, the way a site whose management machine can't reach Azure
     has to: -Stage Azure where Azure is reachable (build, push, publish Recipes, record the image
-    digests in scripts/.handover/release.json), then -Stage Site on the site network with no Azure
-    sign-in (rad install, rad deploy). On two machines, copy scripts/.handover across in between.
+    and Recipe digests in scripts/.handover/release.json), then -Stage Site on the site network with
+    no Azure sign-in (rad install, rad deploy). On two machines, copy scripts/.handover across in
+    between.
     The default, -Stage All, runs both in a row on this machine, through the same folder.
 
 .EXAMPLE

@@ -3,7 +3,7 @@
 # Expects these to exist in the identity namespace (see README.md in this folder):
 #   Secret keycloak-admin           username, password    bootstrap admin
 #   Secret keycloak-db              username, password    database login
-#   Secret keycloak-tls             tls.crt, tls.key      Keycloak's serving certificate
+#   Secret keycloak-tls             tls.crt, tls.key      Keycloak's serving certificate, from cert-manager
 #   Secret cluster-ca               cluster-ca.pem        the cluster's CA, to verify service account tokens
 #   Secret oms-ad-bind              bind-upn, bind-password   read-only directory account
 #   Secret oms-ad-ca                ca.crt                directory CA, for LDAPS (optional)
@@ -156,6 +156,10 @@ spec:
               value: /opt/keycloak/conf/tls/tls.crt
             - name: KC_HTTPS_CERTIFICATE_KEY_FILE
               value: /opt/keycloak/conf/tls/tls.key
+            # cert-manager renews the certificate in the mounted Secret; Keycloak picks it up on
+            # its next read, with no restart.
+            - name: KC_HTTPS_CERTIFICATES_RELOAD_PERIOD
+              value: 10m
             - name: KC_HOSTNAME_STRICT
               value: "false"
             - name: KC_HEALTH_ENABLED

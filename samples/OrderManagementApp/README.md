@@ -37,8 +37,9 @@ flowchart LR
 | Object storage | Azure Blob Storage | Azurite container |
 | SQL | Azure SQL Database | SQL Server container |
 | User sign-in | Microsoft Entra ID | Keycloak, federated to the site's Active Directory |
-| How the app authenticates to services | Entra Workload ID (no secrets) | Keycloak token for the queue; Kerberos (Active Directory) for SQL; Recipe-issued credentials for storage |
+| How the app authenticates to services | Entra Workload ID (no secrets) | Keycloak token for the queue; Recipe-issued credentials for SQL and storage |
 | Images and Recipes | Azure Container Registry | ACR connected registry inside the cluster |
+| HTTPS address | Managed NGINX ingress (app routing add-on) on a public IP, `<label>.<region>.cloudapp.azure.com`, certificate from Let's Encrypt | NGINX ingress on an address from the Arc load balancer on the site network, certificate from a site CA, renewed by cert-manager in the cluster |
 
 The Azure Local column runs nothing in Azure at runtime. That is what lets the app keep working when
 the site is cut off from Azure.
@@ -66,13 +67,16 @@ All commands run from this folder, `samples/OrderManagementApp`.
 
 **To deploy to Azure Local:**
 
-- An Azure Local instance connected to Azure, with its custom location and a running Arc resource
-  bridge.
+- An Azure Local instance, [deployed](https://learn.microsoft.com/azure/azure-local/deploy/deployment-introduction)
+  and connected to Azure, with its custom location and a running Arc resource bridge. See the
+  [system requirements](https://learn.microsoft.com/azure/azure-local/concepts/system-requirements-23h2).
+- Free capacity on the instance for the AKS cluster: three VMs of 4 vCPUs and 8 GB each (one control
+  plane, two nodes), plus about 50 GB of storage for the in-cluster registry and Keycloak's database.
 - A management machine on the site network, not an Azure Local node, with the same tools as for
   Azure except azd. Microsoft recommends managing AKS on Azure Local from such a
   [client machine](https://learn.microsoft.com/azure/aks-hybrid-edge/local/aks-create-clusters-cli#install-the-azure-cli-extension)
   rather than from the nodes.
-- Free addresses on the site network for the cluster: its control plane, a pool for the nodes and a
+- Free addresses on the site network for the AKS cluster: its control plane, a pool for the nodes and a
   small range for the load balancer.
 - The site's Active Directory, with the app's groups and a bind account for Keycloak. See
   [Connect your Active Directory](./docs/authentication.md#connect-your-active-directory).
@@ -95,6 +99,11 @@ Keycloak container can read the certificate.
 
 Open http://localhost:8080 and sign in as `demo`, password `demo`.
 
+The build downloads packages from nuget.org and images from mcr.microsoft.com, docker.io and quay.io.
+If your network blocks them, ask for access, or point the build at your own NuGet feed with a
+[NuGet.Config](https://learn.microsoft.com/nuget/reference/nuget-config-file) in this folder; the
+build uses it when it's there, and Git ignores it.
+
 ## Deploy to Azure
 
 ```powershell
@@ -106,12 +115,31 @@ azd up
 azd and the Azure CLI keep separate sign-ins, and `azd up` uses both, so sign in to the same tenant
 with each.
 
+If your Entra tenant requires a service management reference on app registrations (the Microsoft
+corporate tenant does), set it before `azd up`:
+
+```powershell
+azd env set SERVICE_MANAGEMENT_REFERENCE <service tree ID>
+```
+
 `azd up` creates AKS, a container registry and managed identities, installs Radius and an HTTPS
 ingress, registers the app in Entra ID, then builds and deploys the app. It prints the app's
 address. Your account gets both app roles, so you can sign in and place orders straight away.
 
 Settings for your subscription, if you need them, are listed at the top of
 [azure.yaml](./azure.yaml) (`azd env set ...`).
+
+If `azd up` fails because a VM size or service isn't available in your region
+([SkuNotAvailable](https://learn.microsoft.com/azure/azure-resource-manager/troubleshooting/error-sku-not-available)
+or a capacity error), pick another size or region, then run `azd up` again:
+
+```powershell
+azd env set AKS_NODE_VM_SIZE <size>   # the cluster's nodes, Standard_D4s_v7 by default
+azd env set SQL_LOCATION <region>     # Azure SQL only
+```
+
+To move everything to another region, start a new environment there: `azd env new <name> --location <region>`.
+List the VM sizes a region offers with `az vm list-skus --location <region> --resource-type virtualMachines -o table`.
 
 ## Deploy to Azure Local
 
@@ -123,11 +151,34 @@ says where to find each value. Then run:
 ./scripts/up.ps1 -Target AzureLocal
 ```
 
-It checks the site, creates the cluster and everything the app needs on it, and deploys the app.
+It checks the site, creates the AKS cluster and everything the app needs on it, and deploys the app.
 Open the address it prints and sign in with an AD account in one of the app's groups. The first
-time, trust the site's CA certificates with the commands it printed.
+time, trust the site CA with the command it printed.
 
 To deploy a new version later, run `./scripts/deploy.ps1 -Target AzureLocal`.
+
+RabbitMQ and SQL Server each keep their data on a persistent volume on the cluster's default storage
+class, so a restarted pod keeps its queued messages and orders. Azurite, a stand-in to be replaced,
+keeps none: the archived order files are lost when its pod restarts. An order that fails
+`maxDeliveryCount` times (10) moves to the `orders.dead-letter` queue, as it moves to the
+dead-letter queue in Service Bus on Azure. cert-manager renews the app's and Keycloak's
+certificates on site, from the site CA, 30 days before they expire. For production, you would also
+need:
+
+- **High availability:** this is a sample app with onre replica of each service running. For production, consider running multiple replicas of each
+  service for HA.
+- **Backups:** nothing backs up the volumes. Schedule SQL Server backups and copy them off the cluster.
+- **A supported object store:** Azurite is an emulator that keeps no data. Use an S3- or
+  Blob-compatible store supported for production.
+- **Sizing:** the volume sizes and CPU and memory limits are small defaults; set them from your load.
+- **Upgrades:** the image tags float (`2022-latest`, `4-management-alpine`). Pin them, and test
+  upgrades before rolling them out.
+- **Hardening:** traffic to RabbitMQ and Azurite is not encrypted, the app does not verify SQL
+  Server's certificate, and it signs in to SQL Server as `sa`. Add TLS with trusted certificates and a
+  least-privilege SQL login.
+
+To change the SQL administrator password, run
+`./scripts/deploy.ps1 -Target AzureLocal -Stage Site -SkipRadiusInstall -RotateSqlPassword`.
 
 ## Clean up
 
@@ -137,16 +188,16 @@ To deploy a new version later, run `./scripts/deploy.ps1 -Target AzureLocal`.
 the app registrations.
 
 **Azure Local:** delete the resource group the scripts created (`ResourceGroup` in the settings,
-`bcd-azurelocal` by default), which holds the cluster, the registry and the logical network:
+`bcd-azurelocal` by default), which holds the AKS cluster, the registry and the logical network:
 
 ```powershell
 az group delete --name bcd-azurelocal
 ```
 
-The cluster's Entra admin group and the objects `ad-setup.ps1` added to Active Directory stay;
+The AKS cluster's Entra admin group and the objects `ad-setup.ps1` added to Active Directory stay;
 remove them by hand if you no longer need them.
 
-## Next steps
+## Understand how it works
 
 | | |
 |---|---|
