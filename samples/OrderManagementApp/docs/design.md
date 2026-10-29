@@ -9,40 +9,55 @@ Status: **Built** is in `main` and tested on both platforms. **Planned** is the 
 
 ## Architecture
 
+Users sign in through Entra ID on Azure, or Keycloak backed by Active Directory on Azure Local.
+There are two flows.
+
+### Placing an order: through the queue
+
+The API only queues the order, so ordering keeps working while the processor or the inventory
+service is busy or down. The processor does the rest.
+
 ```mermaid
 flowchart LR
-    user(["User<br/>places orders"])
-    admin(["Inventory admin<br/>restocks products"])
-    idp["Identity provider<br/>Entra ID on Azure<br/>Keycloak + Active Directory on Azure Local"]
-    api["API and browser app"]
-    inventory["Inventory service<br/>(planned)"]
+    user(["User"])
+    api["API"]
     queue[["Queue"]]
     processor["Processor"]
+    inventory["Inventory service<br/>(planned)"]
     storage[("Object storage<br/>order archive")]
     sql[("SQL<br/>orders")]
-    postgres[("PostgreSQL<br/>products and stock<br/>(planned)")]
-    keyvault[("Key Vault<br/>app database users<br/>Azure Local, planned")]
-    telemetry["Observability<br/>(planned)"]
 
-    user & admin -- "sign in" --> idp
-    user -- "place order" --> api
-    admin -- "restock" --> api
-    api -- "check stock, restock" --> inventory
-    api -- "publish order" --> queue
-    queue -- "deliver" --> processor
-    processor -- "reserve stock" --> inventory
-    processor -- "archive" --> storage
-    processor -- "record" --> sql
-    api -- "my orders" --> sql
-    inventory --> postgres
-    keyvault -. "synced into the cluster" .-> api & processor & inventory
-    api & inventory & processor -. "traces, metrics, logs" .-> telemetry
+    user -- "1. place order" --> api
+    api -- "2. queue order" --> queue
+    queue -- "3. deliver" --> processor
+    processor -- "4. reserve stock" --> inventory
+    processor -- "5. archive" --> storage
+    processor -- "6. record result" --> sql
+    user -. "my orders" .-> api -. "read" .-> sql
 ```
 
-Users in the order group place and list their orders. Users in the inventory admin group restock
-products (planned). The processor reserves stock for each order; an order without stock ends as
-"Rejected: out of stock" (planned).
+An order without enough stock is recorded as "Rejected: out of stock" (planned).
 
+### Products and stock: direct calls (planned)
+
+Reads and restocking are direct calls, not queued: the page waits for the answer, and the
+inventory admin sees the new stock straight away.
+
+```mermaid
+flowchart LR
+    user(["User"])
+    admin(["Inventory admin"])
+    api["API"]
+    inventory["Inventory service"]
+    postgres[("PostgreSQL<br/>products and stock")]
+
+    user -- "see products and stock" --> api
+    admin -- "restock" --> api
+    api --> inventory
+    inventory --> postgres
+```
+
+Only users in the inventory admin group can restock.
 ## Resources
 
 | Resource | Azure | Azure Local | Status |
@@ -62,18 +77,95 @@ products (planned). The processor reserves stock for each order; an order withou
 
 ## Production patterns by resource
 
-| Resource | In place | Missing for production |
-|---|---|---|
-| App code | Interfaces separate from implementations; dependency injection; repositories for SQL and storage; adapters for each broker and identity provider. Idempotent processing (SQL `MERGE`, overwrite on archive). Health probes, CPU and memory limits, non-root images. Images deployed by digest. | One replica each; no autoscaling or disruption budget. An order is rejected, not retried, while the queue is down. |
-| Identity, Azure | Entra workload identity for every service: no secrets. Service Bus and Blob: only the send, receive or data roles each service needs. | SQL: the app's identity is the server's Entra administrator; it should be a database user that can only read and write its own tables. |
-| Identity, Azure Local | Keycloak tokens for the queue, issued for the pod's own Kubernetes identity. Keycloak's AD account: read-only, no groups, sign-in only at domain controllers, listing denied outside the app's OU, LDAPS. | Keycloak and its database run one replica each. SQL uses the `sa` login. Secrets live only in the cluster (planned: Key Vault). |
-| Queue | Dead-lettering after 10 failed deliveries on both platforms. Service Bus: local auth disabled, TLS 1.2. RabbitMQ: quorum queue on a persistent volume, StatefulSet. | Single RabbitMQ node; no TLS to RabbitMQ. Service Bus without zone redundancy (needs Premium). |
-| SQL | Azure SQL: Entra-only authentication, TLS 1.2, built-in automatic backups. SQL Server: persistent volume, StatefulSet, password rotation script. | Azure SQL: public endpoint with the Azure-services firewall rule; no zone redundancy. SQL Server: Developer edition, which isn't licensed for production; `sa` login; certificate not verified; no backups; single instance. |
-| Object storage | Blob: no shared keys, no public access, HTTPS and TLS 1.2 only. | Blob: LRS, no soft delete or versioning. Azure Local: Azurite is an emulator and keeps no data; replace it with a supported object store. |
-| Ingress and certificates | Azure: Let's Encrypt. Azure Local: certificates for the app and Keycloak renewed on site by cert-manager, 30 days before expiry, with no restart. | The site CA key needs a backup. Corporate PKI instead of the site CA. |
-| Cluster | Azure: Azure RBAC, local accounts disabled. Azure Local: Calico network policy engine enabled; images served from the connected registry, so pods restart offline. | Network policies (none defined). One control plane node on Azure Local. AKS without availability zones or an automatic upgrade channel. Floating tags for SQL Server and RabbitMQ images. |
-| Observability | None. | Planned: traces, metrics and logs from the app; dashboards and alerts on both platforms. |
+✅ in place · ❌ missing · ➖ not applicable
 
+### App (API, processor)
+
+| Pattern | Status |
+|---|---|
+| Interfaces separate from implementations, dependency injection | ✅ |
+| Repositories for SQL and storage; adapters for each broker and identity provider | ✅ |
+| Processing a message twice is safe (SQL `MERGE`, archive overwritten) | ✅ |
+| Health probes, CPU and memory limits | ✅ |
+| Runs as a non-root user | ✅ |
+| Images deployed by digest | ✅ |
+| Multiple replicas, disruption budget | ❌ one replica each |
+| Retries placing an order while the queue is down | ❌ returns an error instead |
+
+### Identity
+
+| Pattern | Azure | Azure Local |
+|---|---|---|
+| Users sign in through the organisation's directory | ✅ Entra ID | ✅ Keycloak backed by Active Directory |
+| Services sign in with their own identity, no stored secret | ✅ for all services | ✅ queue only |
+| Services get only the access they need | ✅ queue and storage<br/>❌ SQL: the app's identity is the server's administrator | ❌ SQL: the app signs in as `sa` |
+| Keycloak's AD account limited to reading the app's OU | ➖ | ✅ |
+| Directory connection encrypted | ➖ | ✅ LDAPS |
+| Sign-in service runs more than one replica | ➖ managed by Microsoft | ❌ one Keycloak, one database |
+| Secrets stored outside the cluster | ➖ no secrets | ❌ only in the cluster (planned: Key Vault) |
+
+### Queue
+
+| Pattern | Azure (Service Bus) | Azure Local (RabbitMQ) |
+|---|---|---|
+| Failed messages dead-lettered after 10 deliveries | ✅ | ✅ |
+| Messages survive a restart | ✅ | ✅ persistent volume |
+| Only identity-based sign-in | ✅ local auth disabled | ❌ the app uses its identity, but a password user stays for the management UI |
+| Encrypted connection | ✅ TLS 1.2 | ❌ |
+| Survives a node or zone failure | ❌ needs Premium | ❌ single node |
+
+### SQL
+
+| Pattern | Azure (Azure SQL) | Azure Local (SQL Server) |
+|---|---|---|
+| Data survives a restart | ✅ | ✅ persistent volume |
+| Backups | ✅ automatic | ❌ |
+| Password-free sign-in | ✅ Entra only | ❌ password |
+| App gets only the access it needs | ❌ server administrator | ❌ `sa` |
+| Encrypted connection, certificate checked | ✅ | ❌ certificate not checked |
+| Private network access | ❌ public endpoint | ➖ in-cluster only |
+| Survives a failure | ❌ no zone redundancy | ❌ single instance |
+| Licensed for production | ✅ | ❌ Developer edition |
+
+### Object storage
+
+| Pattern | Azure (Blob Storage) | Azure Local (Azurite) |
+|---|---|---|
+| Password-free sign-in, no shared keys | ✅ | ❌ well-known emulator key |
+| No public access, HTTPS only | ✅ | ❌ plain HTTP inside the cluster |
+| Data survives a restart | ✅ | ❌ |
+| Soft delete or versioning | ❌ | ❌ |
+| Survives a failure | ❌ LRS | ❌ |
+| Supported for production | ✅ | ❌ emulator, to be replaced |
+
+### Ingress and certificates
+
+| Pattern | Azure | Azure Local |
+|---|---|---|
+| HTTPS for users | ✅ | ✅ |
+| Certificates renewed automatically | ✅ Let's Encrypt | ✅ cert-manager, offline |
+| Certificates from the organisation's CA | ➖ public CA | ❌ site CA created by the setup |
+| CA key backed up | ➖ | ❌ |
+
+### Cluster
+
+| Pattern | Azure (AKS) | Azure Local (AKS enabled by Arc) |
+|---|---|---|
+| Cluster admin access through an Entra group | ✅ | ✅ |
+| Local accounts disabled | ✅ | ❌ |
+| Images served from inside the site | ➖ | ✅ connected registry, works offline |
+| Network policies between services | ❌ | ❌ (Calico engine is on) |
+| More than one control plane node | ➖ managed | ❌ one |
+| Availability zones | ❌ | ➖ |
+| Automatic upgrades | ❌ | ❌ |
+| Fixed image versions for SQL Server and RabbitMQ | ❌ floating tags | ❌ floating tags |
+
+### Observability
+
+| Pattern | Azure | Azure Local |
+|---|---|---|
+| Traces, metrics and logs from the app | ❌ planned | ❌ planned |
+| Dashboards and alerts | ❌ planned | ❌ planned |
 ## Planned scope
 
 1. **Inventory on PostgreSQL.** A separate inventory service owns products and stock. Azure: Flexible
