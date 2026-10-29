@@ -22,6 +22,7 @@ flowchart LR
     storage[("Object storage<br/>order archive")]
     sql[("SQL<br/>orders")]
     postgres[("PostgreSQL<br/>products and stock<br/>(planned)")]
+    otel["Telemetry<br/>Application Insights on Azure<br/>Grafana stack on Azure Local<br/>(planned)"]
 
     user -- "1. place order" --> api
     api -- "2. queue order" --> queue
@@ -34,14 +35,33 @@ flowchart LR
     api -. "direct call" .-> inventory
     inventory --> postgres
     api -. "my orders" .-> sql
+    api & processor & inventory -. "traces, metrics, logs" .-> otel
 ```
 
-- **Placing an order (solid, numbered):** the API only queues the order, so ordering keeps working
-  while the processor or the inventory service is busy or down. An order without enough stock is
-  recorded as "Rejected: out of stock" (planned).
+- **Placing an order (solid, numbered):** the API prices the order from the inventory service's
+  prices and queues it; stock is reserved later, by the processor. Placing an order keeps working
+  while the processor or the inventory service is down. The order is recorded as "Processed", or
+  as "Rejected: out of stock" (planned).
 - **Products, stock and orders (dotted):** direct calls, not queued: the page waits for the
   answer, and the inventory admin sees the new stock straight away. Only users in the inventory
   admin group can restock (planned).
+- **Telemetry (dotted):** each service sends traces, metrics and logs to what the platform
+  provides (planned).
+
+## Orders and stock (planned)
+
+How the order flow stays correct once stock is reserved. The inventory build is written and tested
+locally, but isn't in `main` yet.
+
+| Concern | Design | In the inventory build |
+|---|---|---|
+| Two processor pods reserving the same product | One transaction per order. It locks the order's product rows, in SKU order so two orders can't deadlock, and reserves every line or none. Concurrent orders can't oversell. | ✅ |
+| The same order delivered twice | The reservation row is keyed by order ID and claimed first, in the same transaction. A redelivered or concurrent call for that order gets the recorded result and takes no more stock. | ✅ |
+| Order status | There's no SQL row until the processor records "Processed" or "Rejected: out of stock". Until then the page shows the order as "Submitted" and keeps checking it: every 2 seconds at first, backing off to every 30 seconds, for up to an hour. | ✅ |
+| Inventory down vs out of stock | Out of stock rejects the order straight away. Inventory down is retried, not rejected: the processor backs off (1 s up to 30 s) for about 5 minutes, then hands the message back to the queue. With 10 deliveries, an order rides out an outage of about 50 minutes before it's dead-lettered. | ✅ |
+| Order dead-lettered after its stock was reserved | On the order's last delivery, the processor releases its stock before the queue dead-letters it. Releasing is idempotent. A released order can be reserved again, for example when it's replayed from the dead-letter queue. If the release itself fails, the processor logs the order for releasing by hand. | ✅ |
+| Inventory service down | The API keeps the last product list it fetched, for up to an hour. While inventory is down, it shows that list, with a notice saying how old the stock is, and prices new orders from it. The orders queue and complete once inventory is back. After a failed call, the API uses the list straight away for 15 seconds, so users don't each wait for a timeout. An API pod that started during the outage has no list, so for it, products and new orders are unavailable until inventory is back. | ✅ |
+
 ## Resources
 
 | Resource | Azure | Azure Local | Status |
@@ -82,6 +102,7 @@ flowchart LR
 |---|---|---|
 | Users sign in through the organisation's directory | ✅ Entra ID | ✅ Keycloak backed by Active Directory |
 | Services sign in with their own identity, no stored secret | ✅ for all services | ✅ queue only |
+| Services call each other with their own token, never the user's (API and processor to inventory) | ❌ planned: Entra workload identity, app roles on the inventory app | ❌ planned: Keycloak token, client roles on the inventory client |
 | Services get only the access they need | ✅ queue and storage<br/>❌ SQL: the app's identity is the server's administrator | ❌ SQL: the app signs in as `sa` |
 | Keycloak's AD account limited to reading the app's OU | ➖ | ✅ |
 | Directory connection encrypted | ➖ | ✅ LDAPS |
