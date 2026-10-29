@@ -58,8 +58,6 @@ param(
     [string]$IssuerName = 'site-ca',
     [string]$CaSecretName = 'site-ca',
     [string]$CaCommonName = 'BCD Azure Local Site CA',
-    # Where earlier versions of this script kept the site CA.
-    [string]$LegacyCaSecretName = 'bcd-site-ca',
     [int]$CertificateDays = 90
 )
 
@@ -149,34 +147,22 @@ try {
     if (-not (kubectl get crd clusterissuers.cert-manager.io --context $KubeContext --ignore-not-found -o name)) {
         throw 'cert-manager is not installed. The connected registry''s Arc extension installs it: run scripts/infra/azurelocal/connected-registry.ps1 first.'
     }
-    # Earlier versions of this script kept the CA in the ingress namespace. It's moved, not
-    # replaced, so machines that already trust it keep doing so.
     $caCertPem = Get-SecretData $CertManagerNamespace $CaSecretName 'tls.crt'
     if (-not $caCertPem) {
-        $caCertPem = Get-SecretData $IngressNamespace $LegacyCaSecretName 'tls.crt'
-        $caKeyPem = Get-SecretData $IngressNamespace $LegacyCaSecretName 'tls.key'
-        if ($caCertPem -and $caKeyPem) {
-            Set-TlsSecret $CertManagerNamespace $CaSecretName $caCertPem $caKeyPem
-            kubectl delete secret $LegacyCaSecretName -n $IngressNamespace --context $KubeContext | Out-Null
-            Write-Host "    moved the site CA from $IngressNamespace/$LegacyCaSecretName" -ForegroundColor DarkGray
-        }
-        else {
-            $caKey = [Security.Cryptography.RSA]::Create(3072)
-            $caRequest = [Security.Cryptography.X509Certificates.CertificateRequest]::new(
-                "CN=$CaCommonName", $caKey, [Security.Cryptography.HashAlgorithmName]::SHA256,
-                [Security.Cryptography.RSASignaturePadding]::Pkcs1)
-            $caRequest.CertificateExtensions.Add([Security.Cryptography.X509Certificates.X509BasicConstraintsExtension]::new($true, $true, 0, $true))
-            $caRequest.CertificateExtensions.Add([Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new(
-                    [Security.Cryptography.X509Certificates.X509KeyUsageFlags]'KeyCertSign, CrlSign', $true))
-            $caRequest.CertificateExtensions.Add([Security.Cryptography.X509Certificates.X509SubjectKeyIdentifierExtension]::new($caRequest.PublicKey, $false))
-            $ca = $caRequest.CreateSelfSigned([DateTimeOffset]::UtcNow.AddDays(-1), [DateTimeOffset]::UtcNow.AddYears(10))
-            $caCertPem = $ca.ExportCertificatePem()
-            Set-TlsSecret $CertManagerNamespace $CaSecretName $caCertPem $caKey.ExportPkcs8PrivateKeyPem()
-            $caKey.Dispose()
-            Write-Host "    created site CA '$CaCommonName'" -ForegroundColor DarkGray
-        }
+        $caKey = [Security.Cryptography.RSA]::Create(3072)
+        $caRequest = [Security.Cryptography.X509Certificates.CertificateRequest]::new(
+            "CN=$CaCommonName", $caKey, [Security.Cryptography.HashAlgorithmName]::SHA256,
+            [Security.Cryptography.RSASignaturePadding]::Pkcs1)
+        $caRequest.CertificateExtensions.Add([Security.Cryptography.X509Certificates.X509BasicConstraintsExtension]::new($true, $true, 0, $true))
+        $caRequest.CertificateExtensions.Add([Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new(
+                [Security.Cryptography.X509Certificates.X509KeyUsageFlags]'KeyCertSign, CrlSign', $true))
+        $caRequest.CertificateExtensions.Add([Security.Cryptography.X509Certificates.X509SubjectKeyIdentifierExtension]::new($caRequest.PublicKey, $false))
+        $ca = $caRequest.CreateSelfSigned([DateTimeOffset]::UtcNow.AddDays(-1), [DateTimeOffset]::UtcNow.AddYears(10))
+        $caCertPem = $ca.ExportCertificatePem()
+        Set-TlsSecret $CertManagerNamespace $CaSecretName $caCertPem $caKey.ExportPkcs8PrivateKeyPem()
+        $caKey.Dispose()
+        Write-Host "    created site CA '$CaCommonName'" -ForegroundColor DarkGray
     }
-
     @"
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
@@ -223,9 +209,8 @@ $dnsNames
     name: $IssuerName
 "@ | kubectl apply --context $KubeContext -f - | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Creating the Certificate '$ApplicationNamespace/$TlsSecretName' failed." }
-    Invoke-Checked "certificate $TlsSecretName" {
-        kubectl wait certificate/$TlsSecretName -n $ApplicationNamespace --for=condition=Ready --timeout=180s --context $KubeContext | Out-Null
-    }
+    Wait-OmsCertificate $KubeContext $ApplicationNamespace $TlsSecretName
+
     $leafPem = Get-SecretData $ApplicationNamespace $TlsSecretName 'tls.crt'
     $leaf = [Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPem($leafPem)
     Write-Host "    valid until $($leaf.NotAfter.ToString('yyyy-MM-dd')); renewed automatically" -ForegroundColor DarkGray

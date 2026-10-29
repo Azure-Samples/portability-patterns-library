@@ -426,12 +426,21 @@ spec:
     name: $CertificateIssuer
 "@ | kubectl --context $KubeContext apply -f - | Out-Null
         if ($LASTEXITCODE -ne 0) { throw 'Creating the Keycloak Certificate failed.' }
-        Invoke-Checked 'certificate keycloak-tls' {
-            kubectl --context $KubeContext -n $Namespace wait certificate/keycloak-tls --for=condition=Ready --timeout=180s | Out-Null
-        }
+        Wait-OmsCertificate $KubeContext $Namespace 'keycloak-tls'
     }
-    elseif (-not (kubectl --context $KubeContext -n $Namespace get secret keycloak-tls --ignore-not-found --output name)) {
-        throw "With -CertificateIssuer '', create the Keycloak certificate yourself: kubectl --context $KubeContext -n $Namespace create secret tls keycloak-tls --cert <crt> --key <key>"
+    else {
+        # cert-manager would keep overwriting a certificate supplied by hand.
+        if (kubectl --context $KubeContext -n $Namespace get certificate keycloak-tls --ignore-not-found --output name) {
+            throw @"
+cert-manager manages Secret $Namespace/keycloak-tls, so it would replace your certificate. Remove its
+Certificate first, then create the Secret (deleting the Certificate may delete the Secret with it):
+  kubectl --context $KubeContext -n $Namespace delete certificate keycloak-tls
+  kubectl --context $KubeContext -n $Namespace create secret tls keycloak-tls --cert <crt> --key <key>
+"@
+        }
+        if (-not (kubectl --context $KubeContext -n $Namespace get secret keycloak-tls --ignore-not-found --output name)) {
+            throw "With -CertificateIssuer '', create the Keycloak certificate yourself: kubectl --context $KubeContext -n $Namespace create secret tls keycloak-tls --cert <crt> --key <key>"
+        }
     }
     Write-Host "==> Deploying PostgreSQL and Keycloak from infra/azurelocal/keycloak" -ForegroundColor Cyan
     $rendered = kubectl kustomize (Join-Path $repoRoot 'infra/azurelocal/keycloak')

@@ -205,17 +205,19 @@ function Set-BindAccountRestriction {
 
         # Every account can list most of the domain, through permissions AD puts on each container.
         # A deny for this account on every container outside the OU takes precedence and hides
-        # everything else from its searches. The domain root stays listable, or the OU could not be
-        # found. Group Policy objects are skipped: Group Policy Management flags a GPO whose
+        # everything else from its searches. That includes empty OUs and containers, or anything
+        # added to them later would be listable. The domain root stays listable, or the OU could
+        # not be found. Group Policy objects are skipped: Group Policy Management flags a GPO whose
         # permissions differ from its SYSVOL folder.
-        $parents = @{}
+        $candidates = @{}
         $policies = @{}
         Get-ADObject -Filter * -SearchBase $domain.DistinguishedName -SearchScope Subtree -ResultPageSize 1000 |
             ForEach-Object {
                 if ($_.ObjectClass -eq 'groupPolicyContainer') { $policies[$_.DistinguishedName] = $true }
-                if ($_.DistinguishedName -match '^(?:\\.|[^,\\])+,(.+)$') { $parents[$Matches[1]] = $true }
+                if ($_.ObjectClass -in 'organizationalUnit', 'container') { $candidates[$_.DistinguishedName] = $true }
+                if ($_.DistinguishedName -match '^(?:\\.|[^,\\])+,(.+)$') { $candidates[$Matches[1]] = $true }
             }
-        $containers = @($parents.Keys | Where-Object {
+        $containers = @($candidates.Keys | Where-Object {
                 $_.EndsWith(",$($domain.DistinguishedName)", [StringComparison]::OrdinalIgnoreCase) -and
                 -not $policies.ContainsKey($_) -and
                 $_ -ne $ouDn -and -not $_.EndsWith(",$ouDn", [StringComparison]::OrdinalIgnoreCase)

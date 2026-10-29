@@ -76,6 +76,14 @@ var configName = '${uniqueName}-config'
 var maxDeliveryCount = context.resource.properties.?maxDeliveryCount ?? 10
 var deadLetterQueueName = '${queueName}.dead-letter'
 
+// The policy matches the queue by regular expression, and a queue name may contain any character,
+// so every regular expression metacharacter is escaped. The backslash goes first, or it would
+// escape the escapes.
+var queueNamePattern = reduce(
+  [ '\\', '.', '+', '*', '?', '(', ')', '[', ']', '{', '}', '^', '$', '|' ],
+  queueName,
+  (escaped, character) => replace(escaped, character, '\\${character}'))
+
 // Mounting conf.d replaces the image's own, which is where console logging is turned on, so it is
 // restored here or the broker's logs stop reaching kubectl. Queues are quorum queues by default,
 // so the application's declaration, which names no type, matches the queue defined below.
@@ -123,7 +131,7 @@ var definitions = {
     {
       vhost: '/'
       name: '${queueName}-dead-letter'
-      pattern: '^${replace(queueName, '.', '\\.')}$'
+      pattern: '^${queueNamePattern}$'
       'apply-to': 'quorum_queues'
       priority: 0
       definition: {
@@ -135,20 +143,22 @@ var definitions = {
   ]
 }
 
+var configData = union(
+  {
+    '10-defaults.conf': baseConf
+    'definitions.json': string(definitions)
+  },
+  oauthEnabled ? {
+    '20-oauth.conf': oauthConf
+    enabled_plugins: '[rabbitmq_management,rabbitmq_auth_backend_oauth2].'
+  } : {}
+)
+
 resource config 'core/ConfigMap@v1' = {
   metadata: {
     name: configName
   }
-  data: union(
-    {
-      '10-defaults.conf': baseConf
-      'definitions.json': string(definitions)
-    },
-    oauthEnabled ? {
-      '20-oauth.conf': oauthConf
-      enabled_plugins: '[rabbitmq_management,rabbitmq_auth_backend_oauth2].'
-    } : {}
-  )
+  data: configData
 }
 
 // Definitions loaded at boot would stop the broker creating its default user, so they are
@@ -296,6 +306,12 @@ resource rabbitmq 'apps/StatefulSet@v1' = {
           resource: context.resource.name
           // Lets `rad run` locate the logs for this application.
           'radapp.io/application': context.application == null ? '' : context.application.name
+        }
+        // The configuration is read, and the definitions imported, only when the broker starts.
+        // A change to it, such as a new maxDeliveryCount or queue name, changes this annotation,
+        // so the pod restarts and picks it up.
+        annotations: {
+          'portability.radapp.io/config-hash': uniqueString(string(configData))
         }
       }
       spec: union(
