@@ -10,22 +10,18 @@ Status: **Built** is in `main` and tested on both platforms. **Planned** is the 
 ## Architecture
 
 Users sign in through Entra ID on Azure, or Keycloak backed by Active Directory on Azure Local.
-There are two flows.
-
-### Placing an order: through the queue
-
-The API only queues the order, so ordering keeps working while the processor or the inventory
-service is busy or down. The processor does the rest.
 
 ```mermaid
 flowchart LR
     user(["User"])
+    admin(["Inventory admin"])
     api["API"]
     queue[["Queue"]]
     processor["Processor"]
     inventory["Inventory service<br/>(planned)"]
     storage[("Object storage<br/>order archive")]
     sql[("SQL<br/>orders")]
+    postgres[("PostgreSQL<br/>products and stock<br/>(planned)")]
 
     user -- "1. place order" --> api
     api -- "2. queue order" --> queue
@@ -33,31 +29,19 @@ flowchart LR
     processor -- "4. reserve stock" --> inventory
     processor -- "5. archive" --> storage
     processor -- "6. record result" --> sql
-    user -. "my orders" .-> api -. "read" .-> sql
-```
-
-An order without enough stock is recorded as "Rejected: out of stock" (planned).
-
-### Products and stock: direct calls (planned)
-
-Reads and restocking are direct calls, not queued: the page waits for the answer, and the
-inventory admin sees the new stock straight away.
-
-```mermaid
-flowchart LR
-    user(["User"])
-    admin(["Inventory admin"])
-    api["API"]
-    inventory["Inventory service"]
-    postgres[("PostgreSQL<br/>products and stock")]
-
-    user -- "see products and stock" --> api
-    admin -- "restock" --> api
-    api --> inventory
+    user -. "see products and stock" .-> api
+    admin -. "restock" .-> api
+    api -. "direct call" .-> inventory
     inventory --> postgres
+    api -. "my orders" .-> sql
 ```
 
-Only users in the inventory admin group can restock.
+- **Placing an order (solid, numbered):** the API only queues the order, so ordering keeps working
+  while the processor or the inventory service is busy or down. An order without enough stock is
+  recorded as "Rejected: out of stock" (planned).
+- **Products, stock and orders (dotted):** direct calls, not queued: the page waits for the
+  answer, and the inventory admin sees the new stock straight away. Only users in the inventory
+  admin group can restock (planned).
 ## Resources
 
 | Resource | Azure | Azure Local | Status |
