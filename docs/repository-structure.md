@@ -108,4 +108,5 @@ Illustrative example (not final content):
 | Value | Meaning |
 |---|---|
 | Sample available | This repository contains a sample that was deployed on the target. The alternative's name in the guide links to its page under `alternatives/`. |
+| Sample planned | This project chose the alternative and a sample is planned but not yet deployed. The alternative's name links to its page under `alternatives/`, which is marked as a draft. |
 | Documentation available | Only external or Microsoft Learn documentation exists. The alternative's name in the guide links directly to that documentation, and the summary says it was not evaluated by this project. Its portability class is not given. |
