@@ -1,0 +1,68 @@
+# Syncs the database passwords from Azure Key Vault into the Secret oms-db-passwords in the
+# application namespace, through the Key Vault Secret Store extension. Applied by
+# scripts/infra/azurelocal/key-vault.ps1 with the ${...} values filled in.
+#
+# No workload reads oms-db-passwords. It is where new versions arrive: scripts/deploy.ps1 sets
+# them in the databases, then copies each service's own password into
+# {service}-db-credentials, which the Recipe Pack hands to the service. A pod that restarts in
+# between keeps the password the database still has. With the link to Azure down, the last copies
+# keep working.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ${SERVICE_ACCOUNT}
+  namespace: ${NAMESPACE}
+  annotations:
+    azure.workload.identity/client-id: "${CLIENT_ID}"
+    azure.workload.identity/tenant-id: "${TENANT_ID}"
+---
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: oms-key-vault
+  namespace: ${NAMESPACE}
+spec:
+  provider: azure
+  parameters:
+    clientID: "${CLIENT_ID}"
+    keyvaultName: ${KEYVAULT_NAME}
+    tenantID: "${TENANT_ID}"
+    objects: |
+      array:
+        - |
+          objectName: sql-admin-password
+          objectType: secret
+        - |
+          objectName: postgres-admin-password
+          objectType: secret
+        - |
+          objectName: sql-api-password
+          objectType: secret
+        - |
+          objectName: sql-processor-password
+          objectType: secret
+        - |
+          objectName: postgres-inventory-password
+          objectType: secret
+---
+apiVersion: secret-sync.x-k8s.io/v1alpha1
+kind: SecretSync
+metadata:
+  name: oms-db-passwords
+  namespace: ${NAMESPACE}
+spec:
+  serviceAccountName: ${SERVICE_ACCOUNT}
+  secretProviderClassName: oms-key-vault
+  secretObject:
+    type: Opaque
+    data:
+      - sourcePath: sql-admin-password
+        targetKey: sql-admin-password
+      - sourcePath: postgres-admin-password
+        targetKey: postgres-admin-password
+      - sourcePath: sql-api-password
+        targetKey: sql-api-password
+      - sourcePath: sql-processor-password
+        targetKey: sql-processor-password
+      - sourcePath: postgres-inventory-password
+        targetKey: postgres-inventory-password

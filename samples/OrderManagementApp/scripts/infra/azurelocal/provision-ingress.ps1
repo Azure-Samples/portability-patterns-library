@@ -16,8 +16,9 @@
          later runs keep that address; pass -IngressIp to choose one. The Helm values are in
          infra/azurelocal/ingress-nginx/values.yaml; this script sets only the site values.
       3. Creates a cert-manager ClusterIssuer, -IssuerName, that signs with a site CA kept in the
-         cluster. cert-manager comes with the connected registry's Arc extension, which uses it for
-         the registry's own certificates. keycloak.ps1 gets Keycloak's certificate from it too.
+         cluster. cert-manager is the Certificate Management for Azure Arc extension, installed
+         with the cluster; the connected registry gets its certificates from it too. keycloak.ps1
+         gets Keycloak's certificate from it too.
       4. Requests a TLS certificate for the ingress address and -HostNames from that issuer, into
          Secret -TlsSecretName in the application namespace. cert-manager renews it 30 days before
          it expires, with no link to Azure, and the ingress serves the new one without a restart.
@@ -52,8 +53,8 @@ param(
     [string]$PullSecretName = 'azurelocal-registry',
     [string]$ApplicationNamespace = 'oms-azurelocal',
     [string]$TlsSecretName = 'oms-app-tls',
-    # Where cert-manager runs: the connected registry's Arc extension installs it in its own namespace.
-    [string]$CertManagerNamespace = 'connected-registry',
+    # Where cert-manager runs: the Certificate Management for Azure Arc extension's namespace.
+    [string]$CertManagerNamespace = 'cert-manager',
     # ClusterIssuer that signs the app's and Keycloak's certificates with the site CA.
     [string]$IssuerName = 'site-ca',
     [string]$CaSecretName = 'site-ca',
@@ -96,7 +97,7 @@ try {
     if (-not $PullRegistry) {
         $PullRegistry = Get-OmsPullRegistry $KubeContext $ApplicationNamespace $PullSecretName
         if (-not $PullRegistry) {
-            throw "No pull secret '$PullSecretName' in '$ApplicationNamespace' to read the connected registry's address from. Run scripts/infra/azurelocal/connected-registry.ps1 -Stage Site first, or pass -PullRegistry."
+            throw "No pull secret '$PullSecretName' in '$ApplicationNamespace' to read the connected registry's address from. Run scripts/infra/azurelocal/connected-registry.ps1 first, or pass -PullRegistry."
         }
     }
     # Keep the address the app already has, so re-running never moves it.
@@ -138,14 +139,13 @@ try {
     $IngressIp = $assigned
 
     # ------------------------------------------------------------------------------------------
-    # 2. Site CA, and a cert-manager ClusterIssuer that signs with it. The connected registry's Arc
-    #    extension already runs cert-manager for its own certificates; it serves the whole cluster and
-    #    keeps renewing while the site is cut off from Azure. A ClusterIssuer reads its CA from
-    #    cert-manager's namespace.
+    # 2. Site CA, and a cert-manager ClusterIssuer that signs with it. cert-manager (the Certificate
+    #    Management extension) serves the whole cluster and keeps renewing while the site is cut
+    #    off from Azure. A ClusterIssuer reads its CA from cert-manager's namespace.
     # ------------------------------------------------------------------------------------------
     Write-Host "==> ClusterIssuer '$IssuerName' (site CA '$CaCommonName')" -ForegroundColor Cyan
     if (-not (kubectl get crd clusterissuers.cert-manager.io --context $KubeContext --ignore-not-found -o name)) {
-        throw 'cert-manager is not installed. The connected registry''s Arc extension installs it: run scripts/infra/azurelocal/connected-registry.ps1 first.'
+        throw 'cert-manager is not installed. The cluster gets it, as the Certificate Management extension, from scripts/infra/azurelocal/provision-infra.ps1.'
     }
     $caCertPem = Get-SecretData $CertManagerNamespace $CaSecretName 'tls.crt'
     if (-not $caCertPem) {

@@ -1,0 +1,144 @@
+# Network policies for the Order Management app. Applied by the deploy scripts after `rad deploy`,
+# with ${NAMESPACE}, ${INGRESS_NAMESPACE} and ${MONITORING_NAMESPACE} filled in.
+#
+# Nothing may reach a pod in the namespace unless a policy below allows it: users reach only the API,
+# through the ingress controller (and cert-manager's challenge solver, to get the certificate);
+# only the API and processor reach the inventory service; each
+# database and broker accepts only the services that use it. Kubelet health probes are not affected.
+# The backing-service policies match containers that exist only on Azure Local; on Azure they select
+# nothing.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: ${NAMESPACE}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-from-ingress
+  namespace: ${NAMESPACE}
+spec:
+  podSelector:
+    matchLabels: { radapp.io/resource: api }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: ${INGRESS_NAMESPACE} }
+      ports:
+        - { port: 8080, protocol: TCP }
+---
+# cert-manager answers Let's Encrypt's HTTP-01 challenge from a solver pod it starts in this
+# namespace, reached through the ingress controller. Without this the certificate is never issued.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: acme-solver-from-ingress
+  namespace: ${NAMESPACE}
+spec:
+  podSelector:
+    matchLabels: { acme.cert-manager.io/http01-solver: "true" }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: ${INGRESS_NAMESPACE} }
+      ports:
+        - { port: 8089, protocol: TCP }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: inventory-from-callers
+  namespace: ${NAMESPACE}
+spec:
+  podSelector:
+    matchLabels: { radapp.io/resource: inventory }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: radapp.io/resource, operator: In, values: [api, processor] }
+      ports:
+        - { port: 8080, protocol: TCP }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sql-from-services
+  namespace: ${NAMESPACE}
+spec:
+  podSelector:
+    matchLabels: { app: mssql }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: radapp.io/resource, operator: In, values: [api, processor] }
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: dbsetup }
+      ports:
+        - { port: 1433, protocol: TCP }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-from-inventory
+  namespace: ${NAMESPACE}
+spec:
+  podSelector:
+    matchLabels: { app: postgres }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { radapp.io/resource: inventory }
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: dbsetup }
+      ports:
+        - { port: 5432, protocol: TCP }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rabbitmq-from-services
+  namespace: ${NAMESPACE}
+spec:
+  podSelector:
+    matchLabels: { app: rabbitmq }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: radapp.io/resource, operator: In, values: [api, processor] }
+      ports:
+        - { port: 5672, protocol: TCP }
+    # Broker metrics, for the dead-letter alert.
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: ${MONITORING_NAMESPACE} }
+      ports:
+        - { port: 15692, protocol: TCP }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: storage-from-processor
+  namespace: ${NAMESPACE}
+spec:
+  podSelector:
+    matchLabels: { app: azurite }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { radapp.io/resource: processor }
+      ports:
+        - { port: 10000, protocol: TCP }

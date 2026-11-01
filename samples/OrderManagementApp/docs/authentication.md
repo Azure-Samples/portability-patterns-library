@@ -1,8 +1,8 @@
 # How authentication works
 
-There are two kinds of authentication: **users** signing in to the app, and the **app's own pods**
-signing in to the queue, storage and SQL. Paths are relative to the sample folder,
-[samples/OrderManagementApp](../).
+There are two kinds of authentication: **users** signing in to the app, and the **app's own
+services** signing in to the queue, storage, the databases and each other. Paths are relative to
+the sample folder, [samples/OrderManagementApp](../).
 
 ## Users
 
@@ -16,8 +16,10 @@ like Entra's, so the code doesn't change.
    Directory.
 3. The browser calls `/api/...` with the access token.
 4. The API checks the token (issuer, audience, scope `access_as_user`), then its `roles` claim:
-   `Orders.Read` to list orders, `Orders.Create` to place one
+   `Orders.Read` to list orders, `Orders.Create` to place one, `Inventory.Manage` to restock
    ([OrderAuthorization.cs](../src/OrderManagement.Api/OrderAuthorization.cs)).
+5. To restock, the API calls the inventory service with its own token, not the user's (see
+   [Calls between services](#calls-between-services)).
 
 Only settings differ: the `apiAuthentication` and `spaSettings` parameters of
 [app.bicep](../deploy/app.bicep). The registrations behind them are in
@@ -26,6 +28,18 @@ Only settings differ: the `apiAuthentication` and `spaSettings` parameters of
 
 ## Workloads
 
+Each service (`api`, `processor`, `inventory`) runs as its own identity: its own Kubernetes service
+account, named after it, and behind it its own managed identity on Azure or its own Keycloak client
+on Azure Local. Each identity gets only what that service needs:
+
+| | api | processor | inventory |
+|---|---|---|---|
+| Queue | send | receive | none |
+| Object storage | none | write | none |
+| SQL (orders) | read | read, write | none |
+| PostgreSQL (stock) | none | none | its own schema |
+| Inventory service | `Inventory.Read`, `Inventory.Restock` | `Inventory.Reserve` | n/a |
+
 The pods hold no secrets where the platform can give them an identity. The code picks its
 credential from what the platform provides, with no platform switch:
 
@@ -33,18 +47,52 @@ credential from what the platform provides, with no platform switch:
 |---|---|---|---|
 | Queue | [Entra Workload ID](https://learn.microsoft.com/azure/aks/workload-identity-overview) | the pod's Kubernetes token, exchanged at Keycloak for a token RabbitMQ accepts | [ServiceCollectionExtensions.cs](../src/OrderManagement.Shared/DependencyInjection/ServiceCollectionExtensions.cs) |
 | Object storage | Entra Workload ID | Azurite connection string from the Recipe | [ArchiveOptions.cs](../src/OrderManagement.Shared/Configuration/ArchiveOptions.cs) |
-| SQL | Entra Workload ID | SQL login (`sa`) with the password set at deployment | [SqlOptions.cs](../src/OrderManagement.Shared/Configuration/SqlOptions.cs) |
+| SQL, PostgreSQL | Entra Workload ID: a database user for the service's managed identity | the service's own database login, password from Key Vault | [DatabaseCredentialProviders.cs](../src/OrderManagement.Shared/Identity/DatabaseCredentialProviders.cs) |
+| Inventory service | Entra Workload ID: a token for the `oms-inventory` app | the same Keycloak token as for the queue, which also names `oms-inventory` | [ServiceCollectionExtensions.cs](../src/OrderManagement.Shared/DependencyInjection/ServiceCollectionExtensions.cs) |
 
 On Azure Local, Keycloak plays Entra's part: it trusts the cluster's token issuer, the way Entra
-trusts it through a federated credential, so the exchange works the same way and needs nothing in
-Azure.
+trusts it through a federated credential, so the exchange works the same way. It checks the tokens
+with signing keys it fetches from the cluster's API server, not from the issuer's address, so the
+exchange needs nothing in Azure. With Arc workload identity on, that address is a public Azure URL;
+Keycloak only compares it to the token's `iss` claim.
 
 | | Azure | Azure Local |
 |---|---|---|
-| Trusts the pod's token | Entra, through a federated identity credential | Keycloak client `oms-workloads` (`federated-jwt`) |
+| Trusts the pod's token | Entra, through a federated identity credential on the service's managed identity | the service's Keycloak client, `workload-<service>` (`federated-jwt`) |
 | Puts the token in the pod | Workload ID webhook | the Recipe Pack, through the container Recipe |
 | Tells the app where to use it | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_FEDERATED_TOKEN_FILE` | `IDENTITY_CLIENT_ID`, `IDENTITY_TOKEN_ENDPOINT`, `IDENTITY_TOKEN_FILE`, set by the Recipe Pack |
-| Checks permissions | Azure RBAC | the `rabbitmq_scopes` claim in the token |
+| Checks permissions | Azure RBAC, scoped to the queue and the container | the `rabbitmq_scopes` claim in the token |
+
+### Databases
+
+No service is a database administrator. A one-off setup job,
+[OrderManagement.DbSetup](../src/OrderManagement.DbSetup/Program.cs), runs at each deployment as
+the administrator: it creates the schemas and a database user for each service, with only the rights
+in the table above.
+
+- **Azure:** Azure SQL and PostgreSQL accept Entra sign-in only, with no passwords. Their
+  administrator is a dedicated managed identity, `id-oms-db-admin`, used by the setup job alone. The
+  services' users are their managed identities.
+- **Azure Local:** each service has a database login of its own (`api`, `processor`, `inventory`).
+  The passwords, and the administrators', are in Azure Key Vault, which the Secret Store extension
+  syncs into the cluster while the link to Azure is up. The deploy script sets them in the
+  databases, then gives each service only its own password, in Secret `<service>-db-credentials`.
+  See the [README](../README.md#deploy-to-azure-local) to change one.
+
+### Calls between services
+
+The API and the processor call the inventory service with their own tokens. The inventory service
+accepts only tokens issued for it (audience `oms-inventory`) and checks their roles
+([InventoryAuthentication.cs](../src/OrderManagement.Inventory/InventoryAuthentication.cs)): reading
+products, reserving stock and restocking are separate roles, granted to the identity that needs
+each. A user's token never reaches it; the API checks the user's `Inventory.Manage` role before
+restocking on their behalf.
+
+- **Azure:** `oms-inventory` is an app registration with application roles, assigned to the API's
+  and processor's managed identities ([app-identity.bicep](../infra/azure/app-identity.bicep)).
+- **Azure Local:** `oms-inventory` is a Keycloak client with the same roles, assigned to the
+  service accounts of `workload-api` and `workload-processor`
+  ([realm.json](../infra/azurelocal/keycloak/realm.json)).
 
 If RabbitMQ refuses the token, check these first:
 
@@ -60,8 +108,9 @@ On Azure Local, users and their roles come from Active Directory through Keycloa
 needs:
 
 - An OU for the app, `OMS`. Keycloak reads users and groups only from it.
-- Two groups in it: `oms-app-readers` (`Orders.Read`) and `oms-app-writers` (`Orders.Create`).
-  Granting access is adding people to these groups.
+- Three groups in it: `oms-app-readers` (`Orders.Read`), `oms-app-writers` (`Orders.Create`) and
+  `oms-inventory-admins` (`Inventory.Manage` and `Orders.Read`). Granting access is adding people
+  to these groups.
 - A bind account for Keycloak, `svc-keycloak`, limited to what Keycloak does: sign in to a domain
   controller over LDAP and read the users and groups in the OU. It's in no group, can sign in only
   at the domain controllers, can't be delegated, and is denied listing every container outside the

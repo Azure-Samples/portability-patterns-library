@@ -1,0 +1,297 @@
+# Helm values for the kube-prometheus-stack chart on Azure Local: Prometheus, Alertmanager and
+# Grafana for the site, with the operator, kube-state-metrics and node-exporter. Everything runs in
+# the cluster and pulls from the connected registry, so monitoring and alerts keep working when the
+# link to Azure is down. Install with:
+#
+#   helm upgrade --install kube-prometheus-stack kube-prometheus-stack `
+#     --repo https://prometheus-community.github.io/helm-charts `
+#     --version 92.14.1 --namespace observability --create-namespace `
+#     --values infra/azurelocal/observability/kube-prometheus-stack/values.yaml
+#
+# Change the marked values for your site first; provision-observability.ps1 sets them for you,
+# along with the Grafana sign-in and the Alertmanager email settings.
+
+global:
+  imageRegistry: <connected-registry-address>  # the connected registry's ClusterIP
+  imagePullSecrets:
+    - name: azurelocal-registry
+
+# The control plane of AKS enabled by Arc runs on its own VMs and doesn't expose etcd, the scheduler,
+# the controller manager or kube-proxy metrics to the cluster: scraping them would only raise
+# TargetDown alerts.
+kubeEtcd:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeProxy:
+  enabled: false
+defaultRules:
+  rules:
+    etcd: false
+    kubeSchedulerAlerting: false
+    kubeSchedulerRecording: false
+    kubeControllerManager: false
+    kubeProxy: false
+    windows: false
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  prometheusConfigReloader:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        cpu: 50m
+        memory: 64Mi
+  # No admission webhook: it only checks PrometheusRules before the operator would reject a bad one
+  # anyway, and it needs either a certgen job (another image) or cert-manager's CA injector, which
+  # the connected registry's extension may not run. Its TLS serving certificate goes with it.
+  admissionWebhooks:
+    enabled: false
+    patch:
+      enabled: false
+  tls:
+    enabled: false
+
+prometheus:
+  prometheusSpec:
+    # How long metrics are kept, and a size cap a little under the volume so Prometheus deletes old
+    # data before the volume fills.
+    retention: 15d
+    retentionSize: 9GB
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 10Gi
+          # storageClassName: <class>  # unset uses the cluster's default storage class
+    resources:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+      limits:
+        cpu: "1"
+        memory: 1536Mi
+    # Pick up every ServiceMonitor, PodMonitor and PrometheusRule in the cluster, not only the
+    # chart's own: the RabbitMQ, cert-manager, Loki, Tempo and collector monitors and the app's alerts.
+    ruleSelectorNilUsesHelmValues: false
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    scrapeConfigSelectorNilUsesHelmValues: false
+
+alertmanager:
+  alertmanagerSpec:
+    retention: 120h
+    storage:
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 1Gi
+          # storageClassName: <class>  # unset uses the cluster's default storage class
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+  # With no SMTP server in the settings, alerts go nowhere but still show in Grafana and
+  # Alertmanager. provision-observability.ps1 adds an email receiver when one is set.
+  config:
+    route:
+      group_by: [namespace, alertname]
+      repeat_interval: 4h
+      receiver: "null"
+      # Never mailed: Watchdog and InfoInhibitor always fire by design, and info alerts are for the
+      # dashboards. Everything else goes to the default receiver.
+      routes:
+        - receiver: "null"
+          matchers:
+            - alertname =~ "Watchdog|InfoInhibitor"
+        - receiver: "null"
+          matchers:
+            - severity = "info"
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 256Mi
+
+prometheus-node-exporter:
+  # Worker nodes only. The chart's default tolerates every taint, so it also lands on the control
+  # plane, which AKS enabled by Arc manages and which doesn't trust the connected registry: the
+  # registry's trust DaemonSet only runs where workloads can, so the image can't be pulled there.
+  tolerations: []
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 64Mi
+
+grafana:
+  # Admin credentials come from this Secret, which provision-observability.ps1 generates. Nobody
+  # signs in with them: the login form and basic auth are off, people sign in through Keycloak.
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  testFramework:
+    enabled: false
+  # The image runs as user 472 and fsGroup makes the volume writable for it, so no root init container.
+  initChownData:
+    enabled: false
+  persistence:
+    enabled: true
+    type: pvc
+    size: 1Gi
+    # storageClassName: <class>  # unset uses the cluster's default storage class
+  # The volume attaches to one node at a time, so the old pod has to stop first.
+  deploymentStrategy:
+    type: Recreate
+  resources:
+    requests:
+      cpu: 50m
+      memory: 192Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  # Served at https://<ingress address>/grafana on the app's ingress, with the ingress's default
+  # certificate (from the site-ca ClusterIssuer). A path, not a host name, works on an address-only
+  # site and keeps the app's own host-less rule intact.
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    path: /grafana
+    pathType: Prefix
+    hosts: []
+    annotations:
+      nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+
+  # Keycloak's client secret, from the Secret provision-observability.ps1 copies from the identity
+  # namespace. An environment variable, so it never appears in grafana.ini or the chart values.
+  envValueFrom:
+    GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET:
+      secretKeyRef:
+        name: grafana-oauth
+        key: client-secret
+  # The site CA, to verify Keycloak's certificate when Grafana redeems the sign-in code.
+  extraSecretMounts:
+    - name: keycloak-ca
+      secretName: keycloak-ca
+      mountPath: /etc/grafana/keycloak-ca
+      readOnly: true
+
+  grafana.ini:
+    server:
+      root_url: <grafana-url>/  # e.g. https://<ingress address>/grafana/
+      serve_from_sub_path: true
+    analytics:
+      reporting_enabled: false
+      check_for_updates: false
+      check_for_plugin_updates: false
+    auth:
+      disable_login_form: true
+      # Back to Keycloak on sign-out, or the next page load would sign straight in again.
+      signout_redirect_url: <keycloak-realm-url>/protocol/openid-connect/logout?client_id=grafana
+    auth.basic:
+      enabled: false
+    auth.anonymous:
+      enabled: false
+    users:
+      allow_sign_up: false
+      auto_assign_org_role: Viewer
+    auth.generic_oauth:
+      enabled: true
+      name: Keycloak
+      client_id: grafana
+      scopes: openid profile email
+      auth_url: <keycloak-realm-url>/protocol/openid-connect/auth   # e.g. https://<node>:30443/realms/oms
+      token_url: <keycloak-realm-url>/protocol/openid-connect/token
+      api_url: <keycloak-realm-url>/protocol/openid-connect/userinfo
+      tls_client_ca: /etc/grafana/keycloak-ca/ca.crt
+      use_pkce: true
+      use_refresh_token: true
+      auto_login: true
+      allow_sign_up: true
+      login_attribute_path: preferred_username
+      name_attribute_path: name
+      # Directory accounts may have no mail attribute.
+      email_attribute_path: email || preferred_username
+      # Realm roles arrive in the 'roles' claim (the grafana client's mapper in realm.json).
+      # Inventory managers can edit dashboards; everyone else who can sign in to the realm views.
+      role_attribute_path: contains(roles || `[]`, 'Inventory.Manage') && 'Editor' || 'Viewer'
+      role_attribute_strict: false
+      allow_assign_grafana_admin: false
+
+  sidecar:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+    # Basic auth is off, so the sidecars can't call Grafana's reload API. Data sources are written
+    # before Grafana starts, by an init container that lists them once and exits (LIST; the
+    # chart's default, WATCH, never exits and keeps Grafana from starting). The dashboard sidecar
+    # keeps watching and Grafana re-reads its folder every 30 seconds.
+    datasources:
+      initDatasources: true
+      watchMethod: LIST
+      skipReload: true
+    dashboards:
+      skipReload: true
+
+  # Prometheus and Alertmanager come from the chart; these add the log and trace stores, linked both
+  # ways: a trace opens its logs, a log line with a trace_id opens its trace.
+  additionalDataSources:
+    - name: Loki
+      uid: loki
+      type: loki
+      access: proxy
+      url: http://loki.observability.svc.cluster.local:3100
+      jsonData:
+        derivedFields:
+          - name: TraceID
+            matcherType: label
+            matcherRegex: trace_id
+            datasourceUid: tempo
+            url: "$${__value.raw}"
+            urlDisplayLabel: View trace
+    - name: Tempo
+      uid: tempo
+      type: tempo
+      access: proxy
+      url: http://tempo.observability.svc.cluster.local:3200
+      jsonData:
+        tracesToLogsV2:
+          datasourceUid: loki
+          spanStartTimeShift: -5m
+          spanEndTimeShift: 5m
+          customQuery: true
+          query: '{service_name="$${__span.tags["service.name"]}"} | trace_id="$${__trace.traceId}"'
+        lokiSearch:
+          datasourceUid: loki
+        nodeGraph:
+          enabled: true

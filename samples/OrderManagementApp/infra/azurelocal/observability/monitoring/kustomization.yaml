@@ -1,0 +1,28 @@
+# What Prometheus scrapes beyond the chart defaults, the app's alerts and its Grafana dashboard.
+# provision-observability.ps1 applies this after the charts (they bring the CRDs it uses). By hand:
+#
+#   kubectl apply -k infra/azurelocal/observability/monitoring
+#
+# The app's namespace (oms-azurelocal) and cert-manager's (cert-manager) are written in
+# rabbitmq-servicemonitor.yaml and cert-manager-podmonitor.yaml; the script replaces them when
+# your site uses others.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: observability
+
+resources:
+  - rabbitmq-servicemonitor.yaml
+  - cert-manager-podmonitor.yaml
+  - cert-manager-metrics-ca.yaml
+  - alerts.yaml
+
+# Grafana's dashboard sidecar loads every ConfigMap with this label.
+configMapGenerator:
+  - name: oms-dashboard
+    files:
+      - order-management.json
+    options:
+      disableNameSuffixHash: true
+      labels:
+        grafana_dashboard: "1"

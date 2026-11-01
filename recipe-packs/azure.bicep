@@ -1,9 +1,11 @@
 // Recipe Pack for Azure: AKS with Azure PaaS services.
 //
-// The queue, object storage and SQL types that the Azure Local pack binds to containers are bound
-// here to Azure Service Bus, Azure Blob Storage and Azure SQL Database. Every container runs with
-// Entra Workload ID, so the platform needs a user-assigned managed identity with a federated
-// credential that trusts the cluster's OIDC issuer for `serviceAccountName`.
+// The queue, object storage, SQL and PostgreSQL types that the Azure Local pack binds to containers
+// are bound here to Azure Service Bus, Azure Blob Storage, Azure SQL Database and Azure Database for
+// PostgreSQL. Every service runs with its own Entra Workload ID: the platform creates a
+// user-assigned managed identity per service, with a federated credential that trusts the
+// cluster's OIDC issuer for that service's service account, `{resource}` in serviceAccountName.
+// Each Recipe grants only the identities listed for it.
 
 extension radius
 
@@ -13,15 +15,32 @@ param registry string
 @description('Tag applied to the published Recipe modules.')
 param tag string = 'latest'
 
-@description('Principal (object) ID of that managed identity, used for role assignments.')
-param workloadIdentityPrincipalId string
+@description('Service account each container runs as; {resource} is the container resource name. Must match the federated credential subjects.')
+param serviceAccountName string = '{resource}'
 
-@description('Resource name of that managed identity, used as the Azure SQL Entra administrator login.')
-param workloadIdentityName string
+@description('Client ID of each service\'s managed identity, by container resource name.')
+param workloadClientIds object
 
-@description('Kubernetes service account annotated for that identity. Its name must match the federated credential subject.')
-param serviceAccountName string
+@description('Principal IDs of the identities allowed to send to queues.')
+param queueSenderPrincipalIds array = []
 
+@description('Principal IDs of the identities allowed to receive from queues.')
+param queueReceiverPrincipalIds array = []
+
+@description('Principal IDs of the identities allowed to read and write object storage.')
+param storageContributorPrincipalIds array = []
+
+@description('Object ID of the database-administrator identity, the Entra administrator of SQL and PostgreSQL servers.')
+param databaseAdministratorPrincipalId string
+
+@description('Name of that identity.')
+param databaseAdministratorName string
+
+@description('Application Insights connection string given to every container. Ingestion uses each service\'s identity.')
+param applicationInsightsConnectionString string = ''
+
+@description('Action group the Recipes\' alerts notify, such as a dead-lettered message. Empty creates no alerts.')
+param alertActionGroupId string = ''
 @description('Azure region for provisioned infrastructure.')
 param location string = 'eastus2'
 
@@ -33,16 +52,23 @@ in a different region from the cluster at the cost of some latency and cross-reg
 ''')
 param sqlLocation string = location
 
+@description('''
+Azure region for the PostgreSQL flexible server. Defaults to `location`. Override when the primary
+region offers no PostgreSQL versions to the subscription, which fails with `ParameterOutOfRange`
+("The value of the 'Version' should be in: []"). Reached over its public FQDN, like Azure SQL.
+''')
+param postgresLocation string = location
+
 @description('Registry path holding the stock Radius Kubernetes Recipes, used for secrets.')
 param radiusRecipeRegistry string = 'ghcr.io/radius-project/kube-recipes'
 
 @description('Tag of the stock Radius Recipes.')
 param radiusRecipeTag string = 'latest'
 
-@description('Ingress class that publishes containers with ports. Empty keeps them cluster-internal.')
-param ingressClassName string = ''
+@description('Ingress class that publishes the application\'s routes.')
+param ingressClassName string = 'webapprouting.kubernetes.azure.com'
 
-@description('Public host name the ingress answers on, for example <label>.<region>.cloudapp.azure.com.')
+@description('Public host name the routes answer on, for example <label>.<region>.cloudapp.azure.com. Empty answers on any host.')
 param ingressHost string = ''
 
 @description('cert-manager ClusterIssuer that obtains the certificate for ingressHost.')
@@ -51,14 +77,18 @@ param ingressCertIssuer string = ''
 @description('TLS Secret the ingress serves; cert-manager writes the certificate into it.')
 param ingressTlsSecretName string = 'app-tls'
 
-// Every container runs as the annotated service account with the Workload Identity label, so the
-// webhook gives it AZURE_CLIENT_ID and a federated token. The application declares none of this.
+// Every container runs as its own service account with the Workload Identity label, so the
+// webhook gives it its own AZURE_CLIENT_ID and federated token. The application declares none of this.
 var containerIdentityParameters = {
   serviceAccountName: serviceAccountName
   azureWorkloadIdentity: true
+  workloadClientIds: workloadClientIds
+  containerEnv: empty(applicationInsightsConnectionString) ? [] : [
+    { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: applicationInsightsConnectionString }
+  ]
 }
 
-var containerIngressParameters = empty(ingressClassName) ? {} : {
+var routeIngressParameters = {
   ingressClassName: ingressClassName
   ingressHost: ingressHost
   ingressTlsSecretName: ingressTlsSecretName
@@ -71,12 +101,19 @@ resource azureRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
   name: 'azure-recipes'
   properties: {
     recipes: {
-      // Local build of the stock Kubernetes container Recipe that adds identity, registry and
-      // ingress settings chosen by the platform (see recipes/kubernetes/kubernetes-containers.bicep).
+      // Local build of the stock Kubernetes container Recipe that adds identity and registry
+      // settings chosen by the platform (see recipes/kubernetes/kubernetes-containers.bicep).
       'Radius.Compute/containers': {
         kind: 'bicep'
         source: '${registry}/recipes/kubernetes-containers:${tag}'
-        parameters: union(containerIdentityParameters, containerIngressParameters)
+        parameters: containerIdentityParameters
+      }
+      // What the application publishes is a route it declares; the managed ingress, host name and
+      // certificate are the platform's.
+      'Radius.Compute/routes': {
+        kind: 'bicep'
+        source: '${registry}/recipes/kubernetes-routes:${tag}'
+        parameters: routeIngressParameters
       }
       'Radius.Security/secrets': {
         kind: 'bicep'
@@ -87,7 +124,9 @@ resource azureRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
         source: '${registry}/recipes/servicebus-queue:${tag}'
         parameters: {
           location: location
-          workloadIdentityPrincipalId: workloadIdentityPrincipalId
+          senderPrincipalIds: queueSenderPrincipalIds
+          receiverPrincipalIds: queueReceiverPrincipalIds
+          alertActionGroupId: alertActionGroupId
           sku: 'Standard'
         }
       }
@@ -96,7 +135,7 @@ resource azureRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
         source: '${registry}/recipes/blob-objectstorage:${tag}'
         parameters: {
           location: location
-          workloadIdentityPrincipalId: workloadIdentityPrincipalId
+          contributorPrincipalIds: storageContributorPrincipalIds
           sku: 'Standard_LRS'
         }
       }
@@ -105,9 +144,18 @@ resource azureRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
         source: '${registry}/recipes/azuresql-database:${tag}'
         parameters: {
           location: sqlLocation
-          workloadIdentityPrincipalId: workloadIdentityPrincipalId
-          workloadIdentityName: workloadIdentityName
+          administratorPrincipalId: databaseAdministratorPrincipalId
+          administratorName: databaseAdministratorName
           skuName: 'S0'
+        }
+      }
+      'Radius.Data/postgreSqlDatabases': {
+        kind: 'bicep'
+        source: '${registry}/recipes/postgres-flexible-database:${tag}'
+        parameters: {
+          location: postgresLocation
+          administratorPrincipalId: databaseAdministratorPrincipalId
+          administratorName: databaseAdministratorName
         }
       }
     }

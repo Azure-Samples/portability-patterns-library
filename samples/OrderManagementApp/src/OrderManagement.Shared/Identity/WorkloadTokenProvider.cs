@@ -53,8 +53,11 @@ public sealed class WorkloadTokenOptions
 /// Obtains an access token using the pod's ServiceAccount token as a client assertion, which is the
 /// same federated flow Entra Workload ID uses on AKS. Nothing here is a stored credential: the
 /// assertion is minted by the cluster and rotated in place by the kubelet.
+///
+/// One token per workload: the issuer adds every audience the workload calls (RabbitMQ and the
+/// inventory service), so the queue and the inventory client share this provider.
 /// </summary>
-public sealed class WorkloadTokenProvider : IDisposable
+public sealed class WorkloadTokenProvider : IServiceTokenProvider, IDisposable
 {
     // Renew early so a request never carries a token that expires mid-flight.
     private static readonly TimeSpan RenewBefore = TimeSpan.FromSeconds(60);
@@ -96,6 +99,9 @@ public sealed class WorkloadTokenProvider : IDisposable
 
         _client = new HttpClient(_handler) { Timeout = TimeSpan.FromSeconds(30) };
     }
+
+    async Task<string?> IServiceTokenProvider.GetAccessTokenAsync(CancellationToken cancellationToken) =>
+        await GetAccessTokenAsync(cancellationToken).ConfigureAwait(false);
 
     public async Task<string> GetAccessTokenAsync(CancellationToken cancellationToken)
     {

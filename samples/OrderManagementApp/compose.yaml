@@ -1,5 +1,6 @@
 # Runs the whole app on your machine, with the same backing services as Azure Local:
-# RabbitMQ for the queue, SQL Server, Azurite for blob storage and Keycloak for sign-in.
+# RabbitMQ for the queue, SQL Server for orders, PostgreSQL for the inventory, Azurite for blob
+# storage and Keycloak for sign-in.
 #
 #   docker compose up --build
 #
@@ -7,29 +8,43 @@
 #   dotnet dev-certs https --trust
 #   dotnet dev-certs https --export-path local/certs/localhost.crt --format Pem --no-password
 #
-# Then open http://localhost:8080 and sign in as demo / demo.
+# Then open http://localhost:8080 and sign in as demo / demo (places orders) or as
+# manager / manager (inventory admin: sees orders and can restock).
 #
 # The app gets its connections from CONNECTION_* environment variables, the same ones Radius sets
 # from the Recipes' outputs on Azure and Azure Local. Nothing in the app is specific to this file.
+# As there, dbsetup runs first as the database administrator; each service then signs in as its
+# own least-privilege principal (SQL logins api and processor, PostgreSQL role inventory).
+# Locally the services call each other without tokens.
 
 name: order-management
 
+x-sql: &sql
+  # The database: Radius.Data/sqlServerDatabases
+  CONNECTION_SQL_HOST: sql
+  CONNECTION_SQL_PORT: "1433"
+  CONNECTION_SQL_DATABASE: omsdb
+
+x-inventorydb: &inventorydb
+  # The inventory database: PostgreSQL. The local server has no TLS.
+  CONNECTION_INVENTORYDB_HOST: postgres
+  CONNECTION_INVENTORYDB_PORT: "5432"
+  CONNECTION_INVENTORYDB_DATABASE: inventory
+  CONNECTION_INVENTORYDB_TLS: optional
+
 x-connections: &connections
+  <<: *sql
   # The queue: Portability.Messaging/messageQueues
   CONNECTION_QUEUE_PROVIDER: rabbitmq
   CONNECTION_QUEUE_ENDPOINT: rabbitmq:5672
   CONNECTION_QUEUE_QUEUENAME: orders
   CONNECTION_QUEUE_USERNAME: oms
   CONNECTION_QUEUE_PASSWORD: ${LOCAL_PASSWORD:-Local-only-Passw0rd}
-  # The database: Radius.Data/sqlServerDatabases
-  CONNECTION_SQL_HOST: sql
-  CONNECTION_SQL_PORT: "1433"
-  CONNECTION_SQL_DATABASE: omsdb
-  CONNECTION_SQL_USERNAME: sa
-  CONNECTION_SQL_PASSWORD: ${LOCAL_PASSWORD:-Local-only-Passw0rd}
   # Blob storage: Radius.Storage/objectStorage. Azurite's well-known development account.
   CONNECTION_ARCHIVE_CONTAINERNAME: orders
   CONNECTION_ARCHIVE_CONNECTIONSTRING: DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;
+  # The inventory service, called without a token here.
+  Inventory__BaseUrl: http://inventory:8080
 
 services:
   api:
@@ -40,6 +55,9 @@ services:
       - "8080:8080"
     environment:
       <<: *connections
+      OTEL_SERVICE_NAME: api
+      SQL_USERNAME: api
+      SQL_PASSWORD: ${LOCAL_PASSWORD:-Local-only-Passw0rd}
       # Sign-in, as on Azure Local. The browser reaches Keycloak at localhost:8443 and the API
       # reaches it at keycloak:8080; the token's issuer is the browser's address in both cases.
       AzureAd__Authority: https://localhost:8443/realms/oms
@@ -56,10 +74,12 @@ services:
       Spa__IdentityProvider: Keycloak
       Spa__Environment: Local
     depends_on:
+      dbsetup: { condition: service_completed_successfully }
       rabbitmq: { condition: service_healthy }
       sql: { condition: service_healthy }
       azurite: { condition: service_started }
       keycloak: { condition: service_healthy }
+      inventory: { condition: service_started }
 
   processor:
     build:
@@ -67,11 +87,57 @@ services:
       dockerfile: docker/Dockerfile.processor
     environment:
       <<: *connections
+      OTEL_SERVICE_NAME: processor
+      SQL_USERNAME: processor
+      SQL_PASSWORD: ${LOCAL_PASSWORD:-Local-only-Passw0rd}
     depends_on:
+      dbsetup: { condition: service_completed_successfully }
       rabbitmq: { condition: service_healthy }
       sql: { condition: service_healthy }
       azurite: { condition: service_started }
+      inventory: { condition: service_started }
 
+  inventory:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.inventory
+    environment:
+      <<: *inventorydb
+      OTEL_SERVICE_NAME: inventory
+      POSTGRES_USERNAME: inventory
+      POSTGRES_PASSWORD: ${LOCAL_PASSWORD:-Local-only-Passw0rd}
+      # No InventoryAuth__Authority: service tokens are not checked locally.
+    depends_on:
+      dbsetup: { condition: service_completed_successfully }
+      postgres: { condition: service_healthy }
+
+  # Creates the databases, tables, seed data and the services' logins, then exits.
+  dbsetup:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dbsetup
+    environment:
+      <<: [*sql, *inventorydb]
+      SQL_ADMIN_USERNAME: sa
+      SQL_ADMIN_PASSWORD: ${LOCAL_PASSWORD:-Local-only-Passw0rd}
+      SQL_API_PASSWORD: ${LOCAL_PASSWORD:-Local-only-Passw0rd}
+      SQL_PROCESSOR_PASSWORD: ${LOCAL_PASSWORD:-Local-only-Passw0rd}
+      POSTGRES_ADMIN_USERNAME: postgres
+      POSTGRES_ADMIN_PASSWORD: ${LOCAL_PASSWORD:-Local-only-Passw0rd}
+      INVENTORY_DB_PASSWORD: ${LOCAL_PASSWORD:-Local-only-Passw0rd}
+    depends_on:
+      sql: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+
+  postgres:
+    image: docker.io/library/postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${LOCAL_PASSWORD:-Local-only-Passw0rd}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      retries: 24
   rabbitmq:
     image: docker.io/library/rabbitmq:4-management-alpine
     # Runs as the image's own user, so it can create its data folder on any container engine.
@@ -124,7 +190,12 @@ services:
       LDAP_BIND_DN: unused
       LDAP_BIND_PASSWORD: unused
       KUBERNETES_ISSUER: https://kubernetes.default.svc.cluster.local
-      WORKLOAD_SUBJECT: unused
+      # No cluster locally: nothing to fetch signing keys from.
+      KUBERNETES_ISSUER_DISCOVERY_URL: ""
+      WORKLOAD_NAMESPACE: unused
+      # Grafana is not part of the local run.
+      GRAFANA_ORIGIN: http://localhost:3000
+      GRAFANA_CLIENT_SECRET: unused
     volumes:
       - ./infra/azurelocal/keycloak/realm.json:/opt/keycloak/data/import/oms-realm.json:ro
       - ./local/keycloak-users.json:/opt/keycloak/data/import/oms-users-0.json:ro

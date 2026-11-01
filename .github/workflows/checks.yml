@@ -31,7 +31,7 @@ jobs:
     name: Bicep templates and Recipes
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install the Radius and Bicep CLIs
         run: |
@@ -62,9 +62,9 @@ jobs:
       run:
         working-directory: ${{ env.SAMPLE }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: 9.0.x
 
@@ -84,11 +84,20 @@ jobs:
           set -x
           curl -fsS http://localhost:8080/healthz
           test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/me)" = 401
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/products)" = 401
           issuer=$(curl -fsSk https://localhost:8443/realms/oms/.well-known/openid-configuration | jq -r .issuer)
           test "$issuer" = https://localhost:8443/realms/oms
+          # dbsetup created the databases, logins and seed data before the services started.
+          test "$(docker compose ps --all dbsetup --format '{{.ExitCode}}')" = 0
+          # The inventory service is internal; ask it from inside the compose network.
+          inventory() { docker run --rm --network order-management_default docker.io/curlimages/curl:8.11.1 -fsS "http://inventory:8080$1"; }
+          inventory /healthz
+          test "$(inventory /api/products | jq 'length')" = 5
+          test "$(inventory /api/products | jq '[.[] | select(.available > 0)] | length')" = 5
           # The processor exits if it can't reach the queue, the database or blob storage.
           sleep 30
           test "$(docker compose ps processor --format '{{.State}}')" = running
+          test "$(docker compose ps inventory --format '{{.State}}')" = running
 
       - name: Logs
         if: failure()
@@ -101,7 +110,7 @@ jobs:
       run:
         working-directory: ${{ env.SAMPLE }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Keycloak manifests and realm
         run: |

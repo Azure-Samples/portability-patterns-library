@@ -15,11 +15,13 @@
 #   azd env set DNS_LABEL <label>                    # public name <label>.<region>.cloudapp.azure.com; default oms-<env name>
 #   azd env set AKS_NODE_VM_SIZE <size>              # if Standard_D4s_v7 isn't allowed in your subscription or region
 #   azd env set SQL_LOCATION <region>                # if your subscription can't create Azure SQL in the main region
+#   azd env set POSTGRES_LOCATION <region>           # if your subscription can't create PostgreSQL in the main region
 #   azd env set SERVICE_MANAGEMENT_REFERENCE <id>    # if your Entra tenant requires it on app registrations
+#   azd env set ALERT_EMAIL <address>                # who gets the alerts (dead-lettered order, stalled processor, low stock)
 #   azd env set PRIVATE_CA true                      # if Let's Encrypt can't reach the cluster (inbound internet blocked);
 #                                                    # the app then uses a certificate from a CA kept in the cluster
 #
-# Each azd environment gets its own app registrations (oms-api-<env>, oms-spa-<env>) and Radius
+# Each azd environment gets its own app registrations (oms-api-<env>, oms-spa-<env>, oms-inventory-<env>) and Radius
 # workspace, so several can live side by side. azd down deletes the resource group, including what
 # the Recipes created in it, and the app registrations.
 
@@ -59,9 +61,11 @@ hooks:
 
       $identityArgs = @{
         SpaOrigins  = @("https://$label.$env:AZURE_LOCATION.cloudapp.azure.com")
-        ApiAppName  = "oms-api-$env:AZURE_ENV_NAME"
-        SpaAppName  = "oms-spa-$env:AZURE_ENV_NAME"
-        Location    = $env:AZURE_LOCATION
+        ApiAppName       = "oms-api-$env:AZURE_ENV_NAME"
+        SpaAppName       = "oms-spa-$env:AZURE_ENV_NAME"
+        InventoryAppName = "oms-inventory-$env:AZURE_ENV_NAME"
+        ResourceGroup    = $env:resourceGroupName
+        Location         = $env:AZURE_LOCATION
       }
       if ($env:SERVICE_MANAGEMENT_REFERENCE) { $identityArgs.ServiceManagementReference = $env:SERVICE_MANAGEMENT_REFERENCE }
       ./scripts/infra/azure/configure-app-identity.ps1 @identityArgs
@@ -76,21 +80,22 @@ hooks:
         Location                    = $env:AZURE_LOCATION
         Registry                    = $env:registryLoginServer
         AppInfraResourceGroup       = $env:resourceGroupName
-        WorkloadIdentityPrincipalId = $env:workloadIdentityPrincipalId
         ClusterName                 = $env:clusterName
         KubeContext                 = "$env:clusterName-radius"
         WorkspaceName               = $env:AZURE_ENV_NAME
         OrdersApiAppName            = "oms-api-$env:AZURE_ENV_NAME"
         OrdersSpaAppName            = "oms-spa-$env:AZURE_ENV_NAME"
+        InventoryAppName            = "oms-inventory-$env:AZURE_ENV_NAME"
       }
       if ($env:SQL_LOCATION) { $deployArgs.SqlLocation = $env:SQL_LOCATION }
+      if ($env:POSTGRES_LOCATION) { $deployArgs.PostgresLocation = $env:POSTGRES_LOCATION }
       if ($env:PRIVATE_CA -eq 'true') { $deployArgs.IngressCertIssuer = 'bcd-private-ca' }
       ./scripts/deploy/azure.ps1 @deployArgs
 
   postdown:
     shell: pwsh
     run: |
-      foreach ($name in "oms-api-$env:AZURE_ENV_NAME", "oms-spa-$env:AZURE_ENV_NAME") {
+      foreach ($name in "oms-api-$env:AZURE_ENV_NAME", "oms-spa-$env:AZURE_ENV_NAME", "oms-inventory-$env:AZURE_ENV_NAME") {
         $appId = az ad app list --display-name $name --query '[0].appId' --output tsv
         if ($appId) { az ad app delete --id $appId; Write-Host "Deleted app registration $name" }
       }

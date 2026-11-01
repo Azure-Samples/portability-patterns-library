@@ -67,6 +67,9 @@ var uniqueName = 'rabbitmq-${uniqueString(context.resource.id)}'
 var queueName = context.resource.properties.?queueName ?? context.resource.name
 var amqpPort = 5672
 var managementPort = 15672
+// The image's rabbitmq_prometheus plugin serves queue metrics here, such as the dead-letter queue's
+// length, which the site's monitoring alerts on.
+var metricsPort = 15692
 
 // Deterministic per-resource password. Recreating the resource rotates it.
 var password = uniqueString(context.resource.id, 'rabbitmq-password')
@@ -150,7 +153,7 @@ var configData = union(
   },
   oauthEnabled ? {
     '20-oauth.conf': oauthConf
-    enabled_plugins: '[rabbitmq_management,rabbitmq_auth_backend_oauth2].'
+    enabled_plugins: '[rabbitmq_management,rabbitmq_prometheus,rabbitmq_auth_backend_oauth2].'
   } : {}
 )
 
@@ -329,6 +332,9 @@ resource rabbitmq 'apps/StatefulSet@v1' = {
               {
                 containerPort: managementPort
               }
+              {
+                containerPort: metricsPort
+              }
             ]
             volumeMounts: concat([
               {
@@ -413,6 +419,12 @@ resource svc 'core/Service@v1' = {
         port: managementPort
         #disable-next-line BCP036
         targetPort: managementPort
+      }
+      {
+        name: 'metrics'
+        port: metricsPort
+        #disable-next-line BCP036
+        targetPort: metricsPort
       }
     ]
   }

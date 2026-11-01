@@ -13,8 +13,8 @@
     The script targets that existing domain controller and adds only what the sample needs:
       * AD Certificate Services, if no certificate authority is installed yet, so the controller
         enrols a server certificate and LDAPS works on 636. An existing CA is reused.
-      * The OMS OU, the oms-app-readers / oms-app-writers groups, the Keycloak bind account and a
-        sample user in both groups.
+      * The OMS OU, the oms-app-readers / oms-app-writers / oms-inventory-admins groups, the
+        Keycloak bind account, a sample user who places orders and a sample inventory administrator.
       * Limits on the bind account: it can sign in only at the domain controllers, can't be
         delegated, and is denied listing every container outside the OMS OU.
       * Two Kubernetes Secrets in the cluster: the bind and sample-user credentials, and the CA
@@ -73,6 +73,7 @@ param(
 
     [string]$BindAccountName = 'svc-keycloak',
     [string]$DemoUserName = 'oms-demo',
+    [string]$InventoryAdminUserName = 'oms-inventory-admin',
 
     [switch]$SkipBindSecret,
     [switch]$SkipCertificateAuthority,
@@ -380,10 +381,11 @@ try {
 
     $bindPassword = New-DirectoryPassword
     $demoPassword = New-DirectoryPassword
+    $inventoryAdminPassword = New-DirectoryPassword
 
     Write-Host "==> Creating the demo organisational unit and accounts" -ForegroundColor Cyan
     $created = Invoke-Guest -Credential $domainCredential -ScriptBlock {
-        param($ouName, $bindName, $bindPw, $demoName, $demoPw)
+        param($ouName, $bindName, $bindPw, $demoName, $demoPw, $adminName, $adminPw)
         $ErrorActionPreference = 'Stop'
         Import-Module ActiveDirectory
 
@@ -395,7 +397,7 @@ try {
                 -ProtectedFromAccidentalDeletion $true
         }
 
-        foreach ($group in 'oms-app-readers', 'oms-app-writers') {
+        foreach ($group in 'oms-app-readers', 'oms-app-writers', 'oms-inventory-admins') {
             if (-not (Get-ADGroup -Filter "Name -eq '$group'" -ErrorAction SilentlyContinue)) {
                 New-ADGroup -Name $group -GroupScope Global -GroupCategory Security -Path $ouPath
             }
@@ -428,6 +430,19 @@ try {
         Add-ADGroupMember -Identity 'oms-app-readers' -Members $demoName -ErrorAction SilentlyContinue
         Add-ADGroupMember -Identity 'oms-app-writers' -Members $demoName -ErrorAction SilentlyContinue
 
+        # A second sample user, who maintains the inventory rather than placing orders.
+        $adminSecure = ConvertTo-SecureString $adminPw -AsPlainText -Force
+        if (Get-ADUser -Filter "SamAccountName -eq '$adminName'" -ErrorAction SilentlyContinue) {
+            Set-ADAccountPassword -Identity $adminName -NewPassword $adminSecure -Reset
+        }
+        else {
+            New-ADUser -Name $adminName -SamAccountName $adminName `
+                -UserPrincipalName "$adminName@$($domain.DNSRoot)" -Path $ouPath `
+                -AccountPassword $adminSecure -PasswordNeverExpires $true -Enabled $true `
+                -Description 'Sample inventory administrator'
+        }
+        Add-ADGroupMember -Identity 'oms-inventory-admins' -Members $adminName -ErrorAction SilentlyContinue
+
         [pscustomobject]@{
             DnsRoot          = $domain.DNSRoot
             BaseDn           = $domain.DistinguishedName
@@ -435,11 +450,12 @@ try {
             BindDn           = (Get-ADUser -Identity $bindName).DistinguishedName
             BindUpn          = "$bindName@$($domain.DNSRoot)"
             DemoUpn          = "$demoName@$($domain.DNSRoot)"
+            InventoryAdminUpn = "$adminName@$($domain.DNSRoot)"
             # Setup generates the machine name, so the certificate's subject is whatever this is
             # rather than the VM name, and that is the name LDAPS has to be reached by.
             DcFqdn           = "$env:COMPUTERNAME.$($domain.DNSRoot)".ToLowerInvariant()
         }
-    } -ArgumentList $OuName, $BindAccountName, $bindPassword, $DemoUserName, $demoPassword
+    } -ArgumentList $OuName, $BindAccountName, $bindPassword, $DemoUserName, $demoPassword, $InventoryAdminUserName, $inventoryAdminPassword
 
     Set-BindAccountRestriction -Credential $domainCredential
 
@@ -465,6 +481,17 @@ try {
                 "--from-literal=demo-upn=$($created.DemoUpn)" `
                 "--from-literal=demo-password=$demoPassword" | Out-Null
             if ($LASTEXITCODE -ne 0) { throw 'Could not write the bind credential Secret.' }
+
+            # The inventory administrator's credentials join the same Secret, for sign-in tests.
+            $patchFile = New-TemporaryFile
+            try {
+                Set-Content -Path $patchFile -Encoding ascii -Value (@{
+                        stringData = @{ 'inventory-admin-upn' = $created.InventoryAdminUpn; 'inventory-admin-password' = $inventoryAdminPassword }
+                    } | ConvertTo-Json -Compress)
+                kubectl --context $KubeContext -n $SecretNamespace patch secret $SecretName --type merge --patch-file $patchFile | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw 'Could not add the inventory administrator to the bind credential Secret.' }
+            }
+            finally { Remove-Item $patchFile -ErrorAction SilentlyContinue }
 
             Write-Host "    secret/$SecretName in namespace $SecretNamespace" -ForegroundColor DarkGray
 
@@ -494,7 +521,8 @@ try {
     Write-Host "Search base   : $($created.BaseDn)"
     Write-Host "Demo OU       : $($created.OuDn)"
     Write-Host "Bind account  : $($created.BindUpn)"
-    Write-Host "Sample user   : $($created.DemoUpn)"
+    Write-Host "Sample user   : $($created.DemoUpn) (places orders)"
+    Write-Host "Inventory admin: $($created.InventoryAdminUpn) (restocks products)"
     if ($caCertPem) { Write-Host "LDAP          : ldaps://$($created.DcFqdn):636" }
     else { Write-Host "LDAP          : ldap://$($created.DcFqdn):389 (no TLS)" -ForegroundColor Yellow }
     Write-Host ''

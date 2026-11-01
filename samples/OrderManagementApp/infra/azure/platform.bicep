@@ -6,9 +6,11 @@
 //   * AKS cluster with the OIDC issuer and workload identity both enabled.
 //   * AcrPull for the cluster's kubelet identity, the declarative equivalent of
 //     `az aks update --attach-acr`, so the kubelet can pull the application images.
-//   * A user-assigned managed identity plus a federated identity credential (FIC) trusting the
-//     cluster's OIDC issuer for one specific Kubernetes service account. This is what lets the
-//     API and processor reach Service Bus, Blob Storage and Azure SQL without any secret.
+//   * A user-assigned managed identity per service, each with a federated identity credential (FIC)
+//     trusting the cluster's OIDC issuer for that service's Kubernetes service account. This is what
+//     lets each service reach exactly the Azure services it needs without any secret. A further
+//     identity is the database administrator, used only by the database setup job.
+//   * Log Analytics and Application Insights, with local authentication off, and alert rules.
 //
 // This is deliberately separate from the application deployment: it changes rarely, and it needs
 // far higher privileges (role assignments require Owner or User Access Administrator).
@@ -34,8 +36,21 @@ param clusterName string = 'bcd-aks'
 @maxLength(50)
 param registryName string = 'omsacr${uniqueString(subscription().id, resourceGroupName)}'
 
-@description('Name of the user-assigned managed identity the application pods federate with.')
-param identityName string = 'bcd-workload-identity'
+@description('Prefix of the user-assigned managed identities: one per service and one for the database setup job.')
+param identityPrefix string = 'id-oms'
+
+@description('Services that get their own identity. Each runs as a service account of the same name, as the Azure Recipe Pack sets.')
+param workloadNames array = [
+  'api'
+  'processor'
+  'inventory'
+]
+
+@description('Service account the database setup job runs as.')
+param databaseAdminServiceAccountName string = 'dbsetup'
+
+@description('Email address that receives alerts. Empty creates the action group without receivers.')
+param alertEmail string = ''
 
 @description('''
 Name of the user-assigned managed identity the Radius control plane federates with. This is a
@@ -46,9 +61,6 @@ param radiusIdentityName string = 'bcd-radius-identity'
 
 @description('Kubernetes namespace the application is deployed into. Must match the Radius Environment namespace.')
 param appNamespace string = 'oms-azure'
-
-@description('Kubernetes service account the application pods run as. Must match what the Azure Recipe Pack sets.')
-param serviceAccountName string = 'oms-workload-identity'
 
 @description('Number of nodes in the system pool.')
 @minValue(1)
@@ -106,10 +118,12 @@ module platform 'platform-resources.bicep' = {
     location: location
     clusterName: clusterName
     registryName: registryName
-    identityName: identityName
+    identityPrefix: identityPrefix
+    workloadNames: workloadNames
+    databaseAdminServiceAccountName: databaseAdminServiceAccountName
+    alertEmail: alertEmail
     radiusIdentityName: radiusIdentityName
     appNamespace: appNamespace
-    serviceAccountName: serviceAccountName
     nodeCount: nodeCount
     nodeVmSize: nodeVmSize
     kubernetesVersion: kubernetesVersion
@@ -132,14 +146,17 @@ output clusterName string = platform.outputs.clusterName
 @description('OIDC issuer URL of the cluster, which the federated identity credential trusts.')
 output oidcIssuerUrl string = platform.outputs.oidcIssuerUrl
 
-@description('Client ID of the workload identity. Pass to the Azure Recipe Pack.')
-output workloadIdentityClientId string = platform.outputs.workloadIdentityClientId
+@description('Each service\'s identity: name, clientId and principalId. The Azure Recipe Pack takes them by service name.')
+output workloadIdentities array = platform.outputs.workloadIdentities
 
-@description('Principal (object) ID of the workload identity. Pass to the Azure Recipe Pack.')
-output workloadIdentityPrincipalId string = platform.outputs.workloadIdentityPrincipalId
+@description('The database-administrator identity, the Entra administrator of the SQL and PostgreSQL servers.')
+output databaseAdminClientId string = platform.outputs.databaseAdminClientId
+output databaseAdminPrincipalId string = platform.outputs.databaseAdminPrincipalId
+output databaseAdminName string = platform.outputs.databaseAdminName
+output databaseAdminServiceAccountName string = databaseAdminServiceAccountName
 
-@description('Name of the workload identity, used as the Azure SQL Entra administrator login.')
-output workloadIdentityName string = platform.outputs.workloadIdentityName
+output applicationInsightsConnectionString string = platform.outputs.applicationInsightsConnectionString
+output alertActionGroupId string = platform.outputs.alertActionGroupId
 
 @description('Client ID of the Radius control-plane identity. Pass to `rad credential register azure wi`.')
 output radiusIdentityClientId string = platform.outputs.radiusIdentityClientId
@@ -148,4 +165,3 @@ output radiusIdentityClientId string = platform.outputs.radiusIdentityClientId
 output radiusIdentityPrincipalId string = platform.outputs.radiusIdentityPrincipalId
 
 output appNamespace string = appNamespace
-output serviceAccountName string = serviceAccountName

@@ -1,28 +1,24 @@
+// Local build of the stock Radius Kubernetes container Recipe (radius-project/resource-types-contrib,
+// Compute/containers). Changes from it are marked LOCAL ADDITION, and its Dapr sidecar support is
+// removed: no application in this library uses Dapr.
 @description('Radius context object passed into the recipe.')
 param context object
 
-// LOCAL ADDITION. How users reach a container is a platform decision, so the Recipe Pack sets these
-// rather than the application: an ingress class enables an Ingress for each port-exposing container.
-@description('Ingress class that publishes port-exposing containers. Empty keeps them cluster-internal.')
-param ingressClassName string = ''
-
-@description('Host name the Ingress answers on. Empty answers on any host, such as a bare IP address.')
-param ingressHost string = ''
-
-@description('Existing TLS Secret in the application namespace that the Ingress serves.')
-param ingressTlsSecretName string = ''
-
-@description('Annotations for the Ingress, for example a certificate issuer for the ingress class.')
-param ingressAnnotations object = {}
-
-// LOCAL ADDITION. How a workload proves its identity and pulls its images is also a platform
+// LOCAL ADDITION. How a workload proves its identity and pulls its images is a platform
 // decision. The Recipe Pack sets these once per environment and every container gets them, so the
 // application definition never mentions service accounts, pull secrets, volumes or certificates.
-@description('Kubernetes ServiceAccount the pods run as. Empty uses the namespace default.')
+//
+// `{resource}` in serviceAccountName, in containerEnv values and in containerEnvFromSecrets stands
+// for the container resource's name, so each service gets its own identity and credentials from
+// one setting. A service account name with the placeholder is created by this Recipe.
+@description('Kubernetes ServiceAccount the pods run as. Empty uses the namespace default. May contain {resource}.')
 param serviceAccountName string = ''
 
 @description('Label pods for Microsoft Entra Workload ID, so its webhook injects AZURE_CLIENT_ID and the federated token.')
 param azureWorkloadIdentity bool = false
+
+@description('Client ID of each resource\'s managed identity, by resource name, for the service account this Recipe creates.')
+param workloadClientIds object = {}
 
 @description('Existing image pull secret in the application namespace, for a registry that requires authentication.')
 param imagePullSecretName string = ''
@@ -37,8 +33,14 @@ param platformPodVolumes array = []
 @description('Volume mounts, as Kubernetes volumeMount objects, added to every container. Usually mount platformPodVolumes.')
 param containerVolumeMounts array = []
 
-@description('Environment variables, as Kubernetes EnvVar objects, added to every container.')
+@description('Environment variables, as Kubernetes EnvVar objects, added to every container. Values may contain {resource}.')
 param containerEnv array = []
+
+@description('''
+Kubernetes Secrets, by name, whose keys become environment variables of every container. Names may
+contain {resource}, for credentials that differ per service. A missing Secret is skipped.
+''')
+param containerEnvFromSecrets array = []
 
 extension kubernetes with {
   kubeConfig: ''
@@ -51,18 +53,6 @@ var normalizedName = toLower(resourceName)
 
 var resourceProperties = context.resource.?properties ?? {}
 var containerItems = items(resourceProperties.?containers ?? {})
-
-var daprSidecar = resourceProperties.?extensions.?daprSidecar
-var hasDaprSidecar = daprSidecar != null
-var effectiveDaprAppId = hasDaprSidecar && daprSidecar.?appId != null && string(daprSidecar.?appId) != '' ? string(daprSidecar.?appId) : normalizedName
-var podAnnotations = hasDaprSidecar ? union(
-  {
-    'dapr.io/enabled': 'true'
-    'dapr.io/app-id': effectiveDaprAppId
-  },
-  daprSidecar.?appPort != null ? { 'dapr.io/app-port': string(daprSidecar.?appPort) } : {},
-  (daprSidecar.?config != null && string(daprSidecar.?config) != '') ? { 'dapr.io/config': string(daprSidecar.?config) } : {}
-) : {}
 
 var environmentSegments = resourceProperties.environment != null ? split(string(resourceProperties.environment), '/') : []
 var environmentLabel = length(environmentSegments) > 0 ? last(environmentSegments) : ''
@@ -99,7 +89,8 @@ var platformPodLabels = union(
   platformOptions.?podLabels ?? {},
   azureWorkloadIdentity ? { 'azure.workload.identity/use': 'true' } : {}
 )
-var platformServiceAccountName = platformOptions.?serviceAccountName ?? serviceAccountName
+var platformServiceAccountName = platformOptions.?serviceAccountName ?? replace(serviceAccountName, '{resource}', normalizedName)
+var createServiceAccount = !contains(platformOptions, 'serviceAccountName') && contains(serviceAccountName, '{resource}')
 var platformImagePullSecrets = platformOptions.?imagePullSecrets ?? (empty(imagePullSecretName) ? [] : [
   { name: imagePullSecretName }
 ])
@@ -107,7 +98,15 @@ var platformImagePullSecrets = platformOptions.?imagePullSecrets ?? (empty(image
 // Extra volumes, mounts and environment from the Recipe Pack, added to every pod and container.
 var platformVolumes = platformPodVolumes
 var platformVolumeMounts = containerVolumeMounts
-var platformEnvVars = containerEnv
+var platformEnvVars = map(containerEnv, envVar => contains(envVar, 'value')
+  ? union(envVar, { value: replace(string(envVar.value), '{resource}', normalizedName) })
+  : envVar)
+var platformEnvFrom = map(containerEnvFromSecrets, secretName => {
+  secretRef: {
+    name: replace(string(secretName), '{resource}', normalizedName)
+    optional: true
+  }
+})
 // Extract connection data from linked resources (merged with resource properties)
 var resourceConnections = context.resource.?connections ?? {}
 var connectionDefinitions = context.resource.properties.?connections ?? {}
@@ -292,9 +291,10 @@ var containerSpecs = reduce(containerItems, [], (acc, item) => concat(acc, [{
         filter(platformEnvVars, envVar => !contains(item.value.?env ?? {}, envVar.name))
       )
     } : {},
-    // Connections that surface secretName still inject that Kubernetes Secret via envFrom.
-    length(secretNameEnvFrom) > 0 ? {
-      envFrom: secretNameEnvFrom
+    // Connections that surface secretName still inject that Kubernetes Secret via envFrom, followed
+    // by the platform's Secrets. An explicit env entry wins over envFrom for the same name.
+    length(concat(secretNameEnvFrom, platformEnvFrom)) > 0 ? {
+      envFrom: concat(secretNameEnvFrom, platformEnvFrom)
     } : {},
     // Add volume mounts, plus the platform's mounts
     (contains(item.value, 'volumeMounts') || length(platformVolumeMounts) > 0) ? {
@@ -424,7 +424,22 @@ var podVolumes = reduce(volumeItems, [], (acc, vol) => concat(acc, [union(
   } : {}
 )]))
 
+// LOCAL ADDITION. A service account per resource, so each service has its own identity: on Azure
+// its own managed identity (the webhook reads the client ID annotation), elsewhere its own subject
+// in the projected token that an identity provider such as Keycloak matches.
+resource serviceAccount 'core/ServiceAccount@v1' = if (createServiceAccount) {
+  metadata: {
+    name: platformServiceAccountName
+    namespace: namespace
+    labels: labels
+    annotations: contains(workloadClientIds, resourceName) ? {
+      'azure.workload.identity/client-id': string(workloadClientIds[resourceName])
+    } : {}
+  }
+}
+
 resource deployment 'apps/Deployment@v1' = {
+  dependsOn: [ serviceAccount ]
   metadata: {
     name: normalizedName
     namespace: namespace
@@ -438,14 +453,11 @@ resource deployment 'apps/Deployment@v1' = {
       }
     }
     template: {
-      metadata: union(
-        {
-          // Pod labels from platformOptions are merged in; the workload-identity webhook keys off
-          // `azure.workload.identity/use` here, on the pod, not on the ServiceAccount.
-          labels: union(labels, platformPodLabels)
-        },
-        hasDaprSidecar ? { annotations: podAnnotations } : {}
-      )
+      metadata: {
+        // Pod labels from platformOptions are merged in; the workload-identity webhook keys off
+        // `azure.workload.identity/use` here, on the pod, not on the ServiceAccount.
+        labels: union(labels, platformPodLabels)
+      }
       spec: union(
         {
           containers: podContainers
@@ -498,49 +510,6 @@ resource services 'core/Service@v1' = [for svc in servicesConfig: {
     }
     ports: svc.ports
   }
-}]
-
-var publishThroughIngress = !empty(ingressClassName)
-
-resource ingresses 'networking.k8s.io/Ingress@v1' = [for svc in (publishThroughIngress ? servicesConfig : []): {
-  metadata: {
-    name: '${normalizedName}-${svc.normalizedContainerName}'
-    namespace: namespace
-    labels: union(labels, {
-      container: svc.containerName
-    })
-    annotations: ingressAnnotations
-  }
-  spec: union(
-    {
-      ingressClassName: ingressClassName
-      rules: [
-        union(empty(ingressHost) ? {} : { host: ingressHost }, {
-          http: {
-            paths: [
-              {
-                path: '/'
-                pathType: 'Prefix'
-                backend: {
-                  service: {
-                    name: '${normalizedName}-${svc.normalizedContainerName}'
-                    port: {
-                      number: svc.ports[0].port
-                    }
-                  }
-                }
-              }
-            ]
-          }
-        })
-      ]
-    },
-    empty(ingressTlsSecretName) ? {} : {
-      tls: [
-        union(empty(ingressHost) ? {} : { hosts: [ ingressHost ] }, { secretName: ingressTlsSecretName })
-      ]
-    }
-  )
 }]
 
 // Add Horizontal Pod Autoscaler (if autoScaling specified)
@@ -602,10 +571,11 @@ resource hpa 'autoscaling/HorizontalPodAutoscaler@v2' = if (hasAutoScaling) {
 
 var deploymentResource = '/planes/kubernetes/local/namespaces/${namespace}/providers/apps/Deployment/${normalizedName}'
 var serviceResources = reduce(servicesConfig, [], (acc, svc) => concat(acc, ['/planes/kubernetes/local/namespaces/${namespace}/providers/core/Service/${normalizedName}-${svc.normalizedContainerName}']))
-var ingressResources = publishThroughIngress ? reduce(servicesConfig, [], (acc, svc) => concat(acc, ['/planes/kubernetes/local/namespaces/${namespace}/providers/networking.k8s.io/Ingress/${normalizedName}-${svc.normalizedContainerName}'])) : []
 var hpaResource = hasAutoScaling ? ['/planes/kubernetes/local/namespaces/${namespace}/providers/autoscaling/HorizontalPodAutoscaler/${normalizedName}'] : []
 
-var allResources = concat([deploymentResource], serviceResources, ingressResources, hpaResource)
+var serviceAccountResource = createServiceAccount ? ['/planes/kubernetes/local/namespaces/${namespace}/providers/core/ServiceAccount/${platformServiceAccountName}'] : []
+
+var allResources = concat([deploymentResource], serviceResources, hpaResource, serviceAccountResource)
 
 // Publish each port-exposing container's in-cluster Service DNS host as a read-only
 // output so peers can address it by reference instead of hardcoding a Service name.

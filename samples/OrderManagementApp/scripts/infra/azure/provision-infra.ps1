@@ -4,12 +4,14 @@
 
 .DESCRIPTION
     Creates the resource group, container registry, AKS cluster (OIDC issuer + workload identity),
-    the AcrPull role assignment for the kubelet, and the user-assigned managed identity with its
-    federated identity credential -- all declaratively, through infra/azure/platform.bicep.
+    the AcrPull role assignment for the kubelet, a user-assigned managed identity per service with its
+    federated identity credential, the database-administrator identity, and Application Insights
+    with alert rules -- all declaratively, through infra/azure/platform.bicep.
 
     It then performs the imperative follow-up that has no declarative equivalent:
       * fetches cluster credentials
-      * creates the application namespace and the annotated Kubernetes service account
+      * creates the application namespace and the annotated service account of the database setup
+        job (the services' own service accounts come from the container Recipe)
       * installs the Radius control plane
 
     Run this once per environment. It is idempotent, so re-running it is safe, and it takes no
@@ -40,10 +42,12 @@ param(
     [string]$Location = 'eastus2',
     [string]$ResourceGroup = 'bcd-infra',
     [string]$ClusterName = 'bcd-aks',
-    [string]$IdentityName = 'bcd-workload-identity',
+    [string]$IdentityPrefix = 'id-oms',
+    [string[]]$WorkloadNames = @('api', 'processor', 'inventory'),
+    [string]$DatabaseAdminServiceAccountName = 'dbsetup',
+    [string]$AlertEmail = '',
     [string]$RadiusIdentityName = 'bcd-radius-identity',
     [string]$AppNamespace = 'oms-azure',
-    [string]$ServiceAccountName = 'oms-workload-identity',
     # Radius workspace bound to the AKS cluster. Radius CLI commands target the workspace's
     # Kubernetes context, which is NOT necessarily the current kubectl context, so this must exist
     # before any `rad` command that talks to the control plane.
@@ -234,15 +238,13 @@ try {
         # script needs from the resources themselves.
         Write-Host "==> Reading the platform resources in '$ResourceGroup'" -ForegroundColor Cyan
         $registryLoginServer = az acr show --name $RegistryName --query loginServer --output tsv
-        $workloadIdentity = az identity show --resource-group $ResourceGroup --name $IdentityName --output json | ConvertFrom-Json
+        $databaseAdmin = az identity show --resource-group $ResourceGroup --name "$IdentityPrefix-db-admin" --output json | ConvertFrom-Json
         $radiusClientId = az identity show --resource-group $ResourceGroup --name $RadiusIdentityName --query clientId --output tsv
         $oidcIssuer = az aks show --resource-group $ResourceGroup --name $ClusterName --query oidcIssuerProfile.issuerUrl --output tsv
-        if (-not $registryLoginServer -or -not $workloadIdentity -or -not $radiusClientId -or -not $oidcIssuer) {
+        if (-not $registryLoginServer -or -not $databaseAdmin -or -not $radiusClientId -or -not $oidcIssuer) {
             throw "The platform resources aren't all in '$ResourceGroup'. Deploy infra/azure/platform.bicep first, or run without -SkipTemplate."
         }
-        $clientId = $workloadIdentity.clientId
-        $principalId = $workloadIdentity.principalId
-        $identity = $workloadIdentity.name
+        $databaseAdminClientId = $databaseAdmin.clientId
     }
     else {
         $parameterFile = New-ParameterFile @{
@@ -250,10 +252,12 @@ try {
             resourceGroupName       = $ResourceGroup
             clusterName             = $ClusterName
             registryName            = $RegistryName
-            identityName            = $IdentityName
+            identityPrefix          = $IdentityPrefix
+            workloadNames           = @($WorkloadNames)
+            databaseAdminServiceAccountName = $DatabaseAdminServiceAccountName
+            alertEmail              = $AlertEmail
             radiusIdentityName      = $RadiusIdentityName
             appNamespace            = $AppNamespace
-            serviceAccountName      = $ServiceAccountName
             nodeCount               = $NodeCount
             nodeVmSize              = $NodeVmSize
             registrySku             = $RegistrySku
@@ -316,9 +320,7 @@ try {
         $outputs = $outputsJson | ConvertFrom-Json
 
         $registryLoginServer = $outputs.registryLoginServer.value
-        $clientId = $outputs.workloadIdentityClientId.value
-        $principalId = $outputs.workloadIdentityPrincipalId.value
-        $identity = $outputs.workloadIdentityName.value
+        $databaseAdminClientId = $outputs.databaseAdminClientId.value
         $radiusClientId = $outputs.radiusIdentityClientId.value
         $oidcIssuer = $outputs.oidcIssuerUrl.value
     }
@@ -337,19 +339,20 @@ try {
         }
     }
 
-    # The service account is a Kubernetes object, so it cannot come from the ARM deployment. Its
-    # name and namespace must match the federated credential subject exactly.
-    Write-Host "==> Creating namespace and annotated service account" -ForegroundColor Cyan
+    # The database setup job runs outside the Radius application, so its service account is created
+    # here. Its name and namespace must match the federated credential subject exactly. The services'
+    # own service accounts are created by the container Recipe, from the client IDs in the Recipe Pack.
+    Write-Host "==> Creating namespace and the database setup job's service account" -ForegroundColor Cyan
     kubectl create namespace $AppNamespace --dry-run=client -o yaml | kubectl apply -f -
 
     $serviceAccountManifest = @"
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: $ServiceAccountName
+  name: $DatabaseAdminServiceAccountName
   namespace: $AppNamespace
   annotations:
-    azure.workload.identity/client-id: $clientId
+    azure.workload.identity/client-id: $databaseAdminClientId
     azure.workload.identity/tenant-id: $tenantId
   labels:
     azure.workload.identity/use: "true"
@@ -405,12 +408,7 @@ metadata:
     Write-Host "Registry         : $registryLoginServer"
     Write-Host "OIDC issuer      : $oidcIssuer"
     Write-Host "Namespace        : $AppNamespace"
-    Write-Host "ServiceAccount   : $ServiceAccountName"
-    Write-Host ""
-    Write-Host "Application identity (workers -> Azure data planes):"
-    Write-Host "  Name           : $identity"
-    Write-Host "  Client ID      : $clientId"
-    Write-Host "  Principal ID   : $principalId"
+    Write-Host "Identities       : $(($WorkloadNames | ForEach-Object { "$IdentityPrefix-$_" }) -join ', '), $IdentityPrefix-db-admin"
     Write-Host ""
     Write-Host "Radius control-plane identity (Recipes -> Azure ARM):"
     Write-Host "  Name           : $RadiusIdentityName"
@@ -423,10 +421,9 @@ metadata:
     Write-Host "     ./scripts/deploy/azure.ps1 ``"
     Write-Host "         -Registry $registryLoginServer ``"
     Write-Host "         -SubscriptionId $SubscriptionId ``"
-    Write-Host "         -AppInfraResourceGroup $ResourceGroup ``"
-    Write-Host "         -WorkloadIdentityPrincipalId $principalId"
+    Write-Host "         -AppInfraResourceGroup $ResourceGroup"
     Write-Host ""
-    Write-Host "Azure SQL uses Entra-only authentication, so no -SqlAdminPassword is needed."
+    Write-Host "Azure SQL and PostgreSQL use Entra-only authentication, so no database password is needed."
 }
 finally {
     if ($parameterFile -and (Test-Path $parameterFile)) {

@@ -1,5 +1,6 @@
 using Azure.Messaging.ServiceBus;
 using OrderManagement.Shared.Configuration;
+using OrderManagement.Shared.Diagnostics;
 using OrderManagement.Shared.Identity;
 using OrderManagement.Shared.Models;
 using Microsoft.Extensions.Logging;
@@ -48,7 +49,19 @@ public sealed class ServiceBusMessageBroker : IMessageBroker
             Subject = Order.OrderPlacedType
         };
 
-        await _sender.SendMessageAsync(message, cancellationToken).ConfigureAwait(false);
+        using var activity = MessagingTelemetry.StartPublish(
+            "servicebus", _options.QueueName, message.MessageId,
+            (key, value) => message.ApplicationProperties[key] = value);
+
+        try
+        {
+            await _sender.SendMessageAsync(message, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            MessagingTelemetry.RecordFailure(activity, ex);
+            throw;
+        }
     }
 
     public async Task RunAsync(Func<QueueMessage, CancellationToken, Task> handler, CancellationToken cancellationToken)
@@ -57,20 +70,33 @@ public sealed class ServiceBusMessageBroker : IMessageBroker
         {
             AutoCompleteMessages = false,
             MaxConcurrentCalls = 4,
-            PrefetchCount = 8
+            PrefetchCount = 8,
+            // Longer than the processor's wait for the inventory service, so the lock is still
+            // held when it finishes.
+            MaxAutoLockRenewalDuration = TimeSpan.FromMinutes(10)
         });
 
         _processor.ProcessMessageAsync += async args =>
         {
             var messageId = args.Message.MessageId;
+            var properties = args.Message.ApplicationProperties;
+            using var activity = MessagingTelemetry.StartProcess(
+                "servicebus", _options.QueueName, messageId,
+                key => properties.TryGetValue(key, out var value) ? value?.ToString() : null);
             try
             {
                 var body = args.Message.Body.ToString();
-                await handler(new QueueMessage(messageId, body), args.CancellationToken).ConfigureAwait(false);
+                // Service Bus dead-letters the message once a delivery fails at MaxDeliveryCount.
+                var message = new QueueMessage(messageId, body)
+                {
+                    IsLastDelivery = args.Message.DeliveryCount >= _options.MaxDeliveryCount
+                };
+                await handler(message, args.CancellationToken).ConfigureAwait(false);
                 await args.CompleteMessageAsync(args.Message, args.CancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
+                MessagingTelemetry.RecordFailure(activity, ex);
                 _logger.LogError(ex, "Failed to process Service Bus message {MessageId}; abandoning", messageId);
                 await args.AbandonMessageAsync(args.Message, cancellationToken: args.CancellationToken)
                     .ConfigureAwait(false);

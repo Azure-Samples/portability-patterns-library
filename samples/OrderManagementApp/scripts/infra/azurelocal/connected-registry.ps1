@@ -16,8 +16,9 @@
       1. Deploys the template. Tokens are only created when missing: redeploying one would delete
          its passwords.
       2. On first install, generates the sync password and deploys the template again with the
-         connection string, which installs the Arc extension. The extension brings cert-manager and
-         distributes the registry's CA to every node so kubelet trusts it.
+         connection string, which installs the Arc extension. The extension takes its certificate
+         from the cluster's cert-manager and distributes the registry's CA to every node so kubelet
+         trusts it.
       3. Stores the client token as image pull secret '<PullSecretName>' in every namespace that
          pulls from the registry, and the registry CA as ConfigMap '<CaConfigMapName>' in the
          application namespace for deploy.ps1 to hand to the Radius control plane.
@@ -25,25 +26,15 @@
     -Repositories is the complete list the connected registry syncs: repositories left out are
     removed from its scope.
     Idempotent. Token passwords and the sync connection string are only generated when they are not
-    already in place, since regenerating them breaks whatever is using the old value.
-
-    It runs in two stages that hand over through -HandoverPath, the way a site whose management
-    machine can't reach Azure has to. setup-platform.ps1 runs both, on one machine or two:
-      -Stage Azure  where Azure is reachable: steps 1 and 2. When the client token is new (or with
-                    -NewPullCredential), its pull credential is written to the handover folder.
-      -Stage Site   on the site network, with no Azure sign-in: step 3, taking the pull credential
-                    from the handover folder and deleting it from there afterwards, or keeping the
-                    one already in the cluster.
+    already in place, since regenerating them breaks whatever is using the old value. The pull
+    credential goes from Azure straight into the cluster's Secrets, never to a file.
 
 .PARAMETER NewPullCredential
-    With -Stage Azure, issue a new pull credential even though the client token already exists, for
-    example because the site lost its pull secrets. Running pods keep working; new pulls need the
-    Site stage to run with the new credential.
+    Issue a new pull credential even though the client token already exists, for example because
+    the cluster lost its pull secrets. Running pods keep working; new pulls use the new credential.
 
 .EXAMPLE
-    # Azure part where Azure is reachable, then the site part on the site network.
-    ./scripts/infra/azurelocal/connected-registry.ps1 -RegistryName <acr-name> -ClusterName bcd-aksarc -Stage Azure
-    ./scripts/infra/azurelocal/connected-registry.ps1 -KubeContext bcd-aksarc -Stage Site
+    ./scripts/infra/azurelocal/connected-registry.ps1 -RegistryName <acr-name> -ClusterName bcd-aksarc -KubeContext bcd-aksarc
 #>
 [CmdletBinding()]
 param(
@@ -57,23 +48,19 @@ param(
     [string]$ExtensionName = 'bcd-connected-registry',
 
     # The registry's address inside the cluster: an unused address in the cluster's service range
-    # (10.96.0.0/12 on AKS enabled by Arc). The Azure stage needs it, since the registry's
-    # certificate is issued for it; the Site stage reads it from the cluster. preflight.ps1 checks it.
+    # (10.96.0.0/12 on AKS enabled by Arc). The registry's certificate is issued for it.
+    # preflight.ps1 checks it.
     [string]$ServiceClusterIp,
     [string]$StorageRequest = '40Gi',
     # Storage class for the registry's volume: the one AKS enabled by Arc creates.
     [string]$StorageClassName = 'default',
 
-    [Parameter(Mandatory)]
-    [ValidateSet('Azure', 'Site')]
-    [string]$Stage,
-    [string]$HandoverPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../.handover')),
     [switch]$NewPullCredential,
 
     [string]$ClientTokenName = 'bcd-azurelocal-pull',
     [string]$PullSecretName = 'azurelocal-registry',
     [string]$CaConfigMapName = 'azurelocal-registry-ca',
-    [string[]]$PullSecretNamespaces = @('oms-azurelocal', 'identity', 'radius-system', 'ingress-nginx'),
+    [string[]]$PullSecretNamespaces = @('oms-azurelocal', 'identity', 'radius-system', 'ingress-nginx', 'observability'),
     [string]$ApplicationNamespace = 'oms-azurelocal',
 
     [string]$RadiusVersion = '0.60',
@@ -85,15 +72,18 @@ param(
         'rabbitmq', 'mssql/server', 'azure-storage/azurite',
         'keycloak/keycloak', 'postgres',
         'ingress-nginx/controller', 'ingress-nginx/kube-webhook-certgen',
-        'oms/api', 'oms/processor',
-        'recipes/rabbitmq-queue', 'recipes/azurite-objectstorage', 'recipes/mssql-database',
-        'recipes/kubernetes-containers', 'radius-project/kube-recipes/secrets'
+        'otel/opentelemetry-collector-contrib', 'grafana/loki', 'grafana/tempo', 'grafana/grafana', 'kiwigrid/k8s-sidecar',
+        'prometheus/prometheus', 'prometheus/alertmanager', 'prometheus/node-exporter',
+        'prometheus-operator/prometheus-operator', 'prometheus-operator/prometheus-config-reloader',
+        'kube-state-metrics/kube-state-metrics',
+        'oms/api', 'oms/processor', 'oms/inventory', 'oms/dbsetup',
+        'recipes/rabbitmq-queue', 'recipes/azurite-objectstorage', 'recipes/mssql-database', 'recipes/postgres-database',
+        'recipes/kubernetes-containers', 'recipes/kubernetes-routes', 'radius-project/kube-recipes/secrets'
     )
 )
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
-. (Join-Path $repoRoot 'scripts/lib/settings.ps1')
 
 function Invoke-Checked {
     param(
@@ -132,128 +122,99 @@ function Get-KubeSecretValue {
 }
 
 $temporaryFiles = @()
-$handoverFile = Join-Path $HandoverPath 'registry-pull-credential.json'
 
 try {
-    if ($Stage -eq 'Azure') {
-        if (-not $ServiceClusterIp -or $ServiceClusterIp -like '<*') {
-            throw "Set ServiceClusterIp in the Registry settings: an unused address in the cluster's service range (10.96.0.0/12 on AKS enabled by Arc)."
-        }
-        $registryLoginServer = az acr show --name $RegistryName --resource-group $ResourceGroup --query loginServer --output tsv
-        if ($LASTEXITCODE -ne 0 -or -not $registryLoginServer) { throw "Registry '$RegistryName' not found in '$ResourceGroup'." }
-        $storageClass = $StorageClassName
-
-        $template = Join-Path $repoRoot 'infra/azurelocal/connected-registry.bicep'
-        $tokenExists = { param($name) [bool](Invoke-AzProbe @('acr', 'token', 'show', '--name', $name, '--registry', $RegistryName, '--query', 'name', '--output', 'tsv')) }
-        $clientTokenIsNew = -not (& $tokenExists $ClientTokenName)
-
-        # Parameters go through a file: it carries the repository list and, on first install, the
-        # connection string, which must not appear on a command line.
-        function Deploy-ConnectedRegistry([string]$ConnectionString) {
-            $parameters = [ordered]@{
-                registryName          = $RegistryName
-                connectedRegistryName = $ConnectedRegistryName
-                clusterName           = $ClusterName
-                repositories          = @($Repositories)
-                clientTokenName       = $ClientTokenName
-                createClientToken     = -not (& $tokenExists $ClientTokenName)
-                createSyncToken       = -not (& $tokenExists $ConnectedRegistryName)
-                syncConnectionString  = $ConnectionString
-                extensionName         = $ExtensionName
-                serviceClusterIp      = $ServiceClusterIp
-                storageClassName      = $storageClass
-                storageRequest        = $StorageRequest
-            }
-            $document = [ordered]@{
-                '$schema'      = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'
-                contentVersion = '1.0.0.0'
-                parameters     = [ordered]@{}
-            }
-            foreach ($key in $parameters.Keys) { $document.parameters[$key] = @{ value = $parameters[$key] } }
-            $file = Join-Path ([System.IO.Path]::GetTempPath()) "oms-connected-registry-$([guid]::NewGuid().ToString('N')).json"
-            try {
-                [System.IO.File]::WriteAllText($file, ($document | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
-                Invoke-Checked 'az deployment group create' {
-                    az deployment group create --resource-group $ResourceGroup --name 'oms-connected-registry' `
-                        --template-file $template --parameters "@$file" --output none
-                }
-            }
-            finally { Remove-Item $file -Force -ErrorAction SilentlyContinue }
-        }
-
-        Write-Host "==> Deploying the connected registry '$ConnectedRegistryName' ($($Repositories.Count) repositories)" -ForegroundColor Cyan
-        Deploy-ConnectedRegistry ''
-
-        # ------------------------------------------------------------------------------------------
-        # Arc extension. The sync password is only generated on first install: doing it again would
-        # disconnect a running instance until the extension is updated with the new value.
-        # ------------------------------------------------------------------------------------------
-        Write-Host "==> Ensuring Arc extension '$ExtensionName' on '$ClusterName'" -ForegroundColor Cyan
-        $clusterId = "/subscriptions/$(az account show --query id -o tsv)/resourceGroups/$ResourceGroup/providers/Microsoft.Kubernetes/connectedClusters/$ClusterName"
-        $extensionUrl = "https://management.azure.com$clusterId/providers/Microsoft.KubernetesConfiguration/extensions/${ExtensionName}?api-version=2023-05-01"
-        $extensionState = Invoke-AzProbe @('rest', '--method', 'get', '--url', $extensionUrl, '--query', 'properties.provisioningState', '--output', 'tsv')
-
-        if ($extensionState -ne 'Succeeded') {
-            if ($extensionState) {
-                Write-Host "    existing extension is '$extensionState'; reinstalling" -ForegroundColor Yellow
-                Invoke-Checked 'delete Arc extension' { az rest --method delete --url $extensionUrl --output none }
-                do { Start-Sleep -Seconds 15 } while (Invoke-AzProbe @('rest', '--method', 'get', '--url', $extensionUrl, '--query', 'name', '--output', 'tsv'))
-            }
-
-            $connectionString = az acr connected-registry get-settings --name $ConnectedRegistryName --registry $RegistryName `
-                --parent-protocol https --generate-password 1 --query ACR_REGISTRY_CONNECTION_STRING --output tsv --yes
-            if ($LASTEXITCODE -ne 0 -or -not $connectionString) { throw 'Could not generate the connected registry connection string.' }
-            Write-Host "    installing (storage class $storageClass, ClusterIP $ServiceClusterIp)" -ForegroundColor DarkGray
-            Deploy-ConnectedRegistry $connectionString.Trim()
-            $connectionString = $null
-        }
-        else {
-            Write-Host "    already installed" -ForegroundColor DarkGray
-        }
-        Write-Host "==> Waiting for the connected registry to come online" -ForegroundColor Cyan
-        $deadline = (Get-Date).AddMinutes(15)
-        do {
-            $state = Invoke-AzProbe @('acr', 'connected-registry', 'show', '--name', $ConnectedRegistryName, '--registry', $RegistryName, '--query', 'connectionState', '--output', 'tsv')
-            Write-Host "    $state" -ForegroundColor DarkGray
-            if ($state -eq 'Online') { break }
-            Start-Sleep -Seconds 20
-        } while ((Get-Date) -lt $deadline)
-        if ($state -ne 'Online') { throw "Connected registry is '$state' after 15 minutes. Check the pods of the extension." }
-
-        # The pull credential travels to the site through the handover folder. It is only issued
-        # for a new client token or on request, since a new one replaces the password pods use.
-        if ($clientTokenIsNew -or $NewPullCredential) {
-            Write-Host "==> Issuing a pull credential for the site ($handoverFile)" -ForegroundColor Cyan
-            $clientPassword = az acr token credential generate --name $ClientTokenName --registry $RegistryName `
-                --password1 --query 'passwords[0].value' --output tsv
-            if ($LASTEXITCODE -ne 0 -or -not $clientPassword) { throw 'Generating the client token password failed.' }
-            Write-OmsSecretFile $handoverFile `
-                (@{ server = $ServiceClusterIp; username = $ClientTokenName; password = $clientPassword } | ConvertTo-Json)
-            $clientPassword = $null
-            Write-Host "    the Site stage applies it and deletes it" -ForegroundColor Yellow
-        }
-        else {
-            Write-Host "==> Client token exists; the site keeps its pull secrets (pass -NewPullCredential to issue a new one)" -ForegroundColor DarkGray
-        }
-
-        Write-Host "`n================ Connected registry: Azure stage done ================" -ForegroundColor Green
-        Write-Host "Cloud registry   : $registryLoginServer (push here)"
-        return
+    if (-not $ServiceClusterIp -or $ServiceClusterIp -like '<*') {
+        throw "Set ServiceClusterIp in the Registry settings: an unused address in the cluster's service range (10.96.0.0/12 on AKS enabled by Arc)."
     }
-
     Write-Host "==> Checking the cluster is reachable" -ForegroundColor Cyan
     Invoke-Checked 'kubectl cluster-info' { kubectl cluster-info --context $KubeContext --request-timeout=20s | Out-Null }
 
-    # The Service the extension created carries the address the Azure stage chose.
-    $registryService = kubectl get services --all-namespaces --context $KubeContext `
-        --field-selector "metadata.name=$ConnectedRegistryName" --output 'jsonpath={.items[0].spec.clusterIP}' 2>$null
-    if ($registryService) { $ServiceClusterIp = $registryService.Trim() }
-    if (-not $ServiceClusterIp) {
-        throw "No Service '$ConnectedRegistryName' in the cluster yet. Run the Azure stage first: ./scripts/setup-platform.ps1 -Target AzureLocal -Stage Azure"
+    $registryLoginServer = az acr show --name $RegistryName --resource-group $ResourceGroup --query loginServer --output tsv
+    if ($LASTEXITCODE -ne 0 -or -not $registryLoginServer) { throw "Registry '$RegistryName' not found in '$ResourceGroup'." }
+    $storageClass = $StorageClassName
+
+    $template = Join-Path $repoRoot 'infra/azurelocal/connected-registry.bicep'
+    $tokenExists = { param($name) [bool](Invoke-AzProbe @('acr', 'token', 'show', '--name', $name, '--registry', $RegistryName, '--query', 'name', '--output', 'tsv')) }
+    $clientTokenIsNew = -not (& $tokenExists $ClientTokenName)
+
+    # Parameters go through a file: it carries the repository list and, on first install, the
+    # connection string, which must not appear on a command line.
+    function Deploy-ConnectedRegistry([string]$ConnectionString) {
+        $parameters = [ordered]@{
+            registryName          = $RegistryName
+            connectedRegistryName = $ConnectedRegistryName
+            clusterName           = $ClusterName
+            repositories          = @($Repositories)
+            clientTokenName       = $ClientTokenName
+            createClientToken     = -not (& $tokenExists $ClientTokenName)
+            createSyncToken       = -not (& $tokenExists $ConnectedRegistryName)
+            syncConnectionString  = $ConnectionString
+            extensionName         = $ExtensionName
+            serviceClusterIp      = $ServiceClusterIp
+            storageClassName      = $storageClass
+            storageRequest        = $StorageRequest
+        }
+        $document = [ordered]@{
+            '$schema'      = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'
+            contentVersion = '1.0.0.0'
+            parameters     = [ordered]@{}
+        }
+        foreach ($key in $parameters.Keys) { $document.parameters[$key] = @{ value = $parameters[$key] } }
+        $file = Join-Path ([System.IO.Path]::GetTempPath()) "oms-connected-registry-$([guid]::NewGuid().ToString('N')).json"
+        try {
+            [System.IO.File]::WriteAllText($file, ($document | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
+            Invoke-Checked 'az deployment group create' {
+                az deployment group create --resource-group $ResourceGroup --name 'oms-connected-registry' `
+                    --template-file $template --parameters "@$file" --output none
+            }
+        }
+        finally { Remove-Item $file -Force -ErrorAction SilentlyContinue }
     }
 
+    Write-Host "==> Deploying the connected registry '$ConnectedRegistryName' ($($Repositories.Count) repositories)" -ForegroundColor Cyan
+    Deploy-ConnectedRegistry ''
+
     # ------------------------------------------------------------------------------------------
-    # Pull secrets. The client token password lives only in the cluster, never in the repository.
+    # Arc extension. The sync password is only generated on first install: doing it again would
+    # disconnect a running instance until the extension is updated with the new value.
+    # ------------------------------------------------------------------------------------------
+    Write-Host "==> Ensuring Arc extension '$ExtensionName' on '$ClusterName'" -ForegroundColor Cyan
+    $clusterId = "/subscriptions/$(az account show --query id -o tsv)/resourceGroups/$ResourceGroup/providers/Microsoft.Kubernetes/connectedClusters/$ClusterName"
+    $extensionUrl = "https://management.azure.com$clusterId/providers/Microsoft.KubernetesConfiguration/extensions/${ExtensionName}?api-version=2023-05-01"
+    $extensionState = Invoke-AzProbe @('rest', '--method', 'get', '--url', $extensionUrl, '--query', 'properties.provisioningState', '--output', 'tsv')
+
+    if ($extensionState -ne 'Succeeded') {
+        if ($extensionState) {
+            Write-Host "    existing extension is '$extensionState'; reinstalling" -ForegroundColor Yellow
+            Invoke-Checked 'delete Arc extension' { az rest --method delete --url $extensionUrl --output none }
+            do { Start-Sleep -Seconds 15 } while (Invoke-AzProbe @('rest', '--method', 'get', '--url', $extensionUrl, '--query', 'name', '--output', 'tsv'))
+        }
+
+        $connectionString = az acr connected-registry get-settings --name $ConnectedRegistryName --registry $RegistryName `
+            --parent-protocol https --generate-password 1 --query ACR_REGISTRY_CONNECTION_STRING --output tsv --yes
+        if ($LASTEXITCODE -ne 0 -or -not $connectionString) { throw 'Could not generate the connected registry connection string.' }
+        Write-Host "    installing (storage class $storageClass, ClusterIP $ServiceClusterIp)" -ForegroundColor DarkGray
+        Deploy-ConnectedRegistry $connectionString.Trim()
+        $connectionString = $null
+    }
+    else {
+        Write-Host "    already installed" -ForegroundColor DarkGray
+    }
+    Write-Host "==> Waiting for the connected registry to come online" -ForegroundColor Cyan
+    $deadline = (Get-Date).AddMinutes(15)
+    do {
+        $state = Invoke-AzProbe @('acr', 'connected-registry', 'show', '--name', $ConnectedRegistryName, '--registry', $RegistryName, '--query', 'connectionState', '--output', 'tsv')
+        Write-Host "    $state" -ForegroundColor DarkGray
+        if ($state -eq 'Online') { break }
+        Start-Sleep -Seconds 20
+    } while ((Get-Date) -lt $deadline)
+    if ($state -ne 'Online') { throw "Connected registry is '$state' after 15 minutes. Check the pods of the extension." }
+
+    # ------------------------------------------------------------------------------------------
+    # Pull secrets. The client token password lives only in the cluster, never in the repository
+    # or a file. It is only issued for a new client token or on request, since a new one replaces
+    # the password pods use; otherwise the one already in the cluster stays.
     # ------------------------------------------------------------------------------------------
     Write-Host "==> Ensuring image pull secret '$PullSecretName'" -ForegroundColor Cyan
     foreach ($namespace in $PullSecretNamespaces) {
@@ -263,20 +224,21 @@ try {
     }
 
     $clientPassword = $null
-    if (Test-Path $handoverFile) {
-        $handover = Get-Content $handoverFile -Raw | ConvertFrom-Json
-        $clientPassword = $handover.password
-        Write-Host "    using the pull credential from $handoverFile" -ForegroundColor DarkGray
+    if ($clientTokenIsNew -or $NewPullCredential) {
+        Write-Host "    issuing a new pull credential" -ForegroundColor DarkGray
+        $clientPassword = az acr token credential generate --name $ClientTokenName --registry $RegistryName `
+            --password1 --query 'passwords[0].value' --output tsv
+        if ($LASTEXITCODE -ne 0 -or -not $clientPassword) { throw 'Generating the client token password failed.' }
     }
-    if (-not $clientPassword) {
+    else {
         $dockerConfig = Get-KubeSecretValue -Namespace $ApplicationNamespace -Name $PullSecretName -Key '.dockerconfigjson'
         if ($dockerConfig) {
             $auth = ($dockerConfig | ConvertFrom-Json).auths.$ServiceClusterIp
             if ($auth -and $auth.username -eq $ClientTokenName) { $clientPassword = $auth.password }
         }
-    }
-    if (-not $clientPassword) {
-        throw "No pull credential: '$handoverFile' is missing and the cluster has no '$PullSecretName' yet. Run the Azure stage with -NewPullCredential and copy the handover folder here."
+        if (-not $clientPassword) {
+            throw "The client token exists but the cluster has no '$PullSecretName' for it. Run this again with -NewPullCredential."
+        }
     }
 
     foreach ($namespace in $PullSecretNamespaces) {
@@ -287,10 +249,6 @@ try {
         Write-Host "    $namespace/$PullSecretName" -ForegroundColor DarkGray
     }
     $clientPassword = $null
-    if (Test-Path $handoverFile) {
-        Remove-Item $handoverFile -Force
-        Write-Host "    removed $handoverFile" -ForegroundColor DarkGray
-    }
 
     # ------------------------------------------------------------------------------------------
     # Registry CA. Nodes get it from the extension's trust distribution, but the Radius control
@@ -317,6 +275,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Writing ConfigMap '$CaConfigMapName' failed." }
 
     Write-Host "`n================ Connected registry ready ================" -ForegroundColor Green
+    Write-Host "Cloud registry   : $registryLoginServer (push here)"
     Write-Host "In-cluster pulls : $ServiceClusterIp (secret '$PullSecretName', CA ConfigMap '$ApplicationNamespace/$CaConfigMapName')"
     Write-Host "Synced repos     : $($Repositories.Count)"
 }
