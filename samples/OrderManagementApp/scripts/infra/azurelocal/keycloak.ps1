@@ -23,9 +23,11 @@
     site values into the keycloak-realm-settings ConfigMap, applies the folder with kustomize, and
     prepares the app's namespace. The folder's README.md describes the same steps by hand.
 
-    Keycloak trusts the cluster's ServiceAccount token issuer. On AKS enabled by Arc that is the
-    default in-cluster issuer, which Keycloak can resolve because it runs in the same cluster: pass
-    -AllowInClusterIssuer. A cluster configured with an externally reachable issuer needs no switch.
+    Keycloak trusts the cluster's ServiceAccount token issuer. It fetches the cluster's signing keys
+    from the API server inside the cluster (kubernetes.default.svc), never from the issuer's own
+    address: with Arc workload identity on, the issuer is a public Azure URL, and keys fetched
+    from there would stop loading when the site loses its link to Azure. On a cluster that still
+    uses the default in-cluster issuer, pass -AllowInClusterIssuer.
 
 .PARAMETER AdServer
     Host name of the site's domain controller. Under LDAPS this must
@@ -35,6 +37,11 @@
     Address users open the app at, such as https://orders.contoso.local. Sign-in redirects back to it.
     Omit to use https://<ingress address>, read from the ingress controller provision-ingress.ps1
     installed.
+
+.PARAMETER GrafanaOrigin
+    Address of the site's Grafana, with its path, such as https://orders.contoso.local/grafana.
+    Grafana sign-in redirects back to it. Omit to use <SpaOrigin>/grafana, where
+    provision-observability.ps1 serves Grafana.
 
 .PARAMETER Registry
     Registry holding the mirrored Keycloak and PostgreSQL images, normally the in-cluster connected
@@ -68,6 +75,7 @@ param(
     [string]$AdOuName = 'OMS',
     [switch]$UseLdaps = $true,
     [string]$SpaOrigin,
+    [string]$GrafanaOrigin,
 
     [string]$KubeContext = 'bcd-aksarc',
 
@@ -75,7 +83,6 @@ param(
     [string]$ImagePullSecretSourceNamespace = 'oms-azurelocal',
 
     [string]$WorkloadNamespace = 'oms-azurelocal',
-    [string]$WorkloadServiceAccount = 'oms-workload',
     [string]$WorkloadCaSecretName = 'oms-identity-ca',
 
     # ClusterIssuer for Keycloak's certificate, which provision-ingress.ps1 creates. Empty to supply
@@ -85,9 +92,8 @@ param(
     [switch]$ReimportRealm,
     [switch]$SkipVerify,
 
-    # Accept the cluster's default issuer, https://kubernetes.default.svc.cluster.local. Keycloak
-    # runs inside the same cluster, so that name resolves for it, and it fetches the signing keys
-    # with its own ServiceAccount token. Used on AKS enabled by Arc, which has no external issuer.
+    # Accept the cluster's default issuer, https://kubernetes.default.svc.cluster.local, on a cluster
+    # created without workload identity. Keycloak gets the signing keys from the API server either way.
     [switch]$AllowInClusterIssuer
 )
 
@@ -99,7 +105,6 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
 $Namespace = 'identity'
 $ReleaseName = 'keycloak'
 $RealmName = 'oms'
-$WorkloadClientId = 'oms-workloads'
 $NodePort = 30443
 $ImagePullSecretName = 'azurelocal-registry'
 $BindSecretName = 'oms-ad-bind'
@@ -233,6 +238,7 @@ try {
         $SpaOrigin = "https://$ingressAddress"
         Write-Host "==> App origin $SpaOrigin (the ingress address)" -ForegroundColor DarkGray
     }
+    if (-not $GrafanaOrigin) { $GrafanaOrigin = "$($SpaOrigin.TrimEnd('/'))/grafana" }
     if (-not $Registry) {
         $Registry = Get-OmsPullRegistry $KubeContext $ImagePullSecretSourceNamespace $ImagePullSecretName
         if ($Registry) { Write-Host "==> Images from the connected registry $Registry" -ForegroundColor DarkGray }
@@ -301,6 +307,20 @@ scripts/infra/azurelocal/ad-setup.ps1.
         if ($LASTEXITCODE -ne 0) { throw "Could not write the '$($pair.Name)' Secret." }
     }
 
+    # The 'grafana' client's secret, generated once. Keycloak reads it from this Secret, and
+    # provision-observability.ps1 gives Grafana the same value. It goes to kubectl on stdin, never
+    # on a command line.
+    if (-not (Get-SecretValue -Name 'grafana-oauth' -Key 'client-secret')) {
+        @{
+            apiVersion = 'v1'
+            kind       = 'Secret'
+            type       = 'Opaque'
+            metadata   = @{ name = 'grafana-oauth'; namespace = $Namespace }
+            stringData = @{ 'client-id' = 'grafana'; 'client-secret' = (New-RandomSecret) }
+        } | ConvertTo-Json -Depth 5 | kubectl --context $KubeContext apply -f - | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Could not write the 'grafana-oauth' Secret." }
+    }
+
     # ------------------------------------------------------------------------------------------
     # Site values. The realm and the manifests are files in infra/azurelocal/keycloak; what
     # differs per site goes into the keycloak-realm-settings ConfigMap, and Keycloak fills the
@@ -332,8 +352,11 @@ scripts/infra/azurelocal/ad-setup.ps1.
         LDAP_URL          = "${ldapScheme}://${AdServer}:${ldapPort}"
         LDAP_USERS_DN     = $usersDn
         KUBERNETES_ISSUER = $issuer
-        WORKLOAD_SUBJECT  = "system:serviceaccount:${WorkloadNamespace}:$WorkloadServiceAccount"
+        # Signing keys come from the API server inside the cluster, never the issuer's address.
+        KUBERNETES_ISSUER_DISCOVERY_URL = 'https://kubernetes.default.svc'
+        WORKLOAD_NAMESPACE = $WorkloadNamespace
         SPA_ORIGIN        = $SpaOrigin.TrimEnd('/')
+        GRAFANA_ORIGIN    = $GrafanaOrigin.TrimEnd('/')
     }
     $literals = $realmSettings.GetEnumerator() | ForEach-Object { "--from-literal=$($_.Key)=$($_.Value)" }
     kubectl --context $KubeContext -n $Namespace create configmap keycloak-realm-settings $literals `
@@ -499,18 +522,13 @@ Certificate first, then create the Secret (deleting the Certificate may delete t
         }
     }
 
-    # Everything a workload needs lives in its own namespace: the identity it presents, and the
-    # certificate authority it checks Keycloak against. Both are created here rather than in the
-    # application deployment, because the client registration above already names this account and
-    # the two have to agree.
+    # Workloads need the certificate authority they check Keycloak against in their own namespace.
+    # Each service's identity is its own service account there, which the container Recipe creates
+    # and the realm's workload-<service> clients trust.
     Write-Host "==> Preparing namespace $WorkloadNamespace for workloads" -ForegroundColor Cyan
 
     kubectl --context $KubeContext create namespace $WorkloadNamespace `
         --dry-run=client --output yaml | kubectl --context $KubeContext apply -f - | Out-Null
-
-    kubectl --context $KubeContext -n $WorkloadNamespace create serviceaccount $WorkloadServiceAccount `
-        --dry-run=client --output yaml | kubectl --context $KubeContext apply -f - | Out-Null
-    Write-Host "    serviceaccount/$WorkloadServiceAccount" -ForegroundColor DarkGray
 
     # Keycloak serves a certificate issued by a CA the cluster does not know, so the workload and
     # RabbitMQ both need that CA. Publishing the issuer rather than the serving certificate is what
@@ -547,14 +565,14 @@ Certificate first, then create the Secret (deleting the Certificate may delete t
     Write-Host "Keycloak realm   : $issuerUrl"
     Write-Host "Directory        : ${ldapScheme}://${AdServer}:${ldapPort} ($usersDn)"
     Write-Host "Cluster issuer   : $issuer"
-    Write-Host "Workload client  : $WorkloadClientId"
-    Write-Host "Workload identity: ${WorkloadNamespace}:$WorkloadServiceAccount"
+    Write-Host "Workload clients : workload-<service>, for service accounts ${WorkloadNamespace}:<service>"
     Write-Host "Issuer CA secret : $WorkloadCaSecretName (namespace $WorkloadNamespace)"
+    Write-Host "Grafana client   : grafana, for $GrafanaOrigin (secret $Namespace/grafana-oauth)"
     Write-Host ''
     Write-Host 'A workload authenticates with its ServiceAccount token and no secret:' -ForegroundColor Yellow
     Write-Host '  curl -sk "$ISSUER/protocol/openid-connect/token" \'
     Write-Host '    -d grant_type=client_credentials \'
-    Write-Host "    -d client_id=$WorkloadClientId \"
+    Write-Host "    -d client_id=workload-<service> \"
     Write-Host '    -d client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer \'
     Write-Host '    -d client_assertion=$(cat /var/run/secrets/identity/token)'
     Write-Host ''

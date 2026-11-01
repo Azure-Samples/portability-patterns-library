@@ -9,17 +9,23 @@ param clusterName string
 @description('Globally unique container registry name.')
 param registryName string
 
-@description('Name of the user-assigned managed identity the application pods federate with.')
-param identityName string
+@description('Prefix of the user-assigned managed identities: one per service, and one for the database setup job.')
+param identityPrefix string
+
+@description('Services that get their own identity. Each runs as a service account of the same name.')
+param workloadNames array
+
+@description('Service account the database setup job runs as.')
+param databaseAdminServiceAccountName string
+
+@description('Email address that receives alerts. Empty creates the action group without receivers.')
+param alertEmail string
 
 @description('Name of the user-assigned managed identity the Radius control plane federates with.')
 param radiusIdentityName string
 
 @description('Kubernetes namespace the application is deployed into.')
 param appNamespace string
-
-@description('Kubernetes service account the application pods run as.')
-param serviceAccountName string
 
 @description('Number of nodes in the system pool.')
 param nodeCount int
@@ -124,6 +130,14 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2025-04-01' = {
         enabled: true
       }
     }
+    // Azure CNI Overlay with Cilium enforces Kubernetes network policies, which limit which pods may
+    // reach each service.
+    networkProfile: {
+      networkPlugin: 'azure'
+      networkPluginMode: 'overlay'
+      networkDataplane: 'cilium'
+      networkPolicy: 'cilium'
+    }
     // Managed NGINX ingress (app routing add-on): how applications are published to users.
     ingressProfile: {
       webAppRouting: {
@@ -133,27 +147,137 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2025-04-01' = {
   }
 }
 
-resource workloadIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
-  name: identityName
+// One identity per service, so each gets only the access it needs, plus one for the database setup
+// job, which is the Entra administrator of the SQL and PostgreSQL servers and creates each service's
+// least-privilege database user.
+var identities = concat(
+  map(workloadNames, name => { name: name, serviceAccount: name }),
+  [ { name: 'db-admin', serviceAccount: databaseAdminServiceAccountName } ]
+)
+
+resource managedIdentities 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = [for identity in identities: {
+  name: '${identityPrefix}-${identity.name}'
   location: location
   tags: tags
-}
+}]
 
-// Trusts the cluster's OIDC issuer for exactly one service account. The subject format is fixed by
-// Kubernetes and must match the namespace and service account name exactly, or token exchange
+// Each trusts the cluster's OIDC issuer for exactly one service account. The subject format is fixed
+// by Kubernetes and must match the namespace and service account name exactly, or token exchange
 // fails with AADSTS70021.
-resource federatedCredential 'Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials@2023-01-31' = {
-  parent: workloadIdentity
-  name: '${identityName}-fic'
+resource federatedCredentials 'Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials@2023-01-31' = [for (identity, i) in identities: {
+  parent: managedIdentities[i]
+  name: 'aks-${identity.serviceAccount}'
   properties: {
     issuer: cluster.properties.oidcIssuerProfile.issuerURL
-    subject: 'system:serviceaccount:${appNamespace}:${serviceAccountName}'
+    subject: 'system:serviceaccount:${appNamespace}:${identity.serviceAccount}'
     audiences: [
       'api://AzureADTokenExchange'
     ]
   }
+}]
+
+// Telemetry. Local authentication is off, so only identities with Monitoring Metrics Publisher can
+// send to Application Insights: each service, with its own identity.
+resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
+  name: '${clusterName}-logs'
+  location: location
+  tags: tags
+  properties: {
+    sku: {
+      name: 'PerGB2018'
+    }
+    retentionInDays: 30
+  }
 }
 
+resource applicationInsights 'Microsoft.Insights/components@2020-02-02' = {
+  name: '${clusterName}-insights'
+  location: location
+  tags: tags
+  kind: 'web'
+  properties: {
+    Application_Type: 'web'
+    WorkspaceResourceId: logAnalytics.id
+    DisableLocalAuth: true
+  }
+}
+
+var monitoringMetricsPublisherRoleId = '3913510d-42f4-4e42-8a64-420c390055eb'
+
+resource telemetryPublishers 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (name, i) in workloadNames: {
+  scope: applicationInsights
+  name: guid(applicationInsights.id, name, monitoringMetricsPublisherRoleId)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', monitoringMetricsPublisherRoleId)
+    principalId: managedIdentities[i].properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}]
+
+resource alertActionGroup 'Microsoft.Insights/actionGroups@2023-01-01' = {
+  name: '${clusterName}-alerts'
+  location: 'global'
+  tags: tags
+  properties: {
+    groupShortName: 'oms-alerts'
+    enabled: true
+    emailReceivers: empty(alertEmail) ? [] : [
+      {
+        name: 'operations'
+        emailAddress: alertEmail
+        useCommonAlertSchema: true
+      }
+    ]
+  }
+}
+
+// Alerts on what the services report. The dead-letter alert is created by the queue Recipe, next to
+// the queue it watches.
+var appAlerts = [
+  {
+    name: 'processor-stalled'
+    description: 'Orders were placed in the last 15 minutes but none were completed.'
+    severity: 2
+    query: 'let placed = customMetrics | where name == "oms.orders.placed" | summarize n = sum(valueCount); let completed = customMetrics | where name == "oms.orders.completed" | summarize n = sum(valueCount); placed | extend completed = toscalar(completed | project n) | where n > 0 and coalesce(completed, 0) == 0'
+  }
+  {
+    name: 'low-stock'
+    description: 'At least one product is at or below its reorder level.'
+    severity: 3
+    query: 'customMetrics | where name == "oms.inventory.below_reorder" | summarize latest = arg_max(timestamp, value) | where value > 0'
+  }
+]
+
+resource appAlertRules 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview' = [for alert in appAlerts: {
+  name: '${clusterName}-${alert.name}'
+  location: location
+  tags: tags
+  properties: {
+    description: alert.description
+    severity: alert.severity
+    enabled: true
+    scopes: [ applicationInsights.id ]
+    evaluationFrequency: 'PT5M'
+    windowSize: 'PT15M'
+    criteria: {
+      allOf: [
+        {
+          query: alert.query
+          timeAggregation: 'Count'
+          operator: 'GreaterThan'
+          threshold: 0
+          failingPeriods: {
+            numberOfEvaluationPeriods: 1
+            minFailingPeriodsToAlert: 1
+          }
+        }
+      ]
+    }
+    actions: {
+      actionGroups: [ alertActionGroup.id ]
+    }
+  }
+}]
 // Declarative equivalent of `az aks update --attach-acr`: lets the kubelet pull application images.
 // This covers image pulls only. Recipe pulls are performed by the Radius control plane and are
 // configured separately through deploy/recipe-registry-credentials.bicep.
@@ -248,9 +372,16 @@ output registryLoginServer string = registry.properties.loginServer
 output registryName string = registry.name
 output clusterName string = cluster.name
 output oidcIssuerUrl string = cluster.properties.oidcIssuerProfile.issuerURL
-output workloadIdentityClientId string = workloadIdentity.properties.clientId
-output workloadIdentityPrincipalId string = workloadIdentity.properties.principalId
-output workloadIdentityName string = workloadIdentity.name
+output workloadIdentities array = [for (name, i) in workloadNames: {
+  name: name
+  clientId: managedIdentities[i].properties.clientId
+  principalId: managedIdentities[i].properties.principalId
+}]
+output databaseAdminClientId string = managedIdentities[length(workloadNames)].properties.clientId
+output databaseAdminPrincipalId string = managedIdentities[length(workloadNames)].properties.principalId
+output databaseAdminName string = managedIdentities[length(workloadNames)].name
+output applicationInsightsConnectionString string = applicationInsights.properties.ConnectionString
+output alertActionGroupId string = alertActionGroup.id
 output radiusIdentityClientId string = radiusIdentity.properties.clientId
 output radiusIdentityPrincipalId string = radiusIdentity.properties.principalId
 output radiusIdentityName string = radiusIdentity.name

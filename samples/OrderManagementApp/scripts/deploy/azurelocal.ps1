@@ -5,9 +5,17 @@
 
 .DESCRIPTION
     The Azure Local instance is connected, but the workload is built to keep running if that link
-    drops. So the backing services are in-cluster containers (RabbitMQ, SQL Server, Azurite),
-    identity is the in-cluster Keycloak bound to the site's Active Directory, and
+    drops. So the backing services are in-cluster containers (RabbitMQ, SQL Server, PostgreSQL,
+    Azurite), identity is the in-cluster Keycloak bound to the site's Active Directory, and
     every image and Recipe is pulled from the ACR connected registry inside the cluster.
+
+    Each service signs in to Keycloak as itself, with its Kubernetes service account token
+    (Keycloak client workload-<service>), and to its database as its own least-privilege user. The
+    database passwords come from Key Vault, synced into Secret oms-db-passwords by the Key Vault
+    Secret Store extension (setup-platform.ps1, KeyVault step). This script sets them in the
+    databases through the database setup job, then copies each service's password into
+    <service>-db-credentials, which the Recipe Pack hands to that service only. So to change a
+    password: set a new version in Key Vault, wait for the sync, and run this script again.
 
     Two registries are involved:
 
@@ -18,8 +26,8 @@
                          the link is up and keeps serving what it has when it is not.
 
     Prerequisite: ./scripts/setup-platform.ps1 -Target AzureLocal (cluster, image mirror, connected
-    registry, Keycloak, ingress and the orders app's sign-in registration). Usually run through
-    ./scripts/deploy.ps1 -Target AzureLocal, which supplies the settings.
+    registry, Key Vault sync, Keycloak, ingress and the orders app's sign-in registration). Usually
+    run through ./scripts/deploy.ps1 -Target AzureLocal, which supplies the settings.
 
     Images are built with podman when it is available, otherwise docker. With neither, for example
     on Windows Server, the registry builds them itself with 'az acr build' (ACR Tasks).
@@ -28,24 +36,12 @@
     Reinstall the Radius control plane even when present. Needed whenever the registry CA or pull
     secret changes, since 'rad install kubernetes' otherwise leaves an existing installation alone.
 
-.PARAMETER RotateSqlPassword
-    Generate a new SQL administrator password instead of reusing the one in 'oms-sql-admin', set it
-    in the running SQL Server, then redeploy the application with it. Use it when the password leaked.
-
-.PARAMETER Stage
-    Azure builds and pushes the images and publishes the Recipes to the cloud registry, and writes
-    their digests to <HandoverPath>/release.json. Site runs on the site network with no Azure
-    sign-in: it reads release.json, waits for the connected registry to hold that release, and runs
-    rad install and rad deploy. ./scripts/deploy.ps1 runs both in a row unless told otherwise.
+.EXAMPLE
+    ./scripts/deploy/azurelocal.ps1 -RegistryName <acr-name> -KubeContext bcd-aksarc
 
 .EXAMPLE
-    # Build and publish where Azure is reachable, then deploy from a machine on the site network.
-    ./scripts/deploy/azurelocal.ps1 -Stage Azure
-    ./scripts/deploy/azurelocal.ps1 -Stage Site
-
-.EXAMPLE
-    # Rotate the SQL password without reinstalling Radius.
-    ./scripts/deploy/azurelocal.ps1 -Stage Site -SkipRadiusInstall -RotateSqlPassword
+    # Apply passwords changed in Key Vault, without rebuilding or reinstalling Radius.
+    ./scripts/deploy/azurelocal.ps1 -RegistryName <acr-name> -SkipImageBuild -SkipRadiusInstall
 #>
 [CmdletBinding()]
 param(
@@ -69,8 +65,22 @@ param(
     [string]$RadiusVersion = '0.60',
     [string]$ImageTag = 'latest',
 
-    [securestring]$SqlAdminPassword,
-    [switch]$RotateSqlPassword,
+    # The application's services; each gets its own service account, Keycloak client and database user.
+    [string[]]$Services = @('api', 'processor', 'inventory'),
+
+    # Database passwords synced from Key Vault by scripts/infra/azurelocal/key-vault.ps1, and the
+    # Secret that records the administrator passwords the databases currently have.
+    [string]$PasswordsSecretName = 'oms-db-passwords',
+    [string]$AppliedAdminSecretName = 'oms-db-admin',
+    # SQL Server edition: Developer is not licensed for production; pass Standard, Enterprise or a product key.
+    [string]$SqlServerEdition = 'Developer',
+    # cert-manager ClusterIssuer from provision-ingress.ps1; PostgreSQL gets its TLS certificate from it.
+    [string]$CertificateIssuer = 'site-ca',
+
+    # On-site telemetry: the OpenTelemetry collector the services send to and the namespace that
+    # scrapes the backing services' metrics. Not used when the collector isn't installed.
+    [string]$MonitoringNamespace = 'observability',
+    [string]$OtlpEndpoint = 'http://otel-collector.observability.svc.cluster.local:4317',
 
     # How long to wait for the application's Deployments to become available after 'rad deploy'.
     [int]$RolloutTimeoutSeconds = 900,
@@ -79,9 +89,11 @@ param(
     [string]$KeycloakRelease = 'keycloak',
     [string]$KeycloakRealm = 'oms',
     [int]$KeycloakNodePort = 30443,
-    # Keycloak client and service account the workloads authenticate as, from scripts/infra/azurelocal/keycloak.ps1.
-    [string]$WorkloadClientId = 'oms-workloads',
-    [string]$WorkloadServiceAccount = 'oms-workload',
+    # Keycloak clients the services authenticate as, from infra/azurelocal/keycloak/realm.json:
+    # one per service, '{resource}' being the service's name. The inventory service accepts tokens
+    # issued for its own client.
+    [string]$WorkloadClientId = 'workload-{resource}',
+    [string]$InventoryClientId = 'oms-inventory',
     [string]$IdentityCaSecretName = 'oms-identity-ca',
     [switch]$SkipOAuth,
 
@@ -97,20 +109,14 @@ param(
     [string]$IngressTlsSecretName = 'oms-app-tls',
 
     [switch]$SkipImageBuild,
-    [switch]$SkipRadiusInstall,
-
-    # Azure where Azure is reachable (build, push, publish), Site on the site network (rad). They
-    # hand over through -HandoverPath (image and Recipe digests only, no secrets).
-    [Parameter(Mandatory)]
-    [ValidateSet('Azure', 'Site')]
-    [string]$Stage,
-    [string]$HandoverPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../.handover'))
+    [switch]$SkipRadiusInstall
 )
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 . (Join-Path $repoRoot 'scripts/lib/recipes.ps1')
 . (Join-Path $repoRoot 'scripts/lib/cluster.ps1')
+. (Join-Path $repoRoot 'scripts/lib/database.ps1')
 Push-Location $repoRoot
 
 function Invoke-Checked {
@@ -151,138 +157,116 @@ function New-ParameterFile {
 
 try {
     if ($PSVersionTable.PSEdition -ne 'Core') { throw 'Run this script under PowerShell 7 (pwsh).' }
-    $releaseFile = Join-Path $HandoverPath 'release.json'
-
-    # Both stages compile Bicep that uses the queue type, so both need its extension.
+    # The Recipe Pack and the app definition use the queue type, so Bicep needs its extension.
     Invoke-Checked 'rad bicep publish-extension' {
         rad bicep publish-extension -f $QueueTypeFile --target $QueueTypeExtension
     }
 
-    if ($Stage -eq 'Site') {
-        Write-Host "==> Checking the cluster is reachable" -ForegroundColor Cyan
-        Invoke-Checked 'kubectl cluster-info' { kubectl cluster-info --context $KubeContext --request-timeout=20s | Out-Null }
+    Write-Host "==> Checking the cluster is reachable" -ForegroundColor Cyan
+    Invoke-Checked 'kubectl cluster-info' { kubectl cluster-info --context $KubeContext --request-timeout=20s | Out-Null }
 
-        kubectl create namespace $Namespace --context $KubeContext --dry-run=client -o yaml |
-            kubectl apply --context $KubeContext -f - | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw 'Creating the application namespace failed.' }
+    kubectl create namespace $Namespace --context $KubeContext --dry-run=client -o yaml |
+        kubectl apply --context $KubeContext -f - | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Creating the application namespace failed.' }
 
-        # ------------------------------------------------------------------------------------------
-        # Connected registry credentials and CA, kept in the cluster by connected-registry.ps1.
-        # ------------------------------------------------------------------------------------------
-        if (-not $PullRegistry) { $PullRegistry = Get-OmsPullRegistry $KubeContext $Namespace $ImagePullSecretName }
-        if (-not $PullRegistry) {
-            throw "Pull secret '$ImagePullSecretName' is missing from '$Namespace'. Run scripts/infra/azurelocal/connected-registry.ps1 -Stage Site first."
-        }
-        $dockerConfigEncoded = kubectl get secret $ImagePullSecretName --context $KubeContext --namespace $Namespace `
-            --ignore-not-found --output 'jsonpath={.data.\.dockerconfigjson}'
-        if ([string]::IsNullOrWhiteSpace($dockerConfigEncoded)) {
-            throw "Pull secret '$ImagePullSecretName' is missing from '$Namespace'. Run scripts/infra/azurelocal/connected-registry.ps1 -Stage Site first."
-        }
-        $pullAuth = ([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($dockerConfigEncoded)) | ConvertFrom-Json).auths.$PullRegistry
-        if (-not $pullAuth -or -not $pullAuth.username -or -not $pullAuth.password) {
-            throw "Pull secret '$ImagePullSecretName' holds no credentials for '$PullRegistry'."
-        }
-
-        $registryCaPem = (kubectl get configmap $RegistryCaConfigMapName --context $KubeContext --namespace $Namespace `
-            --ignore-not-found --output 'jsonpath={.data.ca\.crt}') -join "`n"
-        if ([string]::IsNullOrWhiteSpace($registryCaPem)) {
-            throw "ConfigMap '$RegistryCaConfigMapName' is missing from '$Namespace'. Run scripts/infra/azurelocal/connected-registry.ps1 -Stage Site first."
-        }
-        $registryCaFile = Join-Path ([System.IO.Path]::GetTempPath()) "oms-azurelocal-ca-$([guid]::NewGuid().ToString('N')).crt"
-        $temporaryFiles += $registryCaFile
-        [System.IO.File]::WriteAllText($registryCaFile, $registryCaPem, [System.Text.UTF8Encoding]::new($false))
+    # ------------------------------------------------------------------------------------------
+    # Connected registry credentials and CA, kept in the cluster by connected-registry.ps1.
+    # ------------------------------------------------------------------------------------------
+    if (-not $PullRegistry) { $PullRegistry = Get-OmsPullRegistry $KubeContext $Namespace $ImagePullSecretName }
+    if (-not $PullRegistry) {
+        throw "Pull secret '$ImagePullSecretName' is missing from '$Namespace'. Run scripts/infra/azurelocal/connected-registry.ps1 first."
+    }
+    $dockerConfigEncoded = kubectl get secret $ImagePullSecretName --context $KubeContext --namespace $Namespace `
+        --ignore-not-found --output 'jsonpath={.data.\.dockerconfigjson}'
+    if ([string]::IsNullOrWhiteSpace($dockerConfigEncoded)) {
+        throw "Pull secret '$ImagePullSecretName' is missing from '$Namespace'. Run scripts/infra/azurelocal/connected-registry.ps1 first."
+    }
+    $pullAuth = ([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($dockerConfigEncoded)) | ConvertFrom-Json).auths.$PullRegistry
+    if (-not $pullAuth -or -not $pullAuth.username -or -not $pullAuth.password) {
+        throw "Pull secret '$ImagePullSecretName' holds no credentials for '$PullRegistry'."
     }
 
-    if ($Stage -eq 'Azure') {
-        $pushRegistry = az acr show --name $RegistryName --resource-group $RegistryResourceGroup --query loginServer --output tsv
-        if ($LASTEXITCODE -ne 0 -or -not $pushRegistry) { throw "Registry '$RegistryName' not found." }
+    $registryCaPem = (kubectl get configmap $RegistryCaConfigMapName --context $KubeContext --namespace $Namespace `
+        --ignore-not-found --output 'jsonpath={.data.ca\.crt}') -join "`n"
+    if ([string]::IsNullOrWhiteSpace($registryCaPem)) {
+        throw "ConfigMap '$RegistryCaConfigMapName' is missing from '$Namespace'. Run scripts/infra/azurelocal/connected-registry.ps1 first."
+    }
+    $registryCaFile = Join-Path ([System.IO.Path]::GetTempPath()) "oms-azurelocal-ca-$([guid]::NewGuid().ToString('N')).crt"
+    $temporaryFiles += $registryCaFile
+    [System.IO.File]::WriteAllText($registryCaFile, $registryCaPem, [System.Text.UTF8Encoding]::new($false))
 
-        # ------------------------------------------------------------------------------------------
-        # Build, push and publish to the cloud registry.
-        # ------------------------------------------------------------------------------------------
-        # An ACR access token lasts three hours, plenty for one run. It is written to the Docker-
-        # compatible config as well, because that is where 'rad bicep publish' looks for credentials.
-        Write-Host "==> Signing in to $pushRegistry" -ForegroundColor Cyan
-        $acrToken = az acr login --name $RegistryName --expose-token --query accessToken --output tsv
-        if ($LASTEXITCODE -ne 0 -or -not $acrToken) { throw 'az acr login --expose-token failed.' }
+    $pushRegistry = az acr show --name $RegistryName --resource-group $RegistryResourceGroup --query loginServer --output tsv
+    if ($LASTEXITCODE -ne 0 -or -not $pushRegistry) { throw "Registry '$RegistryName' not found." }
 
-        $containerTool = if (Get-Command podman -ErrorAction SilentlyContinue) { 'podman' }
-        elseif (Get-Command docker -ErrorAction SilentlyContinue) { 'docker' }
-        else { $null }
+    # ------------------------------------------------------------------------------------------
+    # Build, push and publish to the cloud registry.
+    # ------------------------------------------------------------------------------------------
+    # An ACR access token lasts three hours, plenty for one run. It is written to the Docker-
+    # compatible config as well, because that is where 'rad bicep publish' looks for credentials.
+    Write-Host "==> Signing in to $pushRegistry" -ForegroundColor Cyan
+    $acrToken = az acr login --name $RegistryName --expose-token --query accessToken --output tsv
+    if ($LASTEXITCODE -ne 0 -or -not $acrToken) { throw 'az acr login --expose-token failed.' }
 
-        $dockerConfigFile = Join-Path $HOME '.docker/config.json'
-        New-Item -ItemType Directory -Force -Path (Split-Path $dockerConfigFile) | Out-Null
-        $acrUser = '00000000-0000-0000-0000-000000000000'
-        if ($containerTool -eq 'podman') {
-            $acrToken | podman login $pushRegistry --username $acrUser --password-stdin | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw 'podman login failed.' }
-            $acrToken | podman login $pushRegistry --username $acrUser --password-stdin --compat-auth-file $dockerConfigFile | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw 'podman login (Docker-compatible config) failed.' }
-        }
-        elseif ($containerTool -eq 'docker') {
-            $acrToken | docker login $pushRegistry --username $acrUser --password-stdin | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw 'docker login failed.' }
-        }
-        else {
-            # No container engine, for example on Windows Server. 'rad bicep publish' still needs the
-            # registry credential in the Docker-compatible config, so it is written there directly.
-            $dockerConfig = if (Test-Path $dockerConfigFile) { Get-Content $dockerConfigFile -Raw | ConvertFrom-Json -AsHashtable } else { @{} }
-            if (-not $dockerConfig.auths) { $dockerConfig.auths = @{} }
-            $dockerConfig.auths[$pushRegistry] = @{ auth = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("${acrUser}:$acrToken")) }
-            [System.IO.File]::WriteAllText($dockerConfigFile, ($dockerConfig | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))
-        }
-        $acrToken = $null
+    $containerTool = if (Get-Command podman -ErrorAction SilentlyContinue) { 'podman' }
+    elseif (Get-Command docker -ErrorAction SilentlyContinue) { 'docker' }
+    else { $null }
 
-        if (-not $SkipImageBuild) {
-            foreach ($component in @('api', 'processor')) {
-                $image = "$pushRegistry/oms/${component}:$ImageTag"
-                if ($containerTool) {
-                    Write-Host "==> Building $component with $containerTool against base images in $pushRegistry" -ForegroundColor Cyan
-                    Invoke-Checked "$containerTool build $component" {
-                        & $containerTool build --build-arg "BASE_REGISTRY=$pushRegistry" -f "docker/Dockerfile.$component" -t $image .
-                    }
-                    Invoke-Checked "$containerTool push $component" { & $containerTool push $image }
+    $dockerConfigFile = Join-Path $HOME '.docker/config.json'
+    New-Item -ItemType Directory -Force -Path (Split-Path $dockerConfigFile) | Out-Null
+    $acrUser = '00000000-0000-0000-0000-000000000000'
+    if ($containerTool -eq 'podman') {
+        $acrToken | podman login $pushRegistry --username $acrUser --password-stdin | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'podman login failed.' }
+        $acrToken | podman login $pushRegistry --username $acrUser --password-stdin --compat-auth-file $dockerConfigFile | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'podman login (Docker-compatible config) failed.' }
+    }
+    elseif ($containerTool -eq 'docker') {
+        $acrToken | docker login $pushRegistry --username $acrUser --password-stdin | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'docker login failed.' }
+    }
+    else {
+        # No container engine, for example on Windows Server. 'rad bicep publish' still needs the
+        # registry credential in the Docker-compatible config, so it is written there directly.
+        $dockerConfig = if (Test-Path $dockerConfigFile) { Get-Content $dockerConfigFile -Raw | ConvertFrom-Json -AsHashtable } else { @{} }
+        if (-not $dockerConfig.auths) { $dockerConfig.auths = @{} }
+        $dockerConfig.auths[$pushRegistry] = @{ auth = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("${acrUser}:$acrToken")) }
+        [System.IO.File]::WriteAllText($dockerConfigFile, ($dockerConfig | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))
+    }
+    $acrToken = $null
+
+    $components = @('api', 'processor', 'inventory', 'dbsetup')
+    if (-not $SkipImageBuild) {
+        foreach ($component in $components) {
+            $image = "$pushRegistry/oms/${component}:$ImageTag"
+            if ($containerTool) {
+                Write-Host "==> Building $component with $containerTool against base images in $pushRegistry" -ForegroundColor Cyan
+                Invoke-Checked "$containerTool build $component" {
+                    & $containerTool build --build-arg "BASE_REGISTRY=$pushRegistry" -f "docker/Dockerfile.$component" -t $image .
                 }
-                else {
-                    # ACR builds the image itself, so this machine needs no container engine.
-                    Write-Host "==> Building $component in $RegistryName (az acr build)" -ForegroundColor Cyan
-                    Invoke-Checked "az acr build $component" {
-                        az acr build --registry $RegistryName --resource-group $RegistryResourceGroup `
-                            --image "oms/${component}:$ImageTag" --build-arg "BASE_REGISTRY=$pushRegistry" `
-                            --file "docker/Dockerfile.$component" --platform linux/amd64 . --output none
-                    }
+                Invoke-Checked "$containerTool push $component" { & $containerTool push $image }
+            }
+            else {
+                # ACR builds the image itself, so this machine needs no container engine.
+                Write-Host "==> Building $component in $RegistryName (az acr build)" -ForegroundColor Cyan
+                Invoke-Checked "az acr build $component" {
+                    az acr build --registry $RegistryName --resource-group $RegistryResourceGroup `
+                        --image "oms/${component}:$ImageTag" --build-arg "BASE_REGISTRY=$pushRegistry" `
+                        --file "docker/Dockerfile.$component" --platform linux/amd64 . --output none
                 }
             }
         }
-
-        Write-Host "==> Publishing Recipes to $pushRegistry" -ForegroundColor Cyan
-        ./scripts/deploy/publish-recipes.ps1 -Registry $pushRegistry -Platform azure-local -Tag $ImageTag
-
-        # The cluster pulls latest-tagged images and Recipes by tag, so a stale digest would still
-        # answer 200. Their digests in the cloud registry are what the Site stage waits for.
-        $expectedDigests = @{}
-        $published = @('oms/api', 'oms/processor') + (Get-LibraryRecipe -Platform azure-local | ForEach-Object { "recipes/$($_.BaseName)" })
-        foreach ($repository in $published) {
-            $expectedDigests["${repository}:$ImageTag"] = az acr manifest show-metadata "$pushRegistry/${repository}:$ImageTag" --query digest --output tsv 2>$null
-            if (-not $expectedDigests["${repository}:$ImageTag"]) { throw "Could not read the digest of ${repository}:$ImageTag in $pushRegistry." }
-        }
-
-        # What the Site stage deploys. No secrets: digests only.
-        New-Item -ItemType Directory -Force -Path $HandoverPath | Out-Null
-        [System.IO.File]::WriteAllText($releaseFile,
-            (@{ imageTag = $ImageTag; digests = $expectedDigests } | ConvertTo-Json -Depth 5),
-            [System.Text.UTF8Encoding]::new($false))
-        Write-Host "`nImages and Recipes are in $pushRegistry; release written to $releaseFile." -ForegroundColor Green
-        return
     }
-    else {
-        if (-not (Test-Path $releaseFile)) {
-            throw "No release to deploy: '$releaseFile' is missing. Run ./scripts/deploy.ps1 -Target AzureLocal -Stage Azure, then copy the handover folder here."
-        }
-        $release = Get-Content $releaseFile -Raw | ConvertFrom-Json -AsHashtable
-        $ImageTag = $release.imageTag
-        $expectedDigests = $release.digests
-        Write-Host "==> Deploying the release from $releaseFile (tag '$ImageTag')" -ForegroundColor Cyan
+
+    Write-Host "==> Publishing Recipes to $pushRegistry" -ForegroundColor Cyan
+    ./scripts/deploy/publish-recipes.ps1 -Registry $pushRegistry -Platform azure-local -Tag $ImageTag
+
+    # The cluster pulls latest-tagged images and Recipes by tag, so a stale digest would still
+    # answer 200. Their digests in the cloud registry are what the sync check below waits for.
+    $expectedDigests = @{}
+    $published = @($components | ForEach-Object { "oms/$_" }) + (Get-LibraryRecipe -Platform azure-local | ForEach-Object { "recipes/$($_.BaseName)" })
+    foreach ($repository in $published) {
+        $expectedDigests["${repository}:$ImageTag"] = az acr manifest show-metadata "$pushRegistry/${repository}:$ImageTag" --query digest --output tsv 2>$null
+        if (-not $expectedDigests["${repository}:$ImageTag"]) { throw "Could not read the digest of ${repository}:$ImageTag in $pushRegistry." }
     }
 
     # ------------------------------------------------------------------------------------------
@@ -290,8 +274,8 @@ try {
     # continuously, but a Recipe the control plane cannot find yet fails the deployment outright.
     # ------------------------------------------------------------------------------------------
     Write-Host "==> Waiting for the connected registry ($PullRegistry) to sync" -ForegroundColor Cyan
-    $services = kubectl get services --all-namespaces --context $KubeContext -o json | ConvertFrom-Json
-    $registryService = $services.items | Where-Object { $_.spec.clusterIP -eq $PullRegistry } | Select-Object -First 1
+    $clusterServices = kubectl get services --all-namespaces --context $KubeContext -o json | ConvertFrom-Json
+    $registryService = $clusterServices.items | Where-Object { $_.spec.clusterIP -eq $PullRegistry } | Select-Object -First 1
     if (-not $registryService) { throw "No Service with ClusterIP $PullRegistry. Run ./scripts/setup-platform.ps1 -Target AzureLocal (the Registry step)." }
     $servicePort = ($registryService.spec.ports | Select-Object -First 1).port
     $localPort = Get-Random -Minimum 20000 -Maximum 30000
@@ -303,9 +287,9 @@ try {
 
     $artifacts = @(
         "ucpd:$RadiusVersion", "controller:$RadiusVersion", "applications-rp:$RadiusVersion",
-        "dynamic-rp:$RadiusVersion", "deployment-engine:$RadiusVersion", "bicep:$RadiusVersion",
-        "oms/api:$ImageTag", "oms/processor:$ImageTag"
-    ) + (Get-LibraryRecipe -Platform azure-local | ForEach-Object { "recipes/$($_.BaseName):$ImageTag" }) +
+        "dynamic-rp:$RadiusVersion", "deployment-engine:$RadiusVersion", "bicep:$RadiusVersion"
+    ) + @($expectedDigests.Keys | Where-Object { $_ -like 'oms/*' }) +
+        (Get-LibraryRecipe -Platform azure-local | ForEach-Object { "recipes/$($_.BaseName):$ImageTag" }) +
         @('radius-project/kube-recipes/secrets:latest')
 
     $basicAuth = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes("$($pullAuth.username):$($pullAuth.password)"))
@@ -428,20 +412,38 @@ try {
         --ignore-not-found -o 'jsonpath={.status.loadBalancer.ingress[0].ip}' 2>$null
     $useIngress = -not [string]::IsNullOrWhiteSpace($ingressAddress)
     if ($useIngress) { Write-Host "    publishing through ingress '$IngressClassName' at https://$ingressAddress" -ForegroundColor DarkGray }
+    $useCollector = $false
+    if ($OtlpEndpoint) {
+        $collectorService, $collectorNamespace = ([uri]$OtlpEndpoint).Host -split '\.'
+        $useCollector = [bool](kubectl get service $collectorService -n $collectorNamespace --context $KubeContext --ignore-not-found -o name 2>$null)
+        if (-not $useCollector) { Write-Host "    no OpenTelemetry collector at $OtlpEndpoint; the services send no telemetry" -ForegroundColor Yellow }
+    }
+    $recipePackParameters = New-ParameterFile @{
+        registry                = $PullRegistry
+        tag                     = $ImageTag
+        imagePullSecretName     = $ImagePullSecretName
+        oauthIssuer             = $oauthIssuer
+        oauthCaSecretName       = $(if ($oauthIssuer) { $IdentityCaSecretName } else { '' })
+        oauthClientId           = $(if ($oauthIssuer) { $WorkloadClientId } else { '' })
+        # Each service runs as its own service account, named after it.
+        serviceAccountName      = '{resource}'
+        # Each service's database password, written by this script after the database setup job.
+        containerEnvFromSecrets = @('{resource}-db-credentials')
+        sqlServerEdition        = $SqlServerEdition
+        certificateIssuer       = $CertificateIssuer
+        otlpEndpoint            = $(if ($useCollector) { $OtlpEndpoint } else { '' })
+        # The app's route is published through the site's ingress controller. Without one, the
+        # Ingress is created but nothing serves it, and the app is reached through port-forward.
+        ingressClassName        = $IngressClassName
+        ingressTlsSecretName    = $(if ($useIngress) { $IngressTlsSecretName } else { '' })
+    }
+    $temporaryFiles += $recipePackParameters
     Invoke-Checked 'rad deploy recipe pack' {
         rad deploy (Join-Path $LibraryRecipePackRoot 'azure-local.bicep') `
             --workspace $WorkspaceName `
             --group $ResourceGroup `
             --environment bootstrap `
-            --parameters registry=$PullRegistry `
-            --parameters tag=$ImageTag `
-            --parameters imagePullSecretName=$ImagePullSecretName `
-            --parameters oauthIssuer=$oauthIssuer `
-            --parameters oauthCaSecretName=$(if ($oauthIssuer) { $IdentityCaSecretName } else { '' }) `
-            --parameters oauthClientId=$(if ($oauthIssuer) { $WorkloadClientId } else { '' }) `
-            --parameters serviceAccountName=$WorkloadServiceAccount `
-            --parameters ingressClassName=$(if ($useIngress) { $IngressClassName } else { '' }) `
-            --parameters ingressTlsSecretName=$(if ($useIngress) { $IngressTlsSecretName } else { '' })
+            --parameters "@$recipePackParameters"
     }
 
     # The connected registry always requires authentication, so Recipe pulls always need it. The
@@ -492,64 +494,58 @@ try {
             --parameters bicepSettingsId=$bicepSettingsId
     }
 
-    # The SQL container authenticates with this password, so it must survive redeployment. Kept in
-    # a Kubernetes Secret, generated on first use.
-    $sqlSecretName = 'oms-sql-admin'
-    if ($SqlAdminPassword -and $RotateSqlPassword) {
-        throw 'Pass either -SqlAdminPassword or -RotateSqlPassword, not both.'
+    # ------------------------------------------------------------------------------------------
+    # Database passwords, from Key Vault through Secret $PasswordsSecretName. SQL Server and
+    # PostgreSQL read their administrator password only when they first create their data, so a
+    # changed one is set in the running server, signing in with the previous one, which
+    # $AppliedAdminSecretName records. Passwords go over stdin, never on a command line.
+    # ------------------------------------------------------------------------------------------
+    $passwords = Get-OmsSecretData $KubeContext $Namespace $PasswordsSecretName
+    $missingKeys = @('sql-admin-password', 'postgres-admin-password', 'sql-api-password', 'sql-processor-password', 'postgres-inventory-password') |
+        Where-Object { -not $passwords[$_] }
+    if ($missingKeys) {
+        throw "Secret '$PasswordsSecretName' lacks $($missingKeys -join ', '). Run ./scripts/setup-platform.ps1 -Target AzureLocal (the KeyVault step)."
     }
-    $storedSqlPassword = kubectl get secret $sqlSecretName --context $KubeContext --namespace $Namespace `
-        --ignore-not-found --output jsonpath='{.data.password}'
-    $previousSqlPassword = if ([string]::IsNullOrWhiteSpace($storedSqlPassword)) { $null }
-    else { [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($storedSqlPassword)) }
-    if ($SqlAdminPassword) {
-        $plainSqlPassword = [System.Net.NetworkCredential]::new('', $SqlAdminPassword).Password
-    }
-    else {
-        if (-not $RotateSqlPassword -and $previousSqlPassword) {
-            $plainSqlPassword = $previousSqlPassword
-            Write-Host "==> Reusing the SQL administrator password from secret '$sqlSecretName'" -ForegroundColor DarkGray
-        }
-        else {
-            # Base64 of random bytes satisfies SQL Server complexity rules and contains no ';'.
-            $randomBytes = [byte[]]::new(24)
-            [System.Security.Cryptography.RandomNumberGenerator]::Fill($randomBytes)
-            $plainSqlPassword = 'Oms1!' + [Convert]::ToBase64String($randomBytes)
-            Write-Host "==> Generated a new SQL administrator password" -ForegroundColor DarkGray
-        }
-    }
+    $applied = Get-OmsSecretData $KubeContext $Namespace $AppliedAdminSecretName
 
-    # SQL Server reads MSSQL_SA_PASSWORD only when it first creates its databases on the volume, so
-    # a new password must also be set inside the running server, before the Secret changes. The
-    # passwords go over stdin, never on a command line. SQL passwords are case-sensitive, hence -cne.
-    if ($previousSqlPassword -and $plainSqlPassword -cne $previousSqlPassword) {
-        $sqlPods = @(kubectl get pods --context $KubeContext --namespace $Namespace --selector app=mssql `
+    function Get-RunningPod([string]$App) {
+        @(kubectl get pods --context $KubeContext --namespace $Namespace --selector "app=$App" `
                 --field-selector status.phase=Running --output jsonpath='{.items[*].metadata.name}' |
             ForEach-Object { $_ -split ' ' } | Where-Object { $_ })
-        if (-not $sqlPods) {
-            throw "No running SQL Server to change the password in, so secret '$sqlSecretName' is left as it is. Start SQL Server, then run this again."
-        }
-        foreach ($sqlPod in $sqlPods) {
-            Write-Host "==> Changing the SQL administrator password in $sqlPod" -ForegroundColor Cyan
-            $alterLogin = "ALTER LOGIN sa WITH PASSWORD = N'$($plainSqlPassword.Replace("'", "''"))';`nGO"
-            "$previousSqlPassword`n$alterLogin" |
-                kubectl exec --stdin $sqlPod --container mssql --context $KubeContext --namespace $Namespace -- `
+    }
+
+    # Passwords are case-sensitive, hence -cne.
+    $previous = $applied['sql-admin-password']
+    if ($previous -and $passwords['sql-admin-password'] -cne $previous) {
+        $pods = Get-RunningPod 'mssql'
+        if (-not $pods) { throw 'The SQL administrator password changed in Key Vault, but no SQL Server is running to change it in. Start SQL Server, then run this again.' }
+        foreach ($pod in $pods) {
+            Write-Host "==> Changing the SQL administrator password in $pod" -ForegroundColor Cyan
+            "$previous`nALTER LOGIN sa WITH PASSWORD = N'$($passwords['sql-admin-password'].Replace("'", "''"))';`nGO" |
+                kubectl exec --stdin $pod --container mssql --context $KubeContext --namespace $Namespace -- `
                     bash -c 'IFS= read -r P; export SQLCMDPASSWORD="${P%$''\r''}"; /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -b' |
                 Out-Null
-            if ($LASTEXITCODE -ne 0) {
-                throw "Changing the SQL administrator password in $sqlPod failed; secret '$sqlSecretName' still holds the old one."
-            }
+            if ($LASTEXITCODE -ne 0) { throw "Changing the SQL administrator password in $pod failed." }
         }
     }
-    elseif (-not $previousSqlPassword -and $SqlAdminPassword) {
-        Write-Warning "Secret '$sqlSecretName' did not exist, so an existing SQL Server keeps the password it was created with."
+    $previous = $applied['postgres-admin-password']
+    if ($previous -and $passwords['postgres-admin-password'] -cne $previous) {
+        $pods = Get-RunningPod 'postgres'
+        if (-not $pods) { throw 'The PostgreSQL administrator password changed in Key Vault, but no PostgreSQL is running to change it in. Start PostgreSQL, then run this again.' }
+        foreach ($pod in $pods) {
+            Write-Host "==> Changing the PostgreSQL administrator password in $pod" -ForegroundColor Cyan
+            "$previous`nALTER ROLE CURRENT_USER PASSWORD '$($passwords['postgres-admin-password'].Replace("'", "''"))';" |
+                kubectl exec --stdin $pod --container postgres --context $KubeContext --namespace $Namespace -- `
+                    sh -c 'IFS= read -r P; export PGPASSWORD="${P%$(printf ''\r'')}"; psql -h /var/run/postgresql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -q' |
+                Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Changing the PostgreSQL administrator password in $pod failed." }
+        }
     }
-    $previousSqlPassword = $null
-
-    kubectl create secret generic $sqlSecretName --context $KubeContext --namespace $Namespace `
-        --from-literal=password=$plainSqlPassword --dry-run=client --output yaml |
-        kubectl apply --context $KubeContext --filename - | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Storing the SQL administrator password in '$sqlSecretName' failed." }
+    $previous = $null
+    Set-OmsSecret $KubeContext $Namespace $AppliedAdminSecretName @{
+        'sql-admin-password'      = $passwords['sql-admin-password']
+        'postgres-admin-password' = $passwords['postgres-admin-password']
+    }
 
     # User sign-in for the orders API and browser app goes through the same Keycloak realm. Only
     # these values differ from an Entra deployment; the application code is identical.
@@ -575,14 +571,29 @@ try {
         }
     }
 
+    # The inventory service accepts tokens Keycloak issued for its own client; the callers' tokens
+    # carry that audience, so they need no scope.
+    $inventoryAuthentication = @{}
+    if ($oauthIssuer) {
+        $inventoryAuthentication = @{
+            Authority       = $oauthIssuer
+            MetadataAddress = "$oauthIssuer/.well-known/openid-configuration"
+            Audience        = $InventoryClientId
+        }
+    }
+
     # The same parameters as on Azure: everything platform-specific is in the Recipe Pack.
+    # Images are pinned by digest: with a bare ':latest' the pod spec never changes, so a rebuild
+    # never rolls out.
     $applicationParameters = New-ParameterFile @{
-        # Pinned by digest: with a bare ':latest' the pod spec never changes, so a rebuild never rolls out.
-        apiImage          = "$PullRegistry/oms/api@$($expectedDigests["oms/api:$ImageTag"])"
-        processorImage    = "$PullRegistry/oms/processor@$($expectedDigests["oms/processor:$ImageTag"])"
-        apiAuthentication = $apiAuthentication
-        spaSettings       = $spaSettings
-        sqlAdminPassword  = $plainSqlPassword
+        apiImage                = "$PullRegistry/oms/api@$($expectedDigests["oms/api:$ImageTag"])"
+        processorImage          = "$PullRegistry/oms/processor@$($expectedDigests["oms/processor:$ImageTag"])"
+        inventoryImage          = "$PullRegistry/oms/inventory@$($expectedDigests["oms/inventory:$ImageTag"])"
+        apiAuthentication       = $apiAuthentication
+        spaSettings             = $spaSettings
+        inventoryAuthentication = $inventoryAuthentication
+        sqlAdminPassword        = $passwords['sql-admin-password']
+        postgresAdminPassword   = $passwords['postgres-admin-password']
     }
     $temporaryFiles += $applicationParameters
 
@@ -594,19 +605,70 @@ try {
             --environment $EnvironmentName `
             --parameters "@$applicationParameters"
     }
-    $plainSqlPassword = $null
 
     # 'rad deploy' returns once the resources are applied, not once the pods are serving.
-    Write-Host "==> Waiting for the application to roll out (images come from $PullRegistry)" -ForegroundColor Cyan
-    Invoke-Checked 'kubectl rollout status' {
-        kubectl rollout status deployment --namespace $Namespace --context $KubeContext `
-            --timeout="${RolloutTimeoutSeconds}s" | Out-Null
-    }
+    Write-Host "==> Waiting for the backing services (images come from $PullRegistry)" -ForegroundColor Cyan
     Invoke-Checked 'kubectl rollout status' {
         kubectl rollout status statefulset --namespace $Namespace --context $KubeContext `
             --timeout="${RolloutTimeoutSeconds}s" | Out-Null
     }
 
+    $monitoringPresent = kubectl get namespace $MonitoringNamespace --context $KubeContext --ignore-not-found -o name 2>$null
+    Set-OmsNetworkPolicy -KubeContext $KubeContext -Namespace $Namespace -IngressNamespace $IngressNamespace `
+        -MonitoringNamespace $(if ($monitoringPresent) { $MonitoringNamespace } else { '' }) `
+        -ManifestPath (Join-Path $repoRoot 'deploy/network-policies.yaml')
+
+    # As the database administrators, create the schemas and each service's database user with
+    # only the rights it needs, setting the passwords from Key Vault.
+    $sql = Get-OmsRadiusResourceProperties -Type 'Radius.Data/sqlServerDatabases' -Name 'ordersdb' -Workspace $WorkspaceName -Group $ResourceGroup
+    $postgres = Get-OmsRadiusResourceProperties -Type 'Radius.Data/postgreSqlDatabases' -Name 'inventorydb' -Workspace $WorkspaceName -Group $ResourceGroup
+    $fromPasswords = { param($key) @{ Secret = $PasswordsSecretName; Key = $key } }
+    Invoke-OmsDatabaseSetup -KubeContext $KubeContext -Namespace $Namespace `
+        -Image "$PullRegistry/oms/dbsetup@$($expectedDigests["oms/dbsetup:$ImageTag"])" `
+        -ImagePullSecretName $ImagePullSecretName `
+        -Environment @{
+            CONNECTION_SQL_HOST             = $sql.host
+            CONNECTION_SQL_PORT             = $sql.port
+            CONNECTION_SQL_DATABASE         = $sql.database
+            # The SQL Server container's administrator login.
+            SQL_ADMIN_USERNAME              = 'sa'
+            CONNECTION_INVENTORYDB_HOST     = $postgres.host
+            CONNECTION_INVENTORYDB_PORT     = $postgres.port
+            CONNECTION_INVENTORYDB_DATABASE = $postgres.database
+            CONNECTION_INVENTORYDB_TLS      = $postgres.tls
+            POSTGRES_ADMIN_USERNAME         = 'pgadmin'
+        } `
+        -SecretEnvironment @{
+            SQL_ADMIN_PASSWORD      = & $fromPasswords 'sql-admin-password'
+            SQL_API_PASSWORD        = & $fromPasswords 'sql-api-password'
+            SQL_PROCESSOR_PASSWORD  = & $fromPasswords 'sql-processor-password'
+            POSTGRES_ADMIN_PASSWORD = & $fromPasswords 'postgres-admin-password'
+            INVENTORY_DB_PASSWORD   = & $fromPasswords 'postgres-inventory-password'
+        }
+
+    # Each service gets only its own password, now that the database has it.
+    $serviceCredentials = @{
+        api       = @{ SQL_PASSWORD = $passwords['sql-api-password'] }
+        processor = @{ SQL_PASSWORD = $passwords['sql-processor-password'] }
+        inventory = @{ POSTGRES_PASSWORD = $passwords['postgres-inventory-password'] }
+    }
+    foreach ($service in $Services) {
+        Set-OmsSecret $KubeContext $Namespace "$service-db-credentials" $serviceCredentials[$service]
+    }
+    $passwords = $null; $serviceCredentials = $null
+
+    # Environment variables from a Secret are read when a container starts, so the services restart
+    # to pick up their credentials.
+    Write-Host "==> Waiting for the application to roll out" -ForegroundColor Cyan
+    foreach ($service in $Services) {
+        Invoke-Checked "restart $service" {
+            kubectl rollout restart deployment $service --namespace $Namespace --context $KubeContext | Out-Null
+        }
+    }
+    Invoke-Checked 'kubectl rollout status' {
+        kubectl rollout status deployment --namespace $Namespace --context $KubeContext `
+            --timeout="${RolloutTimeoutSeconds}s" | Out-Null
+    }
     Write-Host "`nDeployed to Azure Local (AKS Arc)." -ForegroundColor Green
     if ($useIngress) {
         Write-Host "Open the orders app: https://$ingressAddress"

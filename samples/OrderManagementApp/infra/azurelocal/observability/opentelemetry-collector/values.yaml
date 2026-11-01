@@ -1,0 +1,161 @@
+# Helm values for the OpenTelemetry Collector chart on Azure Local: the one OTLP address the app's
+# services send traces, metrics and logs to, on the site:
+#   http://otel-collector.observability.svc.cluster.local:4317 (gRPC), :4318 (HTTP)
+# It forwards traces to Tempo and logs to Loki, and serves metrics for Prometheus to scrape.
+# Install with:
+#
+#   helm upgrade --install otel-collector opentelemetry-collector `
+#     --repo https://open-telemetry.github.io/opentelemetry-helm-charts `
+#     --version 0.178.0 --namespace observability --create-namespace `
+#     --values infra/azurelocal/observability/opentelemetry-collector/values.yaml
+#
+# Change the marked values for your site first; provision-observability.ps1 sets them for you.
+# It also creates the otel-collector-queue volume claim this mounts.
+
+mode: deployment
+# The Service and Deployment are named otel-collector, which the app's OTLP endpoint uses.
+fullnameOverride: otel-collector
+
+image:
+  # contrib has the Prometheus exporter and the file storage extension; the core image has neither.
+  repository: <connected-registry-address>/otel/opentelemetry-collector-contrib  # the connected registry's ClusterIP
+imagePullSecrets:
+  - name: azurelocal-registry
+
+# One replica with a volume that can only attach to one node, so the old pod has to stop first.
+replicaCount: 1
+rollout:
+  strategy: Recreate
+
+podSecurityContext:
+  runAsUser: 10001
+  runAsGroup: 10001
+  runAsNonRoot: true
+  fsGroup: 10001
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+  readOnlyRootFilesystem: true
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Data waiting for Tempo or Loki is queued on this volume, so it survives a collector restart and
+# a backend that's down for a while.
+extraVolumes:
+  - name: queue
+    persistentVolumeClaim:
+      claimName: otel-collector-queue
+extraVolumeMounts:
+  - name: queue
+    mountPath: /var/lib/otelcol/queue
+
+ports:
+  otlp:
+    enabled: true
+    hostPort: null
+  otlp-http:
+    enabled: true
+    hostPort: null
+  jaeger-compact:
+    enabled: false
+  jaeger-thrift:
+    enabled: false
+  jaeger-grpc:
+    enabled: false
+  zipkin:
+    enabled: false
+  # The collector's own metrics.
+  metrics:
+    enabled: true
+  # The app's metrics, for Prometheus to scrape.
+  prom-exporter:
+    enabled: true
+    containerPort: 8889
+    servicePort: 8889
+    protocol: TCP
+
+config:
+  extensions:
+    file_storage/queue:
+      directory: /var/lib/otelcol/queue
+      create_directory: true
+  receivers:
+    # Only OTLP; null removes the chart's other receivers.
+    jaeger: null
+    zipkin: null
+    prometheus: null
+    otlp:
+      protocols:
+        grpc:
+          endpoint: ${env:MY_POD_IP}:4317
+        http:
+          endpoint: ${env:MY_POD_IP}:4318
+  processors:
+    batch:
+      send_batch_size: 1024
+      timeout: 5s
+  exporters:
+    debug: null
+    otlp/tempo:
+      endpoint: tempo.observability.svc.cluster.local:4317
+      tls:
+        insecure: true
+      sending_queue:
+        enabled: true
+        storage: file_storage/queue
+      retry_on_failure:
+        enabled: true
+        max_elapsed_time: 0s  # keep retrying while the backend is down; the queue bounds it
+    otlphttp/loki:
+      endpoint: http://loki.observability.svc.cluster.local:3100/otlp
+      sending_queue:
+        enabled: true
+        storage: file_storage/queue
+      retry_on_failure:
+        enabled: true
+        max_elapsed_time: 0s
+    # Prometheus scrapes the app's metrics here rather than the collector pushing them with remote
+    # write: Prometheus stays the only writer of its database, needs no write endpoint open to the
+    # cluster, and its `up` series shows when the collector stops answering. Counters get the
+    # Prometheus suffixes: oms.orders.placed becomes oms_orders_placed_total.
+    prometheus:
+      endpoint: ${env:MY_POD_IP}:8889
+      # Each series carries job (from service.name) and instance (service.instance.id); the other
+      # resource attributes are on the target_info series rather than repeated on every series.
+      # A series the app stopped reporting (a deleted SKU, a stopped pod) disappears after this.
+      metric_expiration: 10m
+  service:
+    extensions:
+      - health_check
+      - file_storage/queue
+    pipelines:
+      traces:
+        receivers: [otlp]
+        processors: [memory_limiter, batch]
+        exporters: [otlp/tempo]
+      metrics:
+        receivers: [otlp]
+        processors: [memory_limiter, batch]
+        exporters: [prometheus]
+      logs:
+        receivers: [otlp]
+        processors: [memory_limiter, batch]
+        exporters: [otlphttp/loki]
+
+# honorLabels keeps the job and instance labels the exporter derives from service.name and
+# service.instance.id, so each of the app's services is its own job in Prometheus.
+serviceMonitor:
+  enabled: true
+  metricsEndpoints:
+    - port: metrics
+      interval: 30s
+    - port: prom-exporter
+      interval: 30s
+      honorLabels: true

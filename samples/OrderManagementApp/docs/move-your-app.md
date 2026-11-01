@@ -74,7 +74,13 @@ sample uses them as they are.
 | Queue | [servicebus-queue.bicep](../../../recipes/message-queue/azure/service-bus/servicebus-queue.bicep) | [rabbitmq-queue.bicep](../../../recipes/message-queue/azure-local/rabbitmq/rabbitmq-queue.bicep) |
 | Object storage | [blob-objectstorage.bicep](../../../recipes/object-storage/azure/blob-storage/blob-objectstorage.bicep) | [azurite-objectstorage.bicep](../../../recipes/object-storage/azure-local/azurite/azurite-objectstorage.bicep) |
 | SQL | [azuresql-database.bicep](../../../recipes/sql-database/azure/azure-sql/azuresql-database.bicep) | [mssql-database.bicep](../../../recipes/sql-database/azure-local/sql-server/mssql-database.bicep) |
+| PostgreSQL | [postgres-flexible-database.bicep](../../../recipes/postgresql-database/azure/flexible-server/postgres-flexible-database.bicep) | [postgres-database.bicep](../../../recipes/postgresql-database/azure-local/postgres/postgres-database.bicep) |
 | Containers | [kubernetes-containers.bicep](../../../recipes/kubernetes/kubernetes-containers.bicep) (shared) | same |
+| Routes (what users reach) | [kubernetes-routes.bicep](../../../recipes/kubernetes/kubernetes-routes.bicep) (shared): an Ingress for the platform's ingress class | same |
+
+A container is only reachable from outside the cluster through a route the app declares. In this
+sample that's one route, `web`, from `/` to the API; the inventory service and the processor have
+none. The Recipe Pack decides how routes are published: ingress class, host name, certificate.
 
 ## 4. Bind them per platform with a Recipe Pack and an Environment
 

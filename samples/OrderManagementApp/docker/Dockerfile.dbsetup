@@ -1,0 +1,31 @@
+# Build from the sample root:
+#   docker build -f docker/Dockerfile.dbsetup -t oms-dbsetup:latest .
+#
+# Where mcr.microsoft.com is unreachable, import the .NET base images into a registry you can
+# reach and point the build at it:
+#   docker build --build-arg BASE_REGISTRY=myacr.azurecr.io -f docker/Dockerfile.dbsetup .
+
+ARG BASE_REGISTRY=mcr.microsoft.com
+
+FROM ${BASE_REGISTRY}/dotnet/sdk:9.0 AS build
+WORKDIR /src
+
+# NuGet.Config is optional (redirects restore where nuget.org is unreachable). Paired with a file
+# that always exists, the glob may match nothing under both Docker and podman/buildah.
+COPY Directory.Build.props NuGet.Confi[g] ./
+COPY src/OrderManagement.Shared/OrderManagement.Shared.csproj src/OrderManagement.Shared/
+COPY src/OrderManagement.DbSetup/OrderManagement.DbSetup.csproj src/OrderManagement.DbSetup/
+RUN dotnet restore src/OrderManagement.DbSetup/OrderManagement.DbSetup.csproj
+
+COPY src/ src/
+RUN dotnet publish src/OrderManagement.DbSetup/OrderManagement.DbSetup.csproj -c Release -o /app --no-restore
+
+# A one-shot job that runs to completion before the services start.
+FROM ${BASE_REGISTRY}/dotnet/runtime:9.0 AS runtime
+WORKDIR /app
+COPY --from=build /app ./
+
+# Run as a non-root user; required by most cluster admission policies.
+USER $APP_UID
+
+ENTRYPOINT ["dotnet", "OrderManagement.DbSetup.dll"]

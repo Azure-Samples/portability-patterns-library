@@ -1,0 +1,35 @@
+# The app's RabbitMQ brokers. The Recipe names each broker's Service rabbitmq-<hash> and labels it
+# with that name, so this selects Services that have a 'name' label and keeps the rabbitmq-* ones.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: rabbitmq
+  namespace: observability
+spec:
+  namespaceSelector:
+    matchNames:
+      - oms-azurelocal
+  selector:
+    matchExpressions:
+      - key: name
+        operator: Exists
+  endpoints:
+    # Broker-wide totals and health.
+    - port: metrics
+      path: /metrics
+      interval: 30s
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_service_label_name]
+          regex: rabbitmq-.+
+          action: keep
+    # Message counts per queue (rabbitmq_detailed_queue_messages{queue=...}), which the
+    # dead-letter alert and the dashboard use. /metrics only has totals across all queues.
+    - port: metrics
+      path: /metrics/detailed
+      params:
+        family: [queue_coarse_metrics]
+      interval: 30s
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_service_label_name]
+          regex: rabbitmq-.+
+          action: keep

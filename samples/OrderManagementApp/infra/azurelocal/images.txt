@@ -35,6 +35,23 @@ docker.io/library/postgres:17-alpine                           postgres:17-alpin
 registry.k8s.io/ingress-nginx/controller:v1.15.1               ingress-nginx/controller:v1.15.1
 registry.k8s.io/ingress-nginx/kube-webhook-certgen:v1.6.9      ingress-nginx/kube-webhook-certgen:v1.6.9
 
+# Observability, see infra/azurelocal/observability. The tags are the defaults of the chart versions
+# provision-observability.ps1 pins; a new chart version needs its tags here too.
+#   opentelemetry-collector 0.178.0
+docker.io/otel/opentelemetry-collector-contrib:0.163.2                        otel/opentelemetry-collector-contrib:0.163.2
+#   kube-prometheus-stack 92.14.1 (with grafana 14.1.0, kube-state-metrics 8.7.1, prometheus-node-exporter 4.60.1)
+quay.io/prometheus/prometheus:v3.15.1-distroless                              prometheus/prometheus:v3.15.1-distroless
+quay.io/prometheus/alertmanager:v0.34.1                                       prometheus/alertmanager:v0.34.1
+quay.io/prometheus/node-exporter:v1.12.1-distroless                           prometheus/node-exporter:v1.12.1-distroless
+quay.io/prometheus-operator/prometheus-operator:v0.94.2                       prometheus-operator/prometheus-operator:v0.94.2
+quay.io/prometheus-operator/prometheus-config-reloader:v0.94.2                prometheus-operator/prometheus-config-reloader:v0.94.2
+registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.20.0                 kube-state-metrics/kube-state-metrics:v2.20.0
+docker.io/grafana/grafana:13.2.4-distroless                                   grafana/grafana:13.2.4-distroless
+quay.io/kiwigrid/k8s-sidecar:2.14.1                                           kiwigrid/k8s-sidecar:2.14.1
+#   loki 20.0.3 and tempo 3.2.1 (grafana-community charts)
+docker.io/grafana/loki:3.7.9                                                  grafana/loki:3.7.9
+docker.io/grafana/tempo:3.1.1                                                 grafana/tempo:3.1.1
+
 # Base images for building the app's images (BASE_REGISTRY in docker/Dockerfile.*). Only needed where
 # the build runs; the connected registry doesn't sync them.
 mcr.microsoft.com/dotnet/sdk:9.0                               dotnet/sdk:9.0

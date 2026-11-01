@@ -3,8 +3,12 @@
     Deploys the Order Management sample to an AKS cluster backed by Azure PaaS.
 
 .DESCRIPTION
-    Assumes ./scripts/infra/azure/provision-infra.ps1 has already created the workload identity and
-    configured the Radius Azure credential.
+    Assumes ./scripts/infra/azure/provision-infra.ps1 has already created the services' managed
+    identities and configured the Radius Azure credential, and configure-app-identity.ps1 the app
+    registrations.
+
+    After `rad deploy` it runs the database setup job as the database administrator, which creates
+    each service's least-privilege database user, and applies the network policies.
 
     Three different things are called a "resource group" here. They are not interchangeable:
 
@@ -25,8 +29,7 @@
     ./scripts/deploy/azure.ps1 `
         -Registry mycr.azurecr.io `
         -SubscriptionId 00000000-0000-0000-0000-000000000000 `
-        -AppInfraResourceGroup bcd-infra `
-        -WorkloadIdentityPrincipalId <principal-id>
+        -AppInfraResourceGroup bcd-infra
 
 .EXAMPLE
     # Private registry: supply a scoped ACR token so the Radius control plane can pull Recipes.
@@ -36,7 +39,6 @@
         -Registry mycr.azurecr.io `
         -SubscriptionId <sub-id> `
         -AppInfraResourceGroup bcd-infra `
-        -WorkloadIdentityPrincipalId <principal-id> `
         -RegistryUsername bcd-recipe-puller `
         -RegistryPassword (Read-Host -AsSecureString)
 #>
@@ -46,26 +48,28 @@ param(
     [Parameter(Mandatory = $true)][string]$SubscriptionId,
 
     # The Azure resource group that Radius Recipes provision application infrastructure into
-    # (Service Bus, Storage account, Azure SQL). It may be the same group that holds the platform
-    # infrastructure created by provision-infra.ps1, or a separate one. Either way it must already
-    # exist: Radius does not create it.
+    # (Service Bus, Storage account, Azure SQL, PostgreSQL). It may be the same group that holds the
+    # platform infrastructure created by provision-infra.ps1, or a separate one. Either way it must
+    # already exist: Radius does not create it.
     [Parameter(Mandatory = $true)][string]$AppInfraResourceGroup,
 
-    [Parameter(Mandatory = $true)][string]$WorkloadIdentityPrincipalId,
-
-    # Optional. Azure SQL is created with Entra-only authentication, so no SQL login exists and this
-    # value never reaches Azure. It is still required by the Radius Resource Type, so when omitted a
-    # random value is generated to satisfy the schema. Supply one only if you set the SQL Recipe's
-    # azureAdOnlyAuthentication parameter to false.
+    # Optional. Azure SQL and PostgreSQL are created with Entra-only authentication, so no
+    # administrator login exists and these values never reach Azure. The Radius Resource Types still
+    # require them, so when omitted random values are generated to satisfy the schema.
     [securestring]$SqlAdminPassword,
+    [securestring]$PostgresAdminPassword,
 
     # Supply these when the registry hosting the Recipes requires authentication. The Radius control
     # plane pulls Recipes itself, so `az aks update --attach-acr` does not cover it.
     [string]$RegistryUsername,
     [securestring]$RegistryPassword,
 
-    [string]$WorkloadIdentityName = 'bcd-workload-identity',
-    [string]$ServiceAccountName = 'oms-workload-identity',
+    # The managed identities provision-infra.ps1 created in -PlatformResourceGroup: <prefix>-<service>
+    # for each service and <prefix>-db-admin for the database setup job.
+    [string]$PlatformResourceGroup,
+    [string]$IdentityPrefix = 'id-oms',
+    [string[]]$WorkloadNames = @('api', 'processor', 'inventory'),
+    [string]$DatabaseAdminServiceAccountName = 'dbsetup',
 
     # A RADIUS resource group, not an Azure one. Holds the Radius Environment, Recipe Pack and
     # application resources within the Radius control plane.
@@ -95,14 +99,20 @@ param(
     # public FQDN, so a different region works at the cost of latency and cross-region egress.
     [string]$SqlLocation,
 
+    # Region for the PostgreSQL flexible server. Defaults to $Location. Override when the primary
+    # region offers no PostgreSQL versions to the subscription (ParameterOutOfRange on 'Version').
+    [string]$PostgresLocation,
+
     # Entra app registrations for user sign-in, as created by scripts/infra/azure/configure-app-identity.ps1.
     [string]$OrdersApiAppName = 'oms-api',
     [string]$OrdersSpaAppName = 'oms-spa',
+    [string]$InventoryAppName = 'oms-inventory',
     [int]$UiLocalPort = 5090,
 
     # Managed ingress from scripts/infra/azure/provision-ingress.ps1.
     [string]$IngressClassName = 'webapprouting.kubernetes.azure.com',
     [string]$IngressCertIssuer = 'letsencrypt',
+    [string]$IngressNamespace = 'app-routing-system',
 
     # Lifetime of the read-only registry token minted for Recipe pulls when no -RegistryUsername is given.
     [int]$RecipeTokenDays = 7,
@@ -112,6 +122,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 . (Join-Path $repoRoot 'scripts/lib/recipes.ps1')
+. (Join-Path $repoRoot 'scripts/lib/database.ps1')
+if (-not $PlatformResourceGroup) { $PlatformResourceGroup = $AppInfraResourceGroup }
 Push-Location $repoRoot
 
 # $ErrorActionPreference does not apply to native commands, so every external call is checked.
@@ -244,11 +256,12 @@ try {
     }
     $acrToken = $null
 
+    $images = @('api', 'processor', 'inventory', 'dbsetup')
     if (-not $SkipImageBuild) {
         if (-not $containerTool) { throw 'Neither podman nor docker is on PATH. Install one, or pass -SkipImageBuild.' }
 
         Write-Host "==> Building and pushing images to $Registry with $containerTool" -ForegroundColor Cyan
-        foreach ($worker in @('api', 'processor')) {
+        foreach ($worker in $images) {
             Invoke-Checked "$containerTool build $worker" {
                 & $containerTool build -f "docker/Dockerfile.$worker" -t "$Registry/oms/${worker}:latest" .
             }
@@ -258,10 +271,29 @@ try {
 
     # Pinned by digest: with a bare ':latest' the pod spec never changes, so a rebuild never rolls out.
     $imageDigests = @{}
-    foreach ($worker in @('api', 'processor')) {
+    foreach ($worker in $images) {
         $imageDigests[$worker] = az acr manifest show-metadata "$Registry/oms/${worker}:latest" --query digest --output tsv 2>$null
         if (-not $imageDigests[$worker]) { throw "Could not read the digest of oms/${worker}:latest in $Registry." }
     }
+
+    # Each service's own managed identity, and the database administrator's.
+    Write-Host "==> Reading the services' managed identities from '$PlatformResourceGroup'" -ForegroundColor Cyan
+    $identities = @{}
+    foreach ($name in @($WorkloadNames) + 'db-admin') {
+        $identity = az identity show --resource-group $PlatformResourceGroup --name "$IdentityPrefix-$name" --output json 2>$null | ConvertFrom-Json
+        if (-not $identity) { throw "Managed identity '$IdentityPrefix-$name' not found in '$PlatformResourceGroup'. Run scripts/infra/azure/provision-infra.ps1." }
+        $identities[$name] = $identity
+    }
+    $workloadClientIds = @{}
+    foreach ($name in $WorkloadNames) { $workloadClientIds[$name] = $identities[$name].clientId }
+    $applicationInsightsConnectionString = az resource list --resource-group $PlatformResourceGroup `
+        --resource-type Microsoft.Insights/components --query '[0].properties.ConnectionString' --output tsv 2>$null
+    if (-not $applicationInsightsConnectionString) {
+        $applicationInsightsConnectionString = az monitor app-insights component show --resource-group $PlatformResourceGroup `
+            --query '[0].connectionString' --output tsv 2>$null
+    }
+    if (-not $applicationInsightsConnectionString) { Write-Warning "No Application Insights in '$PlatformResourceGroup'; the services will send no telemetry." }
+    $alertActionGroupId = az monitor action-group list --resource-group $PlatformResourceGroup --query '[0].id' --output tsv 2>$null
 
     Write-Host "==> Publishing Azure Recipes" -ForegroundColor Cyan
     ./scripts/deploy/publish-recipes.ps1 -Registry $Registry -Platform azure
@@ -275,26 +307,41 @@ try {
 
     Write-Host "==> Deploying Recipe Pack" -ForegroundColor Cyan
     if (-not $SqlLocation) { $SqlLocation = $Location }
+    if (-not $PostgresLocation) { $PostgresLocation = $Location }
 
     # Published through the managed ingress when scripts/infra/azure/provision-ingress.ps1 has set it up.
     $dnsLabel = kubectl get service nginx -n app-routing-system --context $KubeContext --ignore-not-found `
         -o 'jsonpath={.metadata.annotations.service\.beta\.kubernetes\.io/azure-dns-label-name}' 2>$null
     $ingressHost = if ($dnsLabel) { "$dnsLabel.$Location.cloudapp.azure.com" } else { '' }
     if ($ingressHost) { Write-Host "    publishing through the managed ingress at https://$ingressHost" -ForegroundColor DarkGray }
+    # Which service gets which access is the app's knowledge, so it's decided here; the Recipe Pack
+    # only applies it.
+    $recipePackParameters = New-ParameterFile @{
+        registry                            = $Registry
+        workloadClientIds                   = $workloadClientIds
+        queueSenderPrincipalIds             = @($identities['api'].principalId)
+        queueReceiverPrincipalIds           = @($identities['processor'].principalId)
+        storageContributorPrincipalIds      = @($identities['processor'].principalId)
+        databaseAdministratorPrincipalId    = $identities['db-admin'].principalId
+        databaseAdministratorName           = $identities['db-admin'].name
+        applicationInsightsConnectionString = [string]$applicationInsightsConnectionString
+        alertActionGroupId                  = [string]$alertActionGroupId
+        location                            = $Location
+        sqlLocation                         = $SqlLocation
+        postgresLocation                    = $PostgresLocation
+        # The app's route is always published through the managed ingress; with no DNS label it
+        # answers on the ingress's address, without a certificate.
+        ingressClassName                    = $IngressClassName
+        ingressHost                         = $ingressHost
+        ingressCertIssuer                   = $(if ($ingressHost) { $IngressCertIssuer } else { '' })
+    }
+    $temporaryFiles += $recipePackParameters
     Invoke-Checked 'rad deploy recipe pack' {
         rad deploy (Join-Path $LibraryRecipePackRoot 'azure.bicep') `
             --workspace $WorkspaceName `
             --group $ResourceGroup `
             --environment bootstrap `
-            --parameters registry=$Registry `
-            --parameters workloadIdentityPrincipalId=$WorkloadIdentityPrincipalId `
-            --parameters workloadIdentityName=$WorkloadIdentityName `
-            --parameters serviceAccountName=$ServiceAccountName `
-            --parameters location=$Location `
-            --parameters sqlLocation=$SqlLocation `
-            --parameters ingressClassName=$(if ($ingressHost) { $IngressClassName } else { '' }) `
-            --parameters ingressHost=$ingressHost `
-            --parameters ingressCertIssuer=$(if ($ingressHost) { $IngressCertIssuer } else { '' })
+            --parameters "@$recipePackParameters"
     }
 
     Write-Host "==> Deploying Environment" -ForegroundColor Cyan
@@ -354,19 +401,16 @@ try {
         Write-Host "==> Skipping registry authentication; assuming anonymous pull is enabled" -ForegroundColor DarkGray
     }
 
-    if ($SqlAdminPassword) {
-        $plainPassword = [System.Net.NetworkCredential]::new('', $SqlAdminPassword).Password
-    }
-    else {
-        # The Azure SQL Recipe creates the server with Entra-only authentication, so it never sends
-        # a login or password to Azure. The Radius Resource Type still marks `password` as required,
-        # so generate a value that satisfies the schema and is then discarded. Nothing can
-        # authenticate with it: SQL authentication is disabled on the server.
+    # Azure SQL and PostgreSQL are created with Entra-only authentication, so neither administrator
+    # password is sent to Azure. The Radius Resource Types still mark `password` as required, so
+    # generate values that satisfy the schema and are then discarded.
+    function New-UnusedPassword {
         $randomBytes = [byte[]]::new(24)
         [System.Security.Cryptography.RandomNumberGenerator]::Fill($randomBytes)
-        $plainPassword = 'Oms1!' + [Convert]::ToBase64String($randomBytes)
-        Write-Host "==> No -SqlAdminPassword supplied; generated an unused value (Azure SQL uses Entra-only auth)" -ForegroundColor DarkGray
+        'Oms1!' + [Convert]::ToBase64String($randomBytes)
     }
+    $plainPassword = if ($SqlAdminPassword) { [System.Net.NetworkCredential]::new('', $SqlAdminPassword).Password } else { New-UnusedPassword }
+    $plainPostgresPassword = if ($PostgresAdminPassword) { [System.Net.NetworkCredential]::new('', $PostgresAdminPassword).Password } else { New-UnusedPassword }
 
     # User sign-in through Entra ID. Same app code as Azure Local; only these values differ.
     $tenantId = az account show --query tenantId --output tsv
@@ -394,13 +438,26 @@ try {
         Write-Warning "App registrations '$OrdersApiAppName'/'$OrdersSpaAppName' not found; the orders app will have no sign-in. Run scripts/infra/azure/configure-app-identity.ps1."
     }
 
+    # The inventory service accepts only tokens Entra issued for its own app registration, to the
+    # managed identities granted one of its roles.
+    $inventoryAppId = az ad app list --display-name $InventoryAppName --query '[0].appId' --output tsv
+    if (-not $inventoryAppId) { throw "App registration '$InventoryAppName' not found. Run scripts/infra/azure/configure-app-identity.ps1." }
+    $inventoryAuthentication = @{
+        Authority = "https://login.microsoftonline.com/$tenantId/v2.0"
+        Audience  = $inventoryAppId
+    }
+
     # The same parameters as on Azure Local: everything platform-specific is in the Recipe Pack.
     $applicationParameters = New-ParameterFile @{
-        apiImage          = "$Registry/oms/api@$($imageDigests['api'])"
-        processorImage    = "$Registry/oms/processor@$($imageDigests['processor'])"
-        apiAuthentication = $apiAuthentication
-        spaSettings       = $spaSettings
-        sqlAdminPassword  = $plainPassword
+        apiImage                = "$Registry/oms/api@$($imageDigests['api'])"
+        processorImage          = "$Registry/oms/processor@$($imageDigests['processor'])"
+        inventoryImage          = "$Registry/oms/inventory@$($imageDigests['inventory'])"
+        apiAuthentication       = $apiAuthentication
+        spaSettings             = $spaSettings
+        inventoryAuthentication = $inventoryAuthentication
+        inventoryScope          = "api://$inventoryAppId/.default"
+        sqlAdminPassword        = $plainPassword
+        postgresAdminPassword   = $plainPostgresPassword
     }
     $temporaryFiles += $applicationParameters
 
@@ -411,6 +468,42 @@ try {
             --group $ResourceGroup `
             --environment $EnvironmentName `
             --parameters "@$applicationParameters"
+    }
+    $plainPassword = $null; $plainPostgresPassword = $null
+
+    # As the database administrator (Entra), create the schemas and a database user for each
+    # service's managed identity, with only the rights it needs.
+    $sql = Get-OmsRadiusResourceProperties -Type 'Radius.Data/sqlServerDatabases' -Name 'ordersdb' -Workspace $WorkspaceName -Group $ResourceGroup
+    $postgres = Get-OmsRadiusResourceProperties -Type 'Radius.Data/postgreSqlDatabases' -Name 'inventorydb' -Workspace $WorkspaceName -Group $ResourceGroup
+    Invoke-OmsDatabaseSetup -KubeContext $KubeContext -Namespace $AppNamespace `
+        -Image "$Registry/oms/dbsetup@$($imageDigests['dbsetup'])" `
+        -ServiceAccountName $DatabaseAdminServiceAccountName `
+        -PodLabels @{ 'azure.workload.identity/use' = 'true' } `
+        -Environment @{
+            CONNECTION_SQL_HOST         = $sql.host
+            CONNECTION_SQL_PORT         = $sql.port
+            CONNECTION_SQL_DATABASE     = $sql.database
+            SQL_API_CLIENT_ID           = $identities['api'].clientId
+            SQL_PROCESSOR_CLIENT_ID     = $identities['processor'].clientId
+            CONNECTION_INVENTORYDB_HOST     = $postgres.host
+            CONNECTION_INVENTORYDB_PORT     = $postgres.port
+            CONNECTION_INVENTORYDB_DATABASE = $postgres.database
+            CONNECTION_INVENTORYDB_TLS      = 'required'
+            POSTGRES_ADMIN_USERNAME     = $identities['db-admin'].name
+            INVENTORY_OBJECT_ID         = $identities['inventory'].principalId
+        }
+
+    Set-OmsNetworkPolicy -KubeContext $KubeContext -Namespace $AppNamespace -IngressNamespace $IngressNamespace `
+        -ManifestPath (Join-Path $repoRoot 'deploy/network-policies.yaml')
+
+    # The services may have started before their database users existed; restart them so they
+    # connect straight away rather than on their next retry.
+    Write-Host "==> Waiting for the application to roll out" -ForegroundColor Cyan
+    foreach ($name in $WorkloadNames) {
+        kubectl rollout restart deployment $name --namespace $AppNamespace --context $KubeContext | Out-Null
+    }
+    Invoke-Checked 'kubectl rollout status' {
+        kubectl rollout status deployment --namespace $AppNamespace --context $KubeContext --timeout=600s | Out-Null
     }
 
     Write-Host "`nDeployed to Azure." -ForegroundColor Green

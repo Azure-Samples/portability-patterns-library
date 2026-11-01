@@ -1,5 +1,6 @@
 using System.Text;
 using OrderManagement.Shared.Configuration;
+using OrderManagement.Shared.Diagnostics;
 using OrderManagement.Shared.Identity;
 using OrderManagement.Shared.Models;
 using Microsoft.Extensions.Logging;
@@ -100,24 +101,37 @@ public sealed class RabbitMqMessageBroker : IMessageBroker
 
     private async Task PublishJsonAsync(string messageId, string type, string json, CancellationToken cancellationToken)
     {
-        var channel = await EnsureChannelAsync(cancellationToken).ConfigureAwait(false);
-        var body = Encoding.UTF8.GetBytes(json);
+        var headers = new Dictionary<string, object?>();
+        using var activity = MessagingTelemetry.StartPublish(
+            "rabbitmq", _options.QueueName, messageId, (key, value) => headers[key] = value);
 
-        var properties = new BasicProperties
+        try
         {
-            Persistent = true,
-            ContentType = "application/json",
-            MessageId = messageId,
-            Type = type
-        };
+            var channel = await EnsureChannelAsync(cancellationToken).ConfigureAwait(false);
+            var body = Encoding.UTF8.GetBytes(json);
 
-        await channel.BasicPublishAsync(
-            exchange: string.Empty,
-            routingKey: _options.QueueName,
-            mandatory: false,
-            basicProperties: properties,
-            body: body,
-            cancellationToken: cancellationToken).ConfigureAwait(false);
+            var properties = new BasicProperties
+            {
+                Persistent = true,
+                ContentType = "application/json",
+                MessageId = messageId,
+                Type = type,
+                Headers = headers
+            };
+
+            await channel.BasicPublishAsync(
+                exchange: string.Empty,
+                routingKey: _options.QueueName,
+                mandatory: false,
+                basicProperties: properties,
+                body: body,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            MessagingTelemetry.RecordFailure(activity, ex);
+            throw;
+        }
     }
 
     public async Task RunAsync(Func<QueueMessage, CancellationToken, Task> handler, CancellationToken cancellationToken)
@@ -187,15 +201,23 @@ public sealed class RabbitMqMessageBroker : IMessageBroker
         consumer.ReceivedAsync += async (_, args) =>
         {
             var messageId = args.BasicProperties.MessageId ?? args.DeliveryTag.ToString();
+            using var activity = MessagingTelemetry.StartProcess(
+                "rabbitmq", _options.QueueName, messageId, key => HeaderValue(args.BasicProperties, key));
             try
             {
                 var body = Encoding.UTF8.GetString(args.Body.Span);
-                await handler(new QueueMessage(messageId, body), cancellationToken).ConfigureAwait(false);
+                var message = new QueueMessage(messageId, body)
+                {
+                    IsLastDelivery = DeliveryAttempt(args.BasicProperties) >= _options.MaxDeliveryCount
+                };
+                await handler(message, cancellationToken).ConfigureAwait(false);
                 await channel.BasicAckAsync(args.DeliveryTag, multiple: false, cancellationToken)
                     .ConfigureAwait(false);
             }
             catch (Exception ex)
             {
+                MessagingTelemetry.RecordFailure(activity, ex);
+
                 // A quorum queue reports how many times the message was delivered before. A requeue
                 // doesn't count towards the queue's delivery limit, so on the last attempt the message
                 // is rejected instead, and the queue's dead-letter policy moves it aside, as Service
@@ -246,6 +268,17 @@ public sealed class RabbitMqMessageBroker : IMessageBroker
         properties.Headers?.TryGetValue("x-acquired-count", out var acquired) == true && acquired is not null
             ? Convert.ToInt64(acquired, System.Globalization.CultureInfo.InvariantCulture) + 1
             : 1;
+
+    // AMQP carries string header values as bytes.
+    private static string? HeaderValue(IReadOnlyBasicProperties properties, string key) =>
+        properties.Headers?.TryGetValue(key, out var value) == true
+            ? value switch
+            {
+                byte[] bytes => Encoding.UTF8.GetString(bytes),
+                null => null,
+                _ => value.ToString()
+            }
+            : null;
 
     private async Task CloseQuietlyAsync()
     {

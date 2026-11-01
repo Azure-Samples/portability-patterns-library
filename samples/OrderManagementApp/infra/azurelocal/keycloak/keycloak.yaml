@@ -7,6 +7,7 @@
 #   Secret cluster-ca               cluster-ca.pem        the cluster's CA, to verify service account tokens
 #   Secret oms-ad-bind              bind-upn, bind-password   read-only directory account
 #   Secret oms-ad-ca                ca.crt                directory CA, for LDAPS (optional)
+#   Secret grafana-oauth            client-id, client-secret  the grafana client's secret
 #   ConfigMap keycloak-realm-settings                     site values from realm-settings.env
 #   Secret azurelocal-registry      image pull secret, when pulling from a private registry
 ---
@@ -130,6 +131,10 @@ spec:
             - configMapRef:
                 name: keycloak-realm-settings
           env:
+            # The grafana client's secret, for its placeholder in realm.json.
+            - name: GRAFANA_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: { name: grafana-oauth, key: client-secret }
             - name: LDAP_BIND_DN
               valueFrom:
                 secretKeyRef: { name: oms-ad-bind, key: bind-upn }

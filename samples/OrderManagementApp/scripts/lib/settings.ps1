@@ -63,33 +63,6 @@ function Restore-OmsSubscription([string]$SubscriptionId) {
     if ($SubscriptionId) { az account set --subscription $SubscriptionId 2>$null }
 }
 
-# Azure Local runs in two stages that hand over through scripts/.handover (see setup-platform.ps1).
-# 'All' is both stages in a row on one machine, so it takes the same path as two machines would.
-function Get-OmsStages([string]$Target, [string]$Stage) {
-    if ($Target -ne 'AzureLocal') { return , @('All') }
-    if ($Stage -eq 'All') { return , @('Azure', 'Site') }
-    , @($Stage)
-}
-
-# Merges the cluster credentials the Azure stage left in the handover folder into ~/.kube/config,
-# then deletes the file, since it holds the cluster's admin certificate. Does nothing without one.
-function Import-OmsHandoverKubeconfig([string]$HandoverPath) {
-    $handoverKubeconfig = Join-Path $HandoverPath 'kubeconfig'
-    if (-not (Test-Path $handoverKubeconfig)) { return }
-
-    $kubeHome = Join-Path $HOME '.kube/config'
-    $previousKubeconfig = $env:KUBECONFIG
-    try {
-        $env:KUBECONFIG = (@($handoverKubeconfig) + @($kubeHome | Where-Object { Test-Path $_ })) -join [IO.Path]::PathSeparator
-        $merged = kubectl config view --flatten --raw
-    }
-    finally { $env:KUBECONFIG = $previousKubeconfig }
-    if ($LASTEXITCODE -ne 0 -or -not $merged) { throw "Could not read $handoverKubeconfig." }
-    Write-OmsSecretFile $kubeHome ($merged -join "`n")
-    Remove-Item $handoverKubeconfig -Force
-    Write-Host "==> Took over the cluster credentials from $handoverKubeconfig" -ForegroundColor Cyan
-}
-
 # Writes a file that holds credentials so only the current user can read it.
 function Write-OmsSecretFile([string]$Path, [string]$Content) {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null

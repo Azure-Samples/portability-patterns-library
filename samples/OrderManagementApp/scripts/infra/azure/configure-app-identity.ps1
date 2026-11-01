@@ -6,11 +6,15 @@
 .DESCRIPTION
     The registrations are declared in infra/azure/app-identity.bicep (Microsoft Graph Bicep):
 
-      oms-api      API app registration: identifier URI api://<appId>, delegated scope
-                   'access_as_user', app roles Orders.Read and Orders.Create, v2 tokens
-      oms-spa      SPA app registration: redirect URIs -SpaOrigins, permission to the API scope
-      assignments  Orders.Create and Orders.Read for the signed-in user, plus any groups in
-                   -ReaderGroupIds / -WriterGroupIds
+      oms-api        API app registration: identifier URI api://<appId>, delegated scope
+                     'access_as_user', user app roles Orders.Read, Orders.Create and
+                     Inventory.Manage, v2 tokens
+      oms-spa        SPA app registration: redirect URIs -SpaOrigins, permission to the API scope
+      oms-inventory  Inventory service registration: identifier URI api://<appId>, application roles
+                     Inventory.Read, Inventory.Reserve and Inventory.Restock, granted to the
+                     managed identities of the services that call it
+      assignments    Orders.Create, Orders.Read and Inventory.Manage for the signed-in user, plus any
+                     groups in -ReaderGroupIds / -WriterGroupIds / -InventoryAdminGroupIds
 
     This script checks the inputs, adopts registrations created before (by setting their
     uniqueName once and keeping their scope and role IDs, which Entra won't let change), and
@@ -30,9 +34,16 @@ param(
 
     [string]$ApiAppName = 'oms-api',
     [string]$SpaAppName = 'oms-spa',
+    [string]$InventoryAppName = 'oms-inventory',
     [string]$ApiScopeName = 'access_as_user',
     [string[]]$ReaderGroupIds = @(),
     [string[]]$WriterGroupIds = @(),
+    [string[]]$InventoryAdminGroupIds = @(),
+
+    # Where the services' managed identities are, and which inventory roles each one gets.
+    [Parameter(Mandatory = $true)][string]$ResourceGroup,
+    [string]$IdentityPrefix = 'id-oms',
+    [hashtable]$InventoryCallerRoles = @{ api = @('Inventory.Read', 'Inventory.Restock'); processor = @('Inventory.Reserve') },
     [switch]$SkipSignedInUserAssignment,
     [string]$ServiceManagementReference,
 
@@ -67,7 +78,7 @@ try {
     if ($LASTEXITCODE -ne 0 -or -not $me) { throw 'Sign in with az login as a user first.' }
 
     $ids = @{}
-    foreach ($name in $ApiAppName, $SpaAppName) {
+    foreach ($name in $ApiAppName, $SpaAppName, $InventoryAppName) {
         $app = Get-Application $name
         if (-not $app) { continue }
 
@@ -91,15 +102,31 @@ try {
             if ($read) { $ids.readRoleId = $read.id }
             $create = @($app.appRoles | Where-Object value -eq 'Orders.Create') | Select-Object -First 1
             if ($create) { $ids.createRoleId = $create.id }
+            $manage = @($app.appRoles | Where-Object value -eq 'Inventory.Manage') | Select-Object -First 1
+            if ($manage) { $ids.manageRoleId = $manage.id }
+        }
+        if ($name -eq $InventoryAppName -and @($app.appRoles).Count) {
+            $ids.inventoryRoleIds = @{}
+            foreach ($role in $app.appRoles) { $ids.inventoryRoleIds[$role.value] = $role.id }
         }
     }
 
     $assignments = @()
     if (-not $SkipSignedInUserAssignment) {
-        $assignments += @{ principalId = $me; role = 'Orders.Read' }, @{ principalId = $me; role = 'Orders.Create' }
+        $assignments += @{ principalId = $me; role = 'Orders.Read' }, @{ principalId = $me; role = 'Orders.Create' }, @{ principalId = $me; role = 'Inventory.Manage' }
     }
     $assignments += @($ReaderGroupIds | ForEach-Object { @{ principalId = $_; role = 'Orders.Read' } })
     $assignments += @($WriterGroupIds | ForEach-Object { @{ principalId = $_; role = 'Orders.Create' } })
+    $assignments += @($InventoryAdminGroupIds | ForEach-Object { @{ principalId = $_; role = 'Inventory.Manage' } })
+
+    # Services call the inventory service with their own managed identity, so each identity gets only
+    # the application roles it needs.
+    $inventoryAssignments = @()
+    foreach ($service in $InventoryCallerRoles.Keys) {
+        $principalId = az identity show --resource-group $ResourceGroup --name "$IdentityPrefix-$service" --query principalId --output tsv
+        if ($LASTEXITCODE -ne 0 -or -not $principalId) { throw "Managed identity '$IdentityPrefix-$service' not found in '$ResourceGroup'. Deploy infra/azure/platform.bicep first." }
+        $inventoryAssignments += @($InventoryCallerRoles[$service] | ForEach-Object { @{ principalId = $principalId; role = $_ } })
+    }
 
     $parameters = [ordered]@{
         apiAppName                 = $ApiAppName
@@ -108,6 +135,8 @@ try {
         spaOrigins                 = @($SpaOrigins)
         ownerObjectIds             = @($me)
         roleAssignments            = @($assignments)
+        inventoryAppName           = $InventoryAppName
+        inventoryRoleAssignments   = @($inventoryAssignments)
         serviceManagementReference = [string]$ServiceManagementReference
     }
     foreach ($key in $ids.Keys) { $parameters[$key] = $ids[$key] }
@@ -131,6 +160,7 @@ try {
     Write-Host "API appId     : $($outputs.apiAppId.value)"
     Write-Host "SPA appId     : $($outputs.spaAppId.value)"
     Write-Host "API scope     : $($outputs.apiScope.value)"
+    Write-Host "Inventory     : $($outputs.inventoryAppId.value) (scope $($outputs.inventoryScope.value))"
 }
 finally {
     foreach ($file in $temporaryFiles) { Remove-Item $file -ErrorAction SilentlyContinue }

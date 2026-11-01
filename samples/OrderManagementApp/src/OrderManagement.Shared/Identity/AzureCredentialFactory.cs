@@ -20,7 +20,8 @@ public static class AzureCredentialFactory
 {
     /// <summary>True when the platform attached an Entra workload identity to this pod.</summary>
     public static bool HasWorkloadIdentity =>
-        !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("AZURE_FEDERATED_TOKEN_FILE"));
+        !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("AZURE_FEDERATED_TOKEN_FILE")) &&
+        !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("AZURE_CLIENT_ID"));
 
     public static TokenCredential Create()
     {

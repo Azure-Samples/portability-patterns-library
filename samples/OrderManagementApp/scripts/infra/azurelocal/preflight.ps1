@@ -13,13 +13,12 @@
       Network      addresses for the control plane, node pool and load balancer fit together
       Directory    the domain controller resolves through the site DNS and answers on LDAPS
       Cluster      if it already exists: reachable, nodes ready, the connected registry's storage
-                   class and ClusterIP, the AD Secrets Keycloak needs
+                   class and ClusterIP, the AD Secrets Keycloak needs, a storage class for the
+                   observability volumes
 
     Values come from the AzureLocal section of scripts/settings.json, with the same defaults the
     setup scripts use. Each check prints PASS, WARN or FAIL; the script exits with 1 on any FAIL.
 
-    -Stage limits the checks to what one machine needs when setup runs in two stages: Azure checks
-    the tools, Azure and the address plan; Site checks the tools, the directory and the cluster.
 
 .EXAMPLE
     ./scripts/infra/azurelocal/preflight.ps1
@@ -27,14 +26,11 @@
 [CmdletBinding()]
 param(
     [string]$SettingsPath = (Join-Path $PSScriptRoot '../../settings.json'),
-    [string]$RadiusVersion = '0.60',
-    [ValidateSet('All', 'Azure', 'Site')]
-    [string]$Stage = 'All'
+    [string]$RadiusVersion = '0.60'
 )
 
 $ErrorActionPreference = 'Stop'
-$checkAzure = $Stage -ne 'Site'
-$checkSite = $Stage -ne 'Azure'
+
 $results = [System.Collections.Generic.List[object]]::new()
 . (Join-Path $PSScriptRoot '../../lib/settings.ps1')
 
@@ -91,9 +87,7 @@ Write-Host "`nTools" -ForegroundColor Cyan
 if ($PSVersionTable.PSVersion.Major -ge 7) { Add-Result Tools 'PowerShell 7' PASS "$($PSVersionTable.PSVersion)" }
 else { Add-Result Tools 'PowerShell 7' FAIL "running $($PSVersionTable.PSVersion); install PowerShell 7 and use pwsh" }
 
-# The Azure stage builds and publishes with az and rad; the Site stage drives the cluster.
-$tools = @(if ($checkAzure) { 'az' }) + @(if ($checkSite) { 'kubectl', 'helm' }) + @('rad')
-foreach ($tool in $tools) {
+foreach ($tool in 'az', 'kubectl', 'helm', 'rad') {
     if (Get-Command $tool -ErrorAction SilentlyContinue) { Add-Result Tools $tool PASS }
     else { Add-Result Tools $tool FAIL 'not on PATH' }
 }
@@ -108,8 +102,8 @@ if (Get-Command rad -ErrorAction SilentlyContinue) {
 
 # --- Azure --------------------------------------------------------------------------------------
 $signedIn = $false
-if ($checkAzure) { Write-Host "`nAzure" -ForegroundColor Cyan }
-if ($checkAzure -and (Get-Command az -ErrorAction SilentlyContinue)) {
+Write-Host "`nAzure" -ForegroundColor Cyan
+if (Get-Command az -ErrorAction SilentlyContinue) {
     $account = az account show --subscription $s.SubscriptionId --output json 2>$null | ConvertFrom-Json
     if ($account) { $signedIn = $true; Add-Result Azure 'Subscription' PASS "$($account.name) as $($account.user.name)" }
     else { Add-Result Azure 'Subscription' FAIL "can't read '$($s.SubscriptionId)'; run az login and check SubscriptionId" }
@@ -160,53 +154,49 @@ if ($signedIn) {
 }
 
 # --- Network ------------------------------------------------------------------------------------
-# The cluster's addresses come from the site's network plan. Only the Azure stage uses them.
-if ($checkAzure) {
-    Write-Host "`nNetwork" -ForegroundColor Cyan
-    $plan = 'AddressPrefix', 'Gateway', 'DnsServers', 'IpPoolStart', 'IpPoolEnd', 'ControlPlaneIp', 'LoadBalancerAddresses'
-    $missing = @($plan | Where-Object { $value = @($s[$_]) -join ','; -not $value -or $value -like '<*' })
-    if ($missing) {
-        Add-Result Network 'Network plan' FAIL "set $($missing -join ', ') in the Cluster settings, from your site's network plan"
-    }
-    else {
-        try {
-            $prefix = $s.AddressPrefix
-            $lbFirst, $lbLast = $s.LoadBalancerAddresses.Split('-')
-
-            foreach ($pair in @(@('Gateway', $s.Gateway), @('Node pool start', $s.IpPoolStart), @('Node pool end', $s.IpPoolEnd),
-                    @('Control plane', $s.ControlPlaneIp), @('Load balancer range', $lbFirst), @('Load balancer range', $lbLast))) {
-                if (Test-InSubnet $pair[1] $prefix) { continue }
-                Add-Result Network "$($pair[0]) in $prefix" FAIL "$($pair[1]) is outside the subnet"
-            }
-
-            if (Test-InRange $s.ControlPlaneIp $s.IpPoolStart $s.IpPoolEnd) { Add-Result Network 'Control plane outside node pool' FAIL "$($s.ControlPlaneIp) is inside $($s.IpPoolStart)-$($s.IpPoolEnd)" }
-            else { Add-Result Network 'Control plane outside node pool' PASS $s.ControlPlaneIp }
-
-            if ((Test-InRange $lbFirst $s.IpPoolStart $s.IpPoolEnd) -or (Test-InRange $lbLast $s.IpPoolStart $s.IpPoolEnd) -or
-                (Test-InRange $s.IpPoolStart $lbFirst $lbLast)) { Add-Result Network 'Load balancer outside node pool' FAIL "$($s.LoadBalancerAddresses) overlaps the node pool" }
-            else { Add-Result Network 'Load balancer outside node pool' PASS $s.LoadBalancerAddresses }
-
-            if (-not $s.IngressIp) { Add-Result Network 'Ingress address' PASS "the first free address of $($s.LoadBalancerAddresses)" }
-            elseif (Test-InRange $s.IngressIp $lbFirst $lbLast) { Add-Result Network 'Ingress address in load balancer range' PASS $s.IngressIp }
-            else { Add-Result Network 'Ingress address in load balancer range' FAIL "$($s.IngressIp) is outside $($s.LoadBalancerAddresses)" }
-        }
-        catch {
-            Add-Result Network 'Addresses' FAIL "can't parse the address settings: $($_.Exception.Message)"
-        }
-    }
-
-    # The registry's certificate is issued for this address when the Azure stage installs it.
-    if (-not $s.ServiceClusterIp -or $s.ServiceClusterIp -like '<*') {
-        Add-Result Network 'Registry ClusterIP' FAIL "set ServiceClusterIp in the Registry settings: an unused address in the cluster's service range"
-    }
-    else { Add-Result Network 'Registry ClusterIP' PASS "$($s.ServiceClusterIp); the Site stage checks it against the cluster" }
+# The cluster's addresses come from the site's network plan.
+Write-Host "`nNetwork" -ForegroundColor Cyan
+$plan = 'AddressPrefix', 'Gateway', 'DnsServers', 'IpPoolStart', 'IpPoolEnd', 'ControlPlaneIp', 'LoadBalancerAddresses'
+$missing = @($plan | Where-Object { $value = @($s[$_]) -join ','; -not $value -or $value -like '<*' })
+if ($missing) {
+    Add-Result Network 'Network plan' FAIL "set $($missing -join ', ') in the Cluster settings, from your site's network plan"
 }
+else {
+    try {
+        $prefix = $s.AddressPrefix
+        $lbFirst, $lbLast = $s.LoadBalancerAddresses.Split('-')
+
+        foreach ($pair in @(@('Gateway', $s.Gateway), @('Node pool start', $s.IpPoolStart), @('Node pool end', $s.IpPoolEnd),
+                @('Control plane', $s.ControlPlaneIp), @('Load balancer range', $lbFirst), @('Load balancer range', $lbLast))) {
+            if (Test-InSubnet $pair[1] $prefix) { continue }
+            Add-Result Network "$($pair[0]) in $prefix" FAIL "$($pair[1]) is outside the subnet"
+        }
+
+        if (Test-InRange $s.ControlPlaneIp $s.IpPoolStart $s.IpPoolEnd) { Add-Result Network 'Control plane outside node pool' FAIL "$($s.ControlPlaneIp) is inside $($s.IpPoolStart)-$($s.IpPoolEnd)" }
+        else { Add-Result Network 'Control plane outside node pool' PASS $s.ControlPlaneIp }
+
+        if ((Test-InRange $lbFirst $s.IpPoolStart $s.IpPoolEnd) -or (Test-InRange $lbLast $s.IpPoolStart $s.IpPoolEnd) -or
+            (Test-InRange $s.IpPoolStart $lbFirst $lbLast)) { Add-Result Network 'Load balancer outside node pool' FAIL "$($s.LoadBalancerAddresses) overlaps the node pool" }
+        else { Add-Result Network 'Load balancer outside node pool' PASS $s.LoadBalancerAddresses }
+
+        if (-not $s.IngressIp) { Add-Result Network 'Ingress address' PASS "the first free address of $($s.LoadBalancerAddresses)" }
+        elseif (Test-InRange $s.IngressIp $lbFirst $lbLast) { Add-Result Network 'Ingress address in load balancer range' PASS $s.IngressIp }
+        else { Add-Result Network 'Ingress address in load balancer range' FAIL "$($s.IngressIp) is outside $($s.LoadBalancerAddresses)" }
+    }
+    catch {
+        Add-Result Network 'Addresses' FAIL "can't parse the address settings: $($_.Exception.Message)"
+    }
+}
+
+# The registry's certificate is issued for this address when the Registry step installs it.
+if (-not $s.ServiceClusterIp -or $s.ServiceClusterIp -like '<*') {
+    Add-Result Network 'Registry ClusterIP' FAIL "set ServiceClusterIp in the Registry settings: an unused address in the cluster's service range"
+}
+else { Add-Result Network 'Registry ClusterIP' PASS $s.ServiceClusterIp }
+
 # --- Directory ----------------------------------------------------------------------------------
 $dns = @($s.DnsServers)[0]
-if (-not $checkSite) {
-    # The Azure machine may not reach the site network; the Site stage checks these.
-}
-elseif (-not $s.AdServer -or $s.AdServer -like '<*') {
+if (-not $s.AdServer -or $s.AdServer -like '<*') {
     Write-Host "`nDirectory" -ForegroundColor Cyan
     Add-Result Directory 'Domain controller' FAIL 'set AdServer in the Keycloak settings to the DC FQDN'
 }
@@ -232,11 +222,9 @@ else {
 }
 
 # --- Cluster ------------------------------------------------------------------------------------
-$contexts = if ($checkSite) { Write-Host "`nCluster" -ForegroundColor Cyan; @(kubectl config get-contexts --output name 2>$null) }
-if (-not $checkSite) {
-    # Checked by the Site stage, which has the cluster credentials.
-}
-elseif ($s.KubeContext -notin $contexts) {
+Write-Host "`nCluster" -ForegroundColor Cyan
+$contexts = @(kubectl config get-contexts --output name 2>$null)
+if ($s.KubeContext -notin $contexts) {
     Add-Result Cluster 'Kube context' PASS "'$($s.KubeContext)' not created yet; setup creates the cluster"
 }
 else {
@@ -266,7 +254,7 @@ else {
         $taken = kubectl --context $s.KubeContext get services --all-namespaces --output json 2>$null | ConvertFrom-Json |
             Select-Object -ExpandProperty items | Where-Object { $_.spec.clusterIP -eq $registryIp } | Select-Object -First 1
         if (-not $registryIp) {
-            Add-Result Cluster 'Registry ClusterIP' WARN 'no connected registry yet; the Azure stage installs it'
+            Add-Result Cluster 'Registry ClusterIP' WARN 'no connected registry yet; the Registry step installs it'
         }
         elseif (-not $kubernetesServiceIp -or -not $registryIp.StartsWith((($kubernetesServiceIp -split '\.')[0..1] -join '.') + '.')) {
             Add-Result Cluster 'Registry ClusterIP' FAIL "$registryIp doesn't look like it is in the service range (the 'kubernetes' service is '$kubernetesServiceIp')"
@@ -283,6 +271,21 @@ else {
             else {
                 Add-Result Cluster "Secret identity/$secret" WARN 'needed before the Keycloak step; see "Connect your Active Directory" in docs/authentication.md'
             }
+        }
+
+        # The Observability step's volumes use the class in its settings, else the cluster's default.
+        $observabilityClass = if ($site -and $site['Observability']) { $site['Observability']['StorageClassName'] }
+        if ($observabilityClass) {
+            if (kubectl --context $s.KubeContext get storageclass $observabilityClass --ignore-not-found --output name 2>$null) {
+                Add-Result Cluster 'Observability storage class' PASS $observabilityClass
+            }
+            else { Add-Result Cluster 'Observability storage class' FAIL "'$observabilityClass' not found; fix StorageClassName in the Observability settings (kubectl get storageclass)" }
+        }
+        else {
+            $defaultClass = (kubectl --context $s.KubeContext get storageclass --output json 2>$null | ConvertFrom-Json).items |
+                Where-Object { $_.metadata.annotations.'storageclass.kubernetes.io/is-default-class' -eq 'true' } | Select-Object -First 1
+            if ($defaultClass) { Add-Result Cluster 'Observability storage class' PASS "$($defaultClass.metadata.name) (the cluster's default)" }
+            else { Add-Result Cluster 'Observability storage class' FAIL 'the cluster has no default storage class; set StorageClassName in the Observability settings' }
         }
     }
 }

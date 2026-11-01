@@ -8,7 +8,8 @@
     },
     "Cluster": {
       "ResourceGroup": "bcd-infra",
-      "RegistryName": "<globally-unique-acr-name>"
+      "RegistryName": "<globally-unique-acr-name>",
+      "AlertEmail": "<on-call-email>"
     },
     "Ingress": {
       "KubeContext": "bcd-aks",
@@ -21,7 +22,6 @@
     "Deploy": {
       "Registry": "<globally-unique-acr-name>.azurecr.io",
       "AppInfraResourceGroup": "bcd-infra",
-      "WorkloadIdentityPrincipalId": "<printed by setup-platform: Cluster>",
       "ResourceGroup": "oms",
       "IngressCertIssuer": "letsencrypt"
     }
@@ -52,12 +52,30 @@
     "Registry": {
       "ServiceClusterIp": "<unused-address-in-the-cluster-service-range>"
     },
+    "KeyVault": {
+      "SecretsOfficerObjectIds": [ "<operations-group-object-id>" ]
+    },
     "Keycloak": {
       "AdServer": "<domain-controller-fqdn>",
       "AdDomain": "<ad-domain>",
       "ImagePullSecretSourceNamespace": "oms-azurelocal",
       "WorkloadNamespace": "oms-azurelocal",
       "AllowInClusterIssuer": true
+    },
+    "Observability": {
+      "StorageClassName": "",
+      "PrometheusRetention": "15d",
+      "PrometheusStorage": "10Gi",
+      "LokiRetention": "168h",
+      "LokiStorage": "10Gi",
+      "TempoRetention": "72h",
+      "TempoStorage": "10Gi",
+      "SmtpHost": "",
+      "SmtpPort": 587,
+      "SmtpFrom": "",
+      "AlertEmailTo": "",
+      "SmtpUsername": "",
+      "SmtpPasswordSecret": ""
     },
     "Ingress": {},
     "Deploy": {}

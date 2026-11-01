@@ -12,11 +12,9 @@
     Everything the application owns lives in one resource group, 'bcd-azurelocal' by default,
     separate from the resource group that holds the Azure Local instance and its custom location.
 
-    Cluster credentials are fetched with --admin: they authenticate with a client certificate
-    directly against the API server, which keeps working with no Azure connectivity. This is an
-    Azure-stage step and never contacts the cluster: the credentials go to <HandoverPath>/kubeconfig,
-    and the Site stage of setup-platform.ps1 or deploy.ps1 merges them into ~/.kube/config and
-    deletes the file, on this machine or on the site machine the folder was copied to.
+    Cluster credentials are fetched with --admin into ~/.kube/config: they authenticate with a
+    client certificate directly against the API server, which keeps working with no Azure
+    connectivity.
 
     -WhatIf runs an Azure what-if of the template instead of deploying it, and changes nothing.
     What-if doesn't cover the Entra group; it reports it as not supported.
@@ -85,9 +83,7 @@ param(
     # Public key installed on the nodes. Generated when missing.
     [string]$SshPublicKeyPath = (Join-Path $HOME '.ssh/id_rsa.pub'),
 
-    [string]$KubeContext = 'bcd-aksarc',
-
-    [string]$HandoverPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../.handover'))
+    [string]$KubeContext = 'bcd-aksarc'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -243,8 +239,7 @@ try {
     $registryLoginServer = ($outputsJson | ConvertFrom-Json).registryLoginServer.value
 
     Write-Host "==> Fetching admin credentials as context '$KubeContext'" -ForegroundColor Cyan
-    New-Item -ItemType Directory -Force -Path $HandoverPath | Out-Null
-    $kubeconfigFile = Join-Path $HandoverPath 'kubeconfig'
+    $kubeconfigFile = Join-Path $HOME '.kube/config'
     Invoke-Checked 'az aksarc get-credentials' {
         az aksarc get-credentials --name $ClusterName --resource-group $ResourceGroup `
             --admin --context $KubeContext --file $kubeconfigFile --overwrite-existing
@@ -260,8 +255,8 @@ try {
 
     Write-Host "`nNext steps:" -ForegroundColor Yellow
     Write-Host "  1. ./scripts/infra/azurelocal/import-images.ps1 -Mode Mirror -Registry $registryLoginServer"
-    Write-Host "  2. ./scripts/infra/azurelocal/connected-registry.ps1 -Stage Azure -RegistryName $RegistryName -ClusterName $ClusterName"
-    Write-Host "  3. On the site network: ./scripts/setup-platform.ps1 -Target AzureLocal -Stage Site"
+    Write-Host "  2. ./scripts/infra/azurelocal/connected-registry.ps1 -RegistryName $RegistryName -ClusterName $ClusterName"
+    Write-Host "  3. The remaining steps: ./scripts/setup-platform.ps1 -Target AzureLocal -Skip Cluster, Images, Registry"
 }
 finally {
     if ($parametersFile) { Remove-Item $parametersFile -Force -ErrorAction SilentlyContinue -WhatIf:$false }

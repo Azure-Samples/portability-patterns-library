@@ -11,6 +11,7 @@ public static class OrderRoles
 {
     public const string Read = "Orders.Read";
     public const string Create = "Orders.Create";
+    public const string ManageInventory = "Inventory.Manage";
     public const string ApiScope = "access_as_user";
 }
 
@@ -18,6 +19,7 @@ public static class OrderPolicies
 {
     public const string Read = "Orders.Read";
     public const string Create = "Orders.Create";
+    public const string ManageInventory = "Inventory.Manage";
 }
 
 public static class UserIdentity

@@ -11,7 +11,12 @@
 //     control plane and leave plainHttp false.
 //
 // Identity: an identity provider on site (Keycloak in the samples) trusts the cluster's own
-// ServiceAccount issuer, so token exchange never leaves the site.
+// ServiceAccount issuer, so token exchange never leaves the site. Each service runs as its own
+// service account and authenticates as its own client: {resource} in serviceAccountName and
+// oauthClientId is the container resource name.
+//
+// Credentials that can't come from that identity, such as each service's database password, are
+// synced into the cluster from Azure Key Vault and reach the service through containerEnvFromSecrets.
 
 extension radius
 
@@ -45,6 +50,24 @@ param sqlServerTag string = '2022-latest'
 @description('Tag of the Azurite image mirrored into the registry.')
 param azuriteTag string = '3.35.0'
 
+@description('Tag of the PostgreSQL image mirrored into the registry.')
+param postgresTag string = '17-alpine'
+
+@description('SQL Server edition, or a product key. Developer is free but not licensed for production use.')
+param sqlServerEdition string = 'Developer'
+
+@description('cert-manager ClusterIssuer that issues certificates for in-cluster services, such as PostgreSQL. Empty serves them without TLS.')
+param certificateIssuer string = ''
+
+@description('''
+Kubernetes Secrets, by name, whose keys become environment variables of every container, such as
+per-service database passwords synced from Key Vault. {resource} is the container resource name.
+''')
+param containerEnvFromSecrets array = []
+
+@description('OpenTelemetry Collector endpoint given to every container as OTEL_EXPORTER_OTLP_ENDPOINT. Empty sends no telemetry.')
+param otlpEndpoint string = ''
+
 @description('Existing image pull secret in the application namespace for the connected registry.')
 param imagePullSecretName string = ''
 
@@ -57,16 +80,16 @@ param oauthTokenEndpoint string = ''
 @description('Existing Secret in the application namespace holding the identity provider CA under `ca.crt`.')
 param oauthCaSecretName string = ''
 
-@description('Client at the identity provider that the workloads authenticate as, published to pods as IDENTITY_CLIENT_ID.')
+@description('Client at the identity provider each workload authenticates as, published to pods as IDENTITY_CLIENT_ID. May contain {resource}.')
 param oauthClientId string = ''
 
-@description('Kubernetes service account the identity provider trusts for that client; must match its federated subject.')
+@description('Kubernetes service account each workload runs as; the identity provider trusts it for that client. May contain {resource}.')
 param serviceAccountName string = ''
 
-@description('Ingress class that publishes containers with ports on the site network. Empty keeps them cluster-internal.')
-param ingressClassName string = ''
+@description('Ingress class that publishes the application\'s routes on the site network.')
+param ingressClassName string = 'nginx'
 
-@description('TLS Secret in the application namespace that the ingress serves.')
+@description('TLS Secret in the application namespace that the routes serve.')
 param ingressTlsSecretName string = ''
 
 // Each platform scenario below is expressed as plain Kubernetes volumes, mounts and environment
@@ -116,12 +139,17 @@ var identityProviderEnv = !useIdentityProvider ? [] : concat([
   { name: 'SSL_CERT_FILE', value: '/etc/identity-ca/ca.crt' }
 ])
 
+var telemetryEnv = empty(otlpEndpoint) ? [] : [
+  { name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: otlpEndpoint }
+]
+
 var containerPlatformParameters = union(
   useIdentityProvider ? { serviceAccountName: serviceAccountName } : {},
   {
     platformPodVolumes: identityProviderVolumes
     containerVolumeMounts: identityProviderMounts
-    containerEnv: identityProviderEnv
+    containerEnv: concat(identityProviderEnv, telemetryEnv)
+    containerEnvFromSecrets: containerEnvFromSecrets
   }
 )
 
@@ -165,7 +193,20 @@ resource azureLocalRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
           imageRegistry: registry
           imageRepository: 'mssql/server'
           tag: sqlServerTag
+          edition: sqlServerEdition
           imagePullSecretName: imagePullSecretName
+        }
+      }
+      'Radius.Data/postgreSqlDatabases': {
+        kind: 'bicep'
+        source: '${registry}/recipes/postgres-database:${tag}'
+        plainHttp: plainHttp
+        parameters: {
+          imageRegistry: registry
+          imageRepository: 'postgres'
+          tag: postgresTag
+          imagePullSecretName: imagePullSecretName
+          certificateIssuer: certificateIssuer
         }
       }
       'Radius.Compute/containers': {
@@ -174,9 +215,18 @@ resource azureLocalRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
         plainHttp: plainHttp
         parameters: union({
           imagePullSecretName: imagePullSecretName
+        }, containerPlatformParameters)
+      }
+      // What the application publishes is a route it declares; the site's ingress and certificate
+      // are the platform's.
+      'Radius.Compute/routes': {
+        kind: 'bicep'
+        source: '${registry}/recipes/kubernetes-routes:${tag}'
+        plainHttp: plainHttp
+        parameters: {
           ingressClassName: ingressClassName
           ingressTlsSecretName: ingressTlsSecretName
-        }, containerPlatformParameters)
+        }
       }
       'Radius.Security/secrets': {
         kind: 'bicep'

@@ -30,6 +30,10 @@ public sealed record StoredOrder
     [JsonPropertyName("archiveUri")]
     public required string ArchiveUri { get; init; }
 
+    /// <summary><see cref="OrderStatus.Processed"/> or <see cref="OrderStatus.Rejected"/>.</summary>
     [JsonPropertyName("status")]
-    public string Status => "Processed";
+    public required string Status { get; init; }
+
+    [JsonPropertyName("statusReason")]
+    public string? StatusReason { get; init; }
 }

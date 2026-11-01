@@ -29,6 +29,7 @@ Run these from the `samples/OrderManagementApp` folder.
    kubectl -n identity create secret generic keycloak-db --from-literal=username=keycloak --from-literal=password=<db-password>
    kubectl -n identity create secret generic oms-ad-bind --from-literal=bind-upn=<bind-account-upn> --from-literal=bind-password=<bind-password>
    kubectl -n identity create secret generic oms-ad-ca --from-file=ca.crt=<directory-ca.crt>
+   kubectl -n identity create secret generic grafana-oauth --from-literal=client-id=grafana --from-literal=client-secret=<random-secret>
    ```
 
 2. Give Keycloak the cluster's CA, so it can check service account tokens:

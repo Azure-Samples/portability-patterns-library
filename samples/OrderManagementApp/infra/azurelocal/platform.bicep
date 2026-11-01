@@ -124,6 +124,12 @@ subnet and outside the node IP pool. Empty skips the load balancer.
 ''')
 param loadBalancerAddresses string = ''
 
+@description('''
+Turn on the cluster's OIDC issuer and workload identity (preview on Azure Local), so it can reach Azure
+services while connected, such as Key Vault for secrets. Only takes effect when the cluster is created.
+''')
+param enableWorkloadIdentity bool = true
+
 @description('Tags applied to every Azure resource.')
 param tags object = {
   application: 'order-management'
@@ -200,6 +206,7 @@ module platform 'platform-resources.bicep' = {
     ]
     loadBalancerName: loadBalancerName
     loadBalancerAddresses: loadBalancerAddresses
+    enableWorkloadIdentity: enableWorkloadIdentity
     kubernetesRuntimeObjectId: kubernetesRuntimeRp.id
     tags: tags
   }

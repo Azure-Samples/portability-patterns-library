@@ -84,11 +84,20 @@ jobs:
           set -x
           curl -fsS http://localhost:8080/healthz
           test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/me)" = 401
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/products)" = 401
           issuer=$(curl -fsSk https://localhost:8443/realms/oms/.well-known/openid-configuration | jq -r .issuer)
           test "$issuer" = https://localhost:8443/realms/oms
+          # dbsetup created the databases, logins and seed data before the services started.
+          test "$(docker compose ps --all dbsetup --format '{{.ExitCode}}')" = 0
+          # The inventory service is internal; ask it from inside the compose network.
+          inventory() { docker run --rm --network order-management_default docker.io/curlimages/curl:8.11.1 -fsS "http://inventory:8080$1"; }
+          inventory /healthz
+          test "$(inventory /api/products | jq 'length')" = 5
+          test "$(inventory /api/products | jq '[.[] | select(.available > 0)] | length')" = 5
           # The processor exits if it can't reach the queue, the database or blob storage.
           sleep 30
           test "$(docker compose ps processor --format '{{.State}}')" = running
+          test "$(docker compose ps inventory --format '{{.State}}')" = running
 
       - name: Logs
         if: failure()
