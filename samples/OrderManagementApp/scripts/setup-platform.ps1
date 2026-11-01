@@ -5,7 +5,8 @@
     and, on Azure Local, what keeps the app running when the link to Azure is down.
 
 .DESCRIPTION
-    Platform-team step. Application teams then only run ./scripts/deploy.ps1. Every step is
+    Platform-team step, ending with Recipe Pack and Environment configuration.
+    Application teams then only run ./scripts/deploy.ps1. Every step is
     idempotent, so the whole script can be re-run; -Skip leaves steps out, for example Cluster when
     the cluster already exists.
 
@@ -13,6 +14,7 @@
       Cluster   infra/azure/provision-infra.ps1              AKS, ACR, workload identity, Radius
       Ingress   infra/azure/provision-ingress.ps1            managed NGINX, DNS name, certificate issuer
       Identity  infra/azure/configure-app-identity.ps1       Entra app registrations and roles
+      Environment configure-environment.ps1                Radius Recipe Pack, Environment and registry authentication
 
     AzureLocal
       Cluster   infra/azurelocal/provision-infra.ps1         AKS Arc cluster, ACR, load balancer
@@ -22,6 +24,7 @@
       Ingress   infra/azurelocal/provision-ingress.ps1       NGINX ingress, site CA, renewed certificates
       Keycloak  infra/azurelocal/keycloak.ps1                on-site sign-in and token issuer, federated to Active Directory
       Observability infra/azurelocal/provision-observability.ps1  metrics, logs, traces, alerts and Grafana, in the cluster
+      Environment configure-environment.ps1                Radius install, Recipe Pack and Environment
     Values come from the target's section of scripts/settings.json (see settings.example.json):
     'Common' goes to every step that takes the parameter, a section named after the step to that
     step only. Keep secrets out of it; the scripts read those from Kubernetes Secrets.
@@ -47,7 +50,7 @@ param(
     [Parameter(Mandatory)]
     [ValidateSet('Azure', 'AzureLocal')]
     [string]$Target,
-    [ValidateSet('Cluster', 'Images', 'Registry', 'KeyVault', 'Keycloak', 'Ingress', 'Identity', 'Observability')]
+    [ValidateSet('Cluster', 'Images', 'Registry', 'KeyVault', 'Keycloak', 'Ingress', 'Identity', 'Observability', 'Environment')]
     [string[]]$Skip = @(),
     [string]$SettingsPath
 )
@@ -60,6 +63,7 @@ $steps = if ($Target -eq 'Azure') {
         Cluster  = 'infra/azure/provision-infra.ps1'
         Ingress  = 'infra/azure/provision-ingress.ps1'
         Identity = 'infra/azure/configure-app-identity.ps1'
+        Environment = 'configure-environment.ps1'
     }
 }
 else {
@@ -73,6 +77,7 @@ else {
         Keycloak = 'infra/azurelocal/keycloak.ps1'
         # After Keycloak, which registers Grafana's sign-in client and its secret.
         Observability = 'infra/azurelocal/provision-observability.ps1'
+        Environment = 'configure-environment.ps1'
     }
 }
 
@@ -86,7 +91,11 @@ try {
             continue
         }
         $script = Join-Path $PSScriptRoot $steps[$step]
-        $arguments = Get-OmsStepArguments $settings $step $script
+        $arguments = if ($step -eq 'Environment') {
+            $environmentArguments = @{ Target = $Target }
+            if ($SettingsPath) { $environmentArguments.SettingsPath = $SettingsPath }
+            $environmentArguments
+        } else { Get-OmsStepArguments $settings $step $script }
         $shown = ($arguments.GetEnumerator() | Sort-Object Key | ForEach-Object { "-$($_.Key) $(@($_.Value) -join ',')" }) -join ' '
         if ($PSCmdlet.ShouldProcess("scripts/$($steps[$step]) $shown", "$Target $step")) {
             Write-Host "`n==> [$Target] $step : scripts/$($steps[$step])" -ForegroundColor Magenta

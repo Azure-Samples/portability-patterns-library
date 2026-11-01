@@ -14,12 +14,31 @@ function Read-OmsSettings([string]$Target, [string]$Path) {
 # so a misspelt name fails loudly instead of being ignored.
 function Get-OmsStepArguments([hashtable]$Settings, [string]$Step, [string]$ScriptPath) {
     $declared = (Get-Command $ScriptPath).Parameters.Keys
+    $environmentParameters = if ($Step -eq 'Deploy') {
+        $target = [IO.Path]::GetFileNameWithoutExtension($ScriptPath)
+        $environmentScript = Join-Path (Split-Path -Parent (Split-Path -Parent $ScriptPath)) "infra/$target/configure-environment.ps1"
+        if (Test-Path $environmentScript) { (Get-Command $environmentScript).Parameters.Keys } else { @() }
+    } else { @() }
     $arguments = @{}
     foreach ($section in 'Common', $Step) {
         if (-not $Settings.ContainsKey($section)) { continue }
         foreach ($name in $Settings[$section].Keys) {
             if ($section -eq 'Common' -and $name -notin $declared) { continue }
+            if ($Step -eq 'Deploy' -and $name -notin $declared -and $name -in $environmentParameters) { continue }
             $arguments[$name] = $Settings[$section][$name]
+        }
+    }
+    $arguments
+}
+
+function Get-OmsEnvironmentArguments([hashtable]$Settings, [string]$ScriptPath, [ValidateSet('Environment', 'Rotation')][string]$Step = 'Environment') {
+    $declared = (Get-Command $ScriptPath).Parameters.Keys
+    $arguments = @{}
+    foreach ($section in 'Common', 'Deploy', $Step) {
+        if (-not $Settings.ContainsKey($section)) { continue }
+        foreach ($name in $Settings[$section].Keys) {
+            if ($name -in $declared) { $arguments[$name] = $Settings[$section][$name] }
+            elseif ($section -eq $Step) { throw "Unknown $Step setting '$name'." }
         }
     }
     $arguments

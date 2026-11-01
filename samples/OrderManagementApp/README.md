@@ -125,6 +125,8 @@ build uses it when it's there, and Git ignores it.
 
 ## Deploy to Azure
 
+### Complete demo platform
+
 ```powershell
 azd auth login
 az login
@@ -169,7 +171,27 @@ azd env set POSTGRES_LOCATION <region>  # PostgreSQL only
 To move everything to another region, start a new environment there: `azd env new <name> --location <region>`.
 List the VM sizes a region offers with `az vm list-skus --location <region> --resource-type virtualMachines -o table`.
 
+### Existing Azure platform
+
+If your platform team supplies AKS, ACR, Radius with an Azure credential, the service identities,
+database-setup service account, ingress and app registrations, you do not need to provision another
+cluster. Copy `scripts/settings.example.json` to `scripts/settings.json`, set the Azure resource
+names to those supplied by your platform team, then run:
+
+```powershell
+./scripts/configure-environment.ps1 -Target Azure
+./scripts/deploy.ps1 -Target Azure
+```
+
+The first command configures the Recipe Pack, Radius Environment and recipe-registry credentials.
+It does not create the cluster. The second builds the application images, publishes Recipes,
+deploys the application and initializes its databases. For later application releases, run only
+the second command. Refresh expiring Recipe pull credentials by re-running environment
+configuration before they expire; the sample-generated Azure credential lasts seven days.
+
 ## Deploy to Azure Local
+
+### Complete demo platform
 
 On the management machine, copy [scripts/settings.example.json](./scripts/settings.example.json) to
 `scripts/settings.json` and fill in the `AzureLocal` section. [Azure Local settings](./docs/azure-local-settings.md)
@@ -184,6 +206,57 @@ Open the address it prints and sign in with an AD account in one of the app's gr
 time, trust the site CA with the command it printed.
 
 To deploy a new version later, run `./scripts/deploy.ps1 -Target AzureLocal`.
+
+The one-command wrapper runs preflight, platform setup (ending with Radius environment
+configuration), and application deployment. Each phase is also available independently:
+
+```powershell
+./scripts/infra/azurelocal/preflight.ps1
+./scripts/setup-platform.ps1 -Target AzureLocal
+./scripts/deploy.ps1 -Target AzureLocal
+```
+
+The full on-site monitoring stack is optional. To demonstrate deployment without installing it,
+run `./scripts/up.ps1 -Target AzureLocal -Skip Observability`. Application instrumentation stays
+in the images; environment configuration disables export when no collector exists. If you install
+the collector later, run environment configuration and redeploy to enable export.
+
+`ad-setup.ps1` is optional lab automation, not an application-deployment prerequisite to execute.
+It changes the existing directory and can install AD Certificate Services or reset sample-account
+passwords. Prefer having the directory administrator provide the required groups, bind account
+and LDAPS CA using [the documented inputs](./docs/authentication.md#connect-your-active-directory).
+The normal setup commands do not run `ad-setup.ps1`.
+
+### Existing Azure Local platform
+
+Use this path when your platform team supplies the cluster, local connected registry and its pull
+Secrets/CA, database credential Secrets (directly or through Key Vault synchronization),
+the sample-compatible Keycloak realm and ingress. These must follow the
+sample's documented contracts; an existing cluster alone is not sufficient. You can reuse
+individual setup scripts for capabilities that are missing without creating a new cluster.
+
+Set `Common` and `Deploy` to the supplied resource names. Put platform-specific Recipe settings in
+`Environment`, then run:
+
+```powershell
+./scripts/configure-environment.ps1 -Target AzureLocal
+./scripts/deploy.ps1 -Target AzureLocal
+```
+
+Environment configuration installs Radius from the connected registry and configures the Recipe
+Pack, Environment and registry trust. If the platform team already installed Radius with that
+trust, set `Environment.SkipRadiusInstall` to `true`. Use `Environment.ReinstallRadius` only for
+an intentional control-plane refresh, such as a changed registry CA. Neither action belongs in
+ordinary application deployment.
+
+For each later release, run only `deploy.ps1`. It stops if the Environment is missing or database
+passwords have changed; it does not silently configure the platform or rotate credentials.
+After changing Recipe Pack settings, re-run `configure-environment.ps1` and then deploy the app.
+On Azure Local, `Deploy.ImageTag` selects application images; Recipes are published under the tag
+already selected by environment configuration. Changing an application image tag does not
+implicitly change the platform's Recipe Pack.
+
+### Production boundaries
 
 RabbitMQ, SQL Server and PostgreSQL each keep their data on a persistent volume on the cluster's
 default storage class, so a restarted pod keeps its queued messages, orders and stock. Azurite, a
@@ -207,11 +280,26 @@ would also need:
 - **Hardening:** traffic to RabbitMQ and Azurite is not encrypted, and the app does not verify SQL
   Server's certificate. Add TLS with trusted certificates.
 
+### Explicit database password rotation
+
 The database passwords live in Key Vault. To change one, set a new version of its secret in the
 vault (`sql-admin-password`, `postgres-admin-password`, `sql-api-password`,
 `sql-processor-password` or `postgres-inventory-password`). Once the Secret Store extension has
-synced it (hourly by default), run `./scripts/deploy.ps1 -Target AzureLocal -SkipImageBuild -SkipRadiusInstall`
-to set it in the database and restart the service.
+synced it (hourly by default), run:
+
+```powershell
+./scripts/rotate-database-passwords.ps1
+```
+
+This maintenance command changes the database passwords, updates each service's own Secret and
+restarts the consumers. It does not build images, publish Recipes, install Radius or redeploy the
+application. Run it separately from releases, without a concurrent deployment. Successful
+administrator changes are recorded as they happen so a failed rotation can be retried.
+
+The first successful app deployment records the digest-pinned `dbsetup` image in ConfigMap
+`oms-db-setup`. For an installation made with an older script, set `Rotation.DatabaseSetupImage`
+to an existing published `dbsetup` image digest if that ConfigMap does not exist. Azure deployments
+use Entra database authentication and do not need password rotation.
 
 ## Clean up
 

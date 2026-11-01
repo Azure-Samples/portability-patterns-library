@@ -22,7 +22,9 @@
     "Deploy": {
       "Registry": "<globally-unique-acr-name>.azurecr.io",
       "AppInfraResourceGroup": "bcd-infra",
-      "ResourceGroup": "oms",
+      "ResourceGroup": "oms"
+    },
+    "Environment": {
       "IngressCertIssuer": "letsencrypt"
     }
   },
@@ -78,6 +80,8 @@
       "SmtpPasswordSecret": ""
     },
     "Ingress": {},
-    "Deploy": {}
+    "Deploy": {},
+    "Environment": {},
+    "Rotation": {}
   }
 }

@@ -7,6 +7,9 @@
 
 extension radius
 
+@description('Name of the Radius Environment.')
+param environmentName string = 'oms-azurelocal'
+
 @description('Kubernetes namespace that application resources are deployed into.')
 param namespace string = 'oms-azurelocal'
 
@@ -23,7 +26,7 @@ resource azureLocalRecipes 'Radius.Core/recipePacks@2025-08-01-preview' existing
 // Two mutually exclusive declarations: the deployment engine does not evaluate expressions that
 // build `properties`, so union() there silently produces an empty Environment.
 resource azureLocalEnvironment 'Radius.Core/environments@2025-08-01-preview' = if (empty(bicepSettingsId)) {
-  name: 'oms-azurelocal'
+  name: environmentName
   properties: {
     recipePacks: [
       azureLocalRecipes.id
@@ -37,7 +40,7 @@ resource azureLocalEnvironment 'Radius.Core/environments@2025-08-01-preview' = i
 }
 
 resource azureLocalEnvironmentWithRegistryAuth 'Radius.Core/environments@2025-08-01-preview' = if (!empty(bicepSettingsId)) {
-  name: 'oms-azurelocal'
+  name: environmentName
   properties: {
     recipePacks: [
       azureLocalRecipes.id

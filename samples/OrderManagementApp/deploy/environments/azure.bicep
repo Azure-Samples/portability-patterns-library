@@ -5,6 +5,9 @@
 
 extension radius
 
+@description('Name of the Radius Environment.')
+param environmentName string = 'oms-azure'
+
 @description('Azure subscription that Recipes provision infrastructure into.')
 param subscriptionId string
 
@@ -34,7 +37,7 @@ resource azureRecipes 'Radius.Core/recipePacks@2025-08-01-preview' existing = {
 // object: an ARM expression there (union, if, ...) is not evaluated, and the resource is created
 // with empty properties, silently falling back to the default Recipe Pack and no providers.
 resource azureEnvironment 'Radius.Core/environments@2025-08-01-preview' = if (empty(bicepSettingsId)) {
-  name: 'oms-azure'
+  name: environmentName
   properties: {
     recipePacks: [
       azureRecipes.id
@@ -52,7 +55,7 @@ resource azureEnvironment 'Radius.Core/environments@2025-08-01-preview' = if (em
 }
 
 resource azureEnvironmentWithRegistryAuth 'Radius.Core/environments@2025-08-01-preview' = if (!empty(bicepSettingsId)) {
-  name: 'oms-azure'
+  name: environmentName
   properties: {
     recipePacks: [
       azureRecipes.id

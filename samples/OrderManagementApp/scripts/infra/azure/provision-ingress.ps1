@@ -154,7 +154,7 @@ spec:
 
 Write-Host "`nIngress ready: https://$fqdn  (class '$IngressClassName', issuer '$IssuerName')" -ForegroundColor Green
 if ($PrivateCa) {
-    Write-Host "Deploy with: ./scripts/deploy/azure.ps1 ... -IngressCertIssuer $IssuerName"
+    Write-Host "Configure with: ./scripts/infra/azure/configure-environment.ps1 ... -IngressCertIssuer $IssuerName"
     Write-Host "Trust the CA on client machines (once, shows a confirmation prompt):"
     Write-Host "  Import-Certificate -FilePath $caFile -CertStoreLocation Cert:\CurrentUser\Root"
 }

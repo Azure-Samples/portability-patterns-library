@@ -36,8 +36,9 @@ Object storage and SQL use Radius's built-in types. Radius has no queue type tha
 Service Bus and RabbitMQ, so the library defines one in
 [recipes/message-queue/messageQueues.yaml](../../../recipes/message-queue/messageQueues.yaml).
 
-Result: [deploy/app.bicep](../deploy/app.bicep) is identical on both platforms. Its only parameters
-are the image references, the sign-in settings and a SQL password.
+Result: [deploy/app.bicep](../deploy/app.bicep) is identical on both platforms. Its inputs include
+image references, sign-in settings and database administrator credentials required by the resource
+types. Azure Recipes ignore those credentials when using Entra-only authentication.
 
 ## 2. Let the code read its connections
 
@@ -96,13 +97,35 @@ differs between platforms. An **Environment** is a deployment target that points
 
 ## 5. Deploy the same app to either environment
 
+Prepare the platform first, either with your platform team or the optional full-demo setup
+scripts. Then configure the Recipe Pack and Environment once:
+
 ```powershell
-rad deploy deploy/app.bicep -e oms-azure      -p apiImage=... -p processorImage=... -p sqlAdminPassword=...
-rad deploy deploy/app.bicep -e oms-azurelocal -p apiImage=... -p processorImage=... -p sqlAdminPassword=...
+./scripts/configure-environment.ps1 -Target Azure
+# Or, on the Azure Local platform:
+./scripts/configure-environment.ps1 -Target AzureLocal
+```
+
+The same application file can then be deployed to either configured environment:
+
+```powershell
+rad deploy deploy/app.bicep -e oms-azure      -p apiImage=... -p processorImage=... -p inventoryImage=... -p sqlAdminPassword=... -p postgresAdminPassword=...
+rad deploy deploy/app.bicep -e oms-azurelocal -p apiImage=... -p processorImage=... -p inventoryImage=... -p sqlAdminPassword=... -p postgresAdminPassword=...
 ```
 
 Same file, same parameters. The environment decides what gets created. Also pass `apiAuthentication`
-and `spaSettings`, the sign-in settings for that platform's identity provider. The full sequence,
-including the Recipe Pack, environment and registry credentials, is in
+and `spaSettings`, the sign-in settings for that platform's identity provider, and
+`inventoryAuthentication`/`inventoryScope` for service calls. The sample wrappers supply these
+values, run database initialization and wait for readiness:
+
+```powershell
+./scripts/deploy.ps1 -Target Azure
+./scripts/deploy.ps1 -Target AzureLocal
+```
+
+Application deployment is implemented in
 [scripts/deploy/azurelocal.ps1](../scripts/deploy/azurelocal.ps1) and
-[scripts/deploy/azure.ps1](../scripts/deploy/azure.ps1).
+[scripts/deploy/azure.ps1](../scripts/deploy/azure.ps1). Platform configuration is separate in
+`scripts/infra/<target>/configure-environment.ps1`. Run it again when platform settings change,
+not for every application release. Azure Local password changes use the explicit
+`scripts/rotate-database-passwords.ps1` maintenance command.

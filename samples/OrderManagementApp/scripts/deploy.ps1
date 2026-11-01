@@ -5,7 +5,8 @@
     Azure Local.
 
 .DESCRIPTION
-    Application-team step, after ./scripts/setup-platform.ps1. Builds and pushes the images,
+    Application-team step, after ./scripts/setup-platform.ps1 or ./scripts/configure-environment.ps1.
+    Builds and pushes the images,
     publishes the Recipes and runs 'rad deploy'. The target's Recipe Pack, not the application,
     decides what backs the queue, object storage and database.
 
@@ -16,7 +17,7 @@
     ./scripts/deploy.ps1 -Target Azure
 
 .EXAMPLE
-    ./scripts/deploy.ps1 -Target AzureLocal -SkipImageBuild -SkipRadiusInstall
+    ./scripts/deploy.ps1 -Target AzureLocal -SkipImageBuild
 #>
 # Not [CmdletBinding()]: an advanced script cannot forward unknown parameters through $args.
 param(

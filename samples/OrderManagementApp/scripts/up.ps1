@@ -31,7 +31,7 @@ param(
     [ValidateSet('Azure', 'AzureLocal')]
     [string]$Target,
     # Platform steps to leave out, as for setup-platform.ps1.
-    [ValidateSet('Cluster', 'Images', 'Registry', 'KeyVault', 'Keycloak', 'Ingress', 'Identity', 'Observability')]
+    [ValidateSet('Cluster', 'Images', 'Registry', 'KeyVault', 'Keycloak', 'Ingress', 'Identity', 'Observability', 'Environment')]
     [string[]]$Skip = @(),
     [string]$SettingsPath,
     [switch]$SkipPreflight

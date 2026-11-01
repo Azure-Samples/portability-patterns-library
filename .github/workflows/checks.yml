@@ -141,3 +141,7 @@ jobs:
           $findings = Invoke-ScriptAnalyzer -Path scripts -Recurse -Settings scripts/PSScriptAnalyzerSettings.psd1
           $findings | Format-Table ScriptName, Line, RuleName, Message -AutoSize -Wrap
           if ($findings) { exit 1 }
+
+      - name: Deployment lifecycle checks (mocked; no cloud resources)
+        shell: pwsh
+        run: ./scripts/tests/deployment-lifecycles.ps1

@@ -70,6 +70,24 @@ hooks:
       if ($env:SERVICE_MANAGEMENT_REFERENCE) { $identityArgs.ServiceManagementReference = $env:SERVICE_MANAGEMENT_REFERENCE }
       ./scripts/infra/azure/configure-app-identity.ps1 @identityArgs
 
+      $environmentArgs = @{
+        SubscriptionId        = $env:AZURE_SUBSCRIPTION_ID
+        Location              = $env:AZURE_LOCATION
+        Registry              = $env:registryLoginServer
+        AppInfraResourceGroup = $env:resourceGroupName
+        PlatformResourceGroup = $env:resourceGroupName
+        ClusterName           = $env:clusterName
+        KubeContext           = "$env:clusterName-radius"
+        WorkspaceName         = $env:AZURE_ENV_NAME
+        ResourceGroup         = 'oms'
+        EnvironmentName       = 'oms-azure'
+        AppNamespace          = 'oms-azure'
+      }
+      if ($env:SQL_LOCATION) { $environmentArgs.SqlLocation = $env:SQL_LOCATION }
+      if ($env:POSTGRES_LOCATION) { $environmentArgs.PostgresLocation = $env:POSTGRES_LOCATION }
+      if ($env:PRIVATE_CA -eq 'true') { $environmentArgs.IngressCertIssuer = 'bcd-private-ca' }
+      ./scripts/infra/azure/configure-environment.ps1 @environmentArgs
+
   postdeploy:
     shell: pwsh
     interactive: true
@@ -80,16 +98,17 @@ hooks:
         Location                    = $env:AZURE_LOCATION
         Registry                    = $env:registryLoginServer
         AppInfraResourceGroup       = $env:resourceGroupName
+        PlatformResourceGroup       = $env:resourceGroupName
         ClusterName                 = $env:clusterName
         KubeContext                 = "$env:clusterName-radius"
         WorkspaceName               = $env:AZURE_ENV_NAME
+        ResourceGroup               = 'oms'
+        EnvironmentName             = 'oms-azure'
+        AppNamespace                = 'oms-azure'
         OrdersApiAppName            = "oms-api-$env:AZURE_ENV_NAME"
         OrdersSpaAppName            = "oms-spa-$env:AZURE_ENV_NAME"
         InventoryAppName            = "oms-inventory-$env:AZURE_ENV_NAME"
       }
-      if ($env:SQL_LOCATION) { $deployArgs.SqlLocation = $env:SQL_LOCATION }
-      if ($env:POSTGRES_LOCATION) { $deployArgs.PostgresLocation = $env:POSTGRES_LOCATION }
-      if ($env:PRIVATE_CA -eq 'true') { $deployArgs.IngressCertIssuer = 'bcd-private-ca' }
       ./scripts/deploy/azure.ps1 @deployArgs
 
   postdown:

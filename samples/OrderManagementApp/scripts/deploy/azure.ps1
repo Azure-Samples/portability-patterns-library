@@ -1,3 +1,4 @@
+#Requires -Version 7.0
 <#
 .SYNOPSIS
     Deploys the Order Management sample to an AKS cluster backed by Azure PaaS.
@@ -5,7 +6,8 @@
 .DESCRIPTION
     Assumes ./scripts/infra/azure/provision-infra.ps1 has already created the services' managed
     identities and configured the Radius Azure credential, and configure-app-identity.ps1 the app
-    registrations.
+    registrations. Run scripts/infra/azure/configure-environment.ps1 once before deploying the
+    application; this script only publishes artifacts and deploys into that existing environment.
 
     After `rad deploy` it runs the database setup job as the database administrator, which creates
     each service's least-privilege database user, and applies the network policies.
@@ -31,16 +33,6 @@
         -SubscriptionId 00000000-0000-0000-0000-000000000000 `
         -AppInfraResourceGroup bcd-infra
 
-.EXAMPLE
-    # Private registry: supply a scoped ACR token so the Radius control plane can pull Recipes.
-    #   az acr token create --registry mycr --name bcd-recipe-puller `
-    #       --repository recipes/kubernetes-containers content/read --expiration-in-days 30
-    ./scripts/deploy/azure.ps1 `
-        -Registry mycr.azurecr.io `
-        -SubscriptionId <sub-id> `
-        -AppInfraResourceGroup bcd-infra `
-        -RegistryUsername bcd-recipe-puller `
-        -RegistryPassword (Read-Host -AsSecureString)
 #>
 [CmdletBinding()]
 param(
@@ -58,11 +50,6 @@ param(
     # require them, so when omitted random values are generated to satisfy the schema.
     [securestring]$SqlAdminPassword,
     [securestring]$PostgresAdminPassword,
-
-    # Supply these when the registry hosting the Recipes requires authentication. The Radius control
-    # plane pulls Recipes itself, so `az aks update --attach-acr` does not cover it.
-    [string]$RegistryUsername,
-    [securestring]$RegistryPassword,
 
     # The managed identities provision-infra.ps1 created in -PlatformResourceGroup: <prefix>-<service>
     # for each service and <prefix>-db-admin for the database setup job.
@@ -94,15 +81,6 @@ param(
     [string]$AppNamespace = 'oms-azure',
     [string]$Location = 'eastus2',
 
-    # Region for the Azure SQL logical server. Defaults to $Location. Override when the primary
-    # region refuses new SQL servers (RegionDoesNotAllowProvisioning); Azure SQL is reached over its
-    # public FQDN, so a different region works at the cost of latency and cross-region egress.
-    [string]$SqlLocation,
-
-    # Region for the PostgreSQL flexible server. Defaults to $Location. Override when the primary
-    # region offers no PostgreSQL versions to the subscription (ParameterOutOfRange on 'Version').
-    [string]$PostgresLocation,
-
     # Entra app registrations for user sign-in, as created by scripts/infra/azure/configure-app-identity.ps1.
     [string]$OrdersApiAppName = 'oms-api',
     [string]$OrdersSpaAppName = 'oms-spa',
@@ -110,12 +88,8 @@ param(
     [int]$UiLocalPort = 5090,
 
     # Managed ingress from scripts/infra/azure/provision-ingress.ps1.
-    [string]$IngressClassName = 'webapprouting.kubernetes.azure.com',
-    [string]$IngressCertIssuer = 'letsencrypt',
     [string]$IngressNamespace = 'app-routing-system',
 
-    # Lifetime of the read-only registry token minted for Recipe pulls when no -RegistryUsername is given.
-    [int]$RecipeTokenDays = 7,
     [switch]$SkipImageBuild
 )
 
@@ -123,112 +97,30 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 . (Join-Path $repoRoot 'scripts/lib/recipes.ps1')
 . (Join-Path $repoRoot 'scripts/lib/database.ps1')
+. (Join-Path $repoRoot 'scripts/lib/deployment.ps1')
 if (-not $PlatformResourceGroup) { $PlatformResourceGroup = $AppInfraResourceGroup }
 Push-Location $repoRoot
-
-# $ErrorActionPreference does not apply to native commands, so every external call is checked.
-function Invoke-Checked {
-    param(
-        [Parameter(Mandatory = $true)][string]$What,
-        [Parameter(Mandatory = $true)][scriptblock]$Command
-    )
-
-    & $Command
-    if ($LASTEXITCODE -ne 0) {
-        throw "$What failed with exit code $LASTEXITCODE."
-    }
-}
-
-# `rad deploy --parameters key=value` only supports strings. Booleans and integers must come from
-# an ARM-format parameter file, so non-string values are written to a temporary file instead.
-function New-ParameterFile {
-    param([Parameter(Mandatory = $true)][hashtable]$Values)
-
-    $parameters = @{}
-    foreach ($key in $Values.Keys) {
-        $parameters[$key] = @{ value = $Values[$key] }
-    }
-
-    $document = @{
-        '$schema'      = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'
-        contentVersion = '1.0.0.0'
-        parameters     = $parameters
-    }
-
-    $path = Join-Path ([System.IO.Path]::GetTempPath()) "oms-params-$([guid]::NewGuid().ToString('N')).json"
-    # Windows PowerShell's 'utf8' encoding emits a BOM, which the rad CLI rejects with
-    # "invalid character 'ï' looking for beginning of value".
-    [System.IO.File]::WriteAllText($path, ($document | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
-    return $path
-}
 
 $temporaryFiles = @()
 
 try {
-    # Check registry access before doing any expensive work. The Radius control plane pulls Recipes
-    # itself and cannot use the workload identity for it (bicepSettings supports only BasicAuth
-    # today), so a registry that allows neither anonymous pull nor a token rejects those pulls with
-    # 401 -- but only once a Recipe runs, several minutes into the deployment.
-    if (-not $RegistryUsername -and $Registry -like '*.azurecr.io') {
-        $acrName = $Registry.Split('.')[0]
-        $anonymousPull = az acr show --name $acrName --query anonymousPullEnabled --output tsv 2>$null
-        if ($LASTEXITCODE -eq 0 -and $anonymousPull -eq 'false') {
-            # A scoped, read-only, expiring token. ACR repository names are literal, so every Recipe
-            # repository is listed individually. Refreshed on each run so it never silently expires.
-            Write-Host "==> Minting a read-only Recipe pull token for $Registry ($RecipeTokenDays days)" -ForegroundColor Cyan
-            $RegistryUsername = 'bcd-recipe-puller'
-            $repositories = Get-LibraryRecipe -Platform azure | ForEach-Object { "recipes/$($_.BaseName)" }
-            $scopeArguments = $repositories | ForEach-Object { '--repository', $_, 'content/read', 'metadata/read' }
-
-            az acr scope-map show --registry $acrName --name $RegistryUsername --only-show-errors 2>$null | Out-Null
-            $scopeVerb = if ($LASTEXITCODE -eq 0) { 'update' } else { 'create' }
-            if ($scopeVerb -eq 'update') {
-                $scopeArguments = $repositories | ForEach-Object { '--add-repository', $_, 'content/read', 'metadata/read' }
-            }
-            Invoke-Checked "az acr scope-map $scopeVerb" {
-                az acr scope-map $scopeVerb --registry $acrName --name $RegistryUsername @scopeArguments --only-show-errors | Out-Null
-            }
-            az acr token show --registry $acrName --name $RegistryUsername --only-show-errors 2>$null | Out-Null
-            if ($LASTEXITCODE -ne 0) {
-                Invoke-Checked 'az acr token create' {
-                    az acr token create --registry $acrName --name $RegistryUsername --scope-map $RegistryUsername --no-passwords --only-show-errors | Out-Null
-                }
-            }
-            $tokenPassword = az acr token credential generate --registry $acrName --name $RegistryUsername `
-                --password1 --expiration-in-days $RecipeTokenDays --query 'passwords[0].value' --output tsv --only-show-errors
-            if ($LASTEXITCODE -ne 0 -or -not $tokenPassword) { throw 'Generating the Recipe pull token password failed.' }
-            $RegistryPassword = ConvertTo-SecureString $tokenPassword -AsPlainText -Force
-            $tokenPassword = $null
-        }
-    }
-
+    Invoke-OmsChecked 'az account set' { az account set --subscription $SubscriptionId }
     # Mint a fresh ServiceAccount token before anything else. Without this the deployment depends on
     # a token minted by provision-infra.ps1, which expires (24h by default) and does not exist at
     # all on a machine that never ran it, such as a CI agent. See ensure-radius-context.ps1.
     if ($UseEntraAuthentication) {
         $KubeContext = ./scripts/lib/ensure-radius-context.ps1 `
             -ClusterName $ClusterName `
-            -TokenHours $RadiusCliTokenHours
+            -TokenHours $RadiusCliTokenHours `
+            -ContextName $KubeContext
     }
 
-    # The workspace must be bound to the AKS cluster before any group is created, otherwise `rad`
-    # targets whichever cluster the default workspace points at. --context is explicit for the same
-    # reason. The group cannot be set on first creation because it does not exist yet, so the
-    # workspace is created twice.
-    Write-Host "==> Binding Radius workspace '$WorkspaceName' to context '$KubeContext'" -ForegroundColor Cyan
-    Invoke-Checked 'rad workspace create' {
-        rad workspace create kubernetes $WorkspaceName --context $KubeContext --force
+    $environment = rad env show $EnvironmentName --group $ResourceGroup --workspace $WorkspaceName --output json 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($environment) -or $environment -eq 'null') {
+        throw "Radius environment '$EnvironmentName' in group '$ResourceGroup' and workspace '$WorkspaceName' is not available. Run ./scripts/configure-environment.ps1 -Target Azure with matching platform settings first."
     }
-    Invoke-Checked 'rad group create' { rad group create $ResourceGroup --workspace $WorkspaceName }
-    Invoke-Checked 'rad workspace bind group' {
-        rad workspace create kubernetes $WorkspaceName --context $KubeContext --group $ResourceGroup --force
-    }
-
-    Write-Host "==> Registering the messageQueues Resource Type" -ForegroundColor Cyan
-    Invoke-Checked 'rad resource-type create' {
-        rad resource-type create messageQueues -f $QueueTypeFile --workspace $WorkspaceName
-    }
-    Invoke-Checked 'rad bicep publish-extension' {
+    # This extension is a local compiler artifact, not control-plane Resource Type registration.
+    Invoke-OmsChecked 'rad bicep publish-extension' {
         rad bicep publish-extension -f $QueueTypeFile --target $QueueTypeExtension
     }
 
@@ -262,10 +154,10 @@ try {
 
         Write-Host "==> Building and pushing images to $Registry with $containerTool" -ForegroundColor Cyan
         foreach ($worker in $images) {
-            Invoke-Checked "$containerTool build $worker" {
+            Invoke-OmsChecked "$containerTool build $worker" {
                 & $containerTool build -f "docker/Dockerfile.$worker" -t "$Registry/oms/${worker}:latest" .
             }
-            Invoke-Checked "$containerTool push $worker" { & $containerTool push "$Registry/oms/${worker}:latest" }
+            Invoke-OmsChecked "$containerTool push $worker" { & $containerTool push "$Registry/oms/${worker}:latest" }
         }
     }
 
@@ -273,134 +165,26 @@ try {
     $imageDigests = @{}
     foreach ($worker in $images) {
         $imageDigests[$worker] = az acr manifest show-metadata "$Registry/oms/${worker}:latest" --query digest --output tsv 2>$null
-        if (-not $imageDigests[$worker]) { throw "Could not read the digest of oms/${worker}:latest in $Registry." }
+        if ($LASTEXITCODE -ne 0 -or -not $imageDigests[$worker]) { throw "Could not read the digest of oms/${worker}:latest in $Registry." }
     }
 
     # Each service's own managed identity, and the database administrator's.
     Write-Host "==> Reading the services' managed identities from '$PlatformResourceGroup'" -ForegroundColor Cyan
     $identities = @{}
     foreach ($name in @($WorkloadNames) + 'db-admin') {
-        $identity = az identity show --resource-group $PlatformResourceGroup --name "$IdentityPrefix-$name" --output json 2>$null | ConvertFrom-Json
-        if (-not $identity) { throw "Managed identity '$IdentityPrefix-$name' not found in '$PlatformResourceGroup'. Run scripts/infra/azure/provision-infra.ps1." }
-        $identities[$name] = $identity
+        $identityJson = az identity show --resource-group $PlatformResourceGroup --name "$IdentityPrefix-$name" --output json 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $identityJson) { throw "Managed identity '$IdentityPrefix-$name' not found in '$PlatformResourceGroup'. Run scripts/infra/azure/provision-infra.ps1." }
+        $identities[$name] = $identityJson | ConvertFrom-Json
     }
-    $workloadClientIds = @{}
-    foreach ($name in $WorkloadNames) { $workloadClientIds[$name] = $identities[$name].clientId }
-    $applicationInsightsConnectionString = az resource list --resource-group $PlatformResourceGroup `
-        --resource-type Microsoft.Insights/components --query '[0].properties.ConnectionString' --output tsv 2>$null
-    if (-not $applicationInsightsConnectionString) {
-        $applicationInsightsConnectionString = az monitor app-insights component show --resource-group $PlatformResourceGroup `
-            --query '[0].connectionString' --output tsv 2>$null
-    }
-    if (-not $applicationInsightsConnectionString) { Write-Warning "No Application Insights in '$PlatformResourceGroup'; the services will send no telemetry." }
-    $alertActionGroupId = az monitor action-group list --resource-group $PlatformResourceGroup --query '[0].id' --output tsv 2>$null
-
     Write-Host "==> Publishing Azure Recipes" -ForegroundColor Cyan
     ./scripts/deploy/publish-recipes.ps1 -Registry $Registry -Platform azure
 
-    # `rad deploy` always needs an environment to deploy into, including for the Recipe Pack that
-    # the real environment depends on.
-    Write-Host "==> Creating the bootstrap environment" -ForegroundColor Cyan
-    Invoke-Checked 'rad env create bootstrap' {
-        rad env create bootstrap --group $ResourceGroup --workspace $WorkspaceName
-    }
-
-    Write-Host "==> Deploying Recipe Pack" -ForegroundColor Cyan
-    if (-not $SqlLocation) { $SqlLocation = $Location }
-    if (-not $PostgresLocation) { $PostgresLocation = $Location }
-
     # Published through the managed ingress when scripts/infra/azure/provision-ingress.ps1 has set it up.
-    $dnsLabel = kubectl get service nginx -n app-routing-system --context $KubeContext --ignore-not-found `
+    $dnsLabel = kubectl get service nginx -n $IngressNamespace --context $KubeContext --ignore-not-found `
         -o 'jsonpath={.metadata.annotations.service\.beta\.kubernetes\.io/azure-dns-label-name}' 2>$null
+    if ($LASTEXITCODE -ne 0) { throw 'Could not discover the managed ingress host.' }
     $ingressHost = if ($dnsLabel) { "$dnsLabel.$Location.cloudapp.azure.com" } else { '' }
     if ($ingressHost) { Write-Host "    publishing through the managed ingress at https://$ingressHost" -ForegroundColor DarkGray }
-    # Which service gets which access is the app's knowledge, so it's decided here; the Recipe Pack
-    # only applies it.
-    $recipePackParameters = New-ParameterFile @{
-        registry                            = $Registry
-        workloadClientIds                   = $workloadClientIds
-        queueSenderPrincipalIds             = @($identities['api'].principalId)
-        queueReceiverPrincipalIds           = @($identities['processor'].principalId)
-        storageContributorPrincipalIds      = @($identities['processor'].principalId)
-        databaseAdministratorPrincipalId    = $identities['db-admin'].principalId
-        databaseAdministratorName           = $identities['db-admin'].name
-        applicationInsightsConnectionString = [string]$applicationInsightsConnectionString
-        alertActionGroupId                  = [string]$alertActionGroupId
-        location                            = $Location
-        sqlLocation                         = $SqlLocation
-        postgresLocation                    = $PostgresLocation
-        # The app's route is always published through the managed ingress; with no DNS label it
-        # answers on the ingress's address, without a certificate.
-        ingressClassName                    = $IngressClassName
-        ingressHost                         = $ingressHost
-        ingressCertIssuer                   = $(if ($ingressHost) { $IngressCertIssuer } else { '' })
-    }
-    $temporaryFiles += $recipePackParameters
-    Invoke-Checked 'rad deploy recipe pack' {
-        rad deploy (Join-Path $LibraryRecipePackRoot 'azure.bicep') `
-            --workspace $WorkspaceName `
-            --group $ResourceGroup `
-            --environment bootstrap `
-            --parameters "@$recipePackParameters"
-    }
-
-    Write-Host "==> Deploying Environment" -ForegroundColor Cyan
-    Invoke-Checked 'rad deploy environment' {
-        rad deploy deploy/environments/azure.bicep `
-            --workspace $WorkspaceName `
-            --group $ResourceGroup `
-            --environment bootstrap `
-            --parameters subscriptionId=$SubscriptionId `
-            --parameters resourceGroupName=$AppInfraResourceGroup
-    }
-
-    if ($RegistryUsername) {
-        # The Radius control plane pulls Recipes itself and does not use the kubelet identity, so a
-        # private registry needs explicit credentials. The secret requires an existing Environment,
-        # which is why this runs after the Environment is created and the Environment is then
-        # updated to reference the resulting settings.
-        Write-Host "==> Configuring private registry authentication for Recipes" -ForegroundColor Cyan
-
-        if (-not $RegistryPassword) {
-            throw "-RegistryPassword is required when -RegistryUsername is supplied."
-        }
-        $plainRegistryPassword = [System.Net.NetworkCredential]::new('', $RegistryPassword).Password
-
-        Invoke-Checked 'rad deploy registry auth' {
-            rad deploy deploy/recipe-registry-credentials.bicep `
-                --workspace $WorkspaceName `
-                --group $ResourceGroup `
-                --environment $EnvironmentName `
-                --parameters registryHost=$Registry `
-                --parameters registryUsername=$RegistryUsername `
-                --parameters registryPassword=$plainRegistryPassword
-        }
-
-        Write-Host "==> Pointing the Environment at the registry credentials" -ForegroundColor Cyan
-
-        # Look the ID up rather than hand-constructing it, and pass it as a string. A conditional
-        # `existing` reference inside the template fails before the resource exists.
-        $bicepSettingsId = rad resource show Radius.Core/bicepSettings oms-registry-auth `
-            --workspace $WorkspaceName --group $ResourceGroup --output json 2>$null |
-            ConvertFrom-Json | Select-Object -ExpandProperty id
-        if ([string]::IsNullOrWhiteSpace($bicepSettingsId)) {
-            throw 'Could not resolve the ID of the bicepSettings resource just deployed.'
-        }
-
-        Invoke-Checked 'rad deploy environment with registry auth' {
-            rad deploy deploy/environments/azure.bicep `
-                --workspace $WorkspaceName `
-                --group $ResourceGroup `
-                --environment bootstrap `
-                --parameters subscriptionId=$SubscriptionId `
-                --parameters resourceGroupName=$AppInfraResourceGroup `
-                --parameters bicepSettingsId=$bicepSettingsId
-        }
-    }
-    else {
-        Write-Host "==> Skipping registry authentication; assuming anonymous pull is enabled" -ForegroundColor DarkGray
-    }
-
     # Azure SQL and PostgreSQL are created with Entra-only authentication, so neither administrator
     # password is sent to Azure. The Radius Resource Types still mark `password` as required, so
     # generate values that satisfy the schema and are then discarded.
@@ -414,8 +198,11 @@ try {
 
     # User sign-in through Entra ID. Same app code as Azure Local; only these values differ.
     $tenantId = az account show --query tenantId --output tsv
+    if ($LASTEXITCODE -ne 0 -or -not $tenantId) { throw 'Could not read the Azure tenant ID.' }
     $apiAppId = az ad app list --display-name $OrdersApiAppName --query '[0].appId' --output tsv
+    if ($LASTEXITCODE -ne 0) { throw "Could not read app registration '$OrdersApiAppName'." }
     $spaAppId = az ad app list --display-name $OrdersSpaAppName --query '[0].appId' --output tsv
+    if ($LASTEXITCODE -ne 0) { throw "Could not read app registration '$OrdersSpaAppName'." }
     $apiAuthentication = @{}
     $spaSettings = @{}
     if ($apiAppId -and $spaAppId) {
@@ -441,14 +228,14 @@ try {
     # The inventory service accepts only tokens Entra issued for its own app registration, to the
     # managed identities granted one of its roles.
     $inventoryAppId = az ad app list --display-name $InventoryAppName --query '[0].appId' --output tsv
-    if (-not $inventoryAppId) { throw "App registration '$InventoryAppName' not found. Run scripts/infra/azure/configure-app-identity.ps1." }
+    if ($LASTEXITCODE -ne 0 -or -not $inventoryAppId) { throw "App registration '$InventoryAppName' not found. Run scripts/infra/azure/configure-app-identity.ps1." }
     $inventoryAuthentication = @{
         Authority = "https://login.microsoftonline.com/$tenantId/v2.0"
         Audience  = $inventoryAppId
     }
 
     # The same parameters as on Azure Local: everything platform-specific is in the Recipe Pack.
-    $applicationParameters = New-ParameterFile @{
+    $applicationParameters = New-OmsParameterFile @{
         apiImage                = "$Registry/oms/api@$($imageDigests['api'])"
         processorImage          = "$Registry/oms/processor@$($imageDigests['processor'])"
         inventoryImage          = "$Registry/oms/inventory@$($imageDigests['inventory'])"
@@ -459,10 +246,8 @@ try {
         sqlAdminPassword        = $plainPassword
         postgresAdminPassword   = $plainPostgresPassword
     }
-    $temporaryFiles += $applicationParameters
-
     Write-Host "==> Deploying application" -ForegroundColor Cyan
-    Invoke-Checked 'rad deploy application' {
+    Invoke-OmsChecked 'rad deploy application' {
         rad deploy deploy/app.bicep `
             --workspace $WorkspaceName `
             --group $ResourceGroup `
@@ -500,9 +285,11 @@ try {
     # connect straight away rather than on their next retry.
     Write-Host "==> Waiting for the application to roll out" -ForegroundColor Cyan
     foreach ($name in $WorkloadNames) {
-        kubectl rollout restart deployment $name --namespace $AppNamespace --context $KubeContext | Out-Null
+        Invoke-OmsChecked "kubectl rollout restart $name" {
+            kubectl rollout restart deployment $name --namespace $AppNamespace --context $KubeContext | Out-Null
+        }
     }
-    Invoke-Checked 'kubectl rollout status' {
+    Invoke-OmsChecked 'kubectl rollout status' {
         kubectl rollout status deployment --namespace $AppNamespace --context $KubeContext --timeout=600s | Out-Null
     }
 

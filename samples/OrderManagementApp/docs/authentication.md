@@ -75,9 +75,10 @@ in the table above.
   services' users are their managed identities.
 - **Azure Local:** each service has a database login of its own (`api`, `processor`, `inventory`).
   The passwords, and the administrators', are in Azure Key Vault, which the Secret Store extension
-  syncs into the cluster while the link to Azure is up. The deploy script sets them in the
+  syncs into the cluster while the link to Azure is up. The deploy script initializes them in the
   databases, then gives each service only its own password, in Secret `<service>-db-credentials`.
-  See the [README](../README.md#deploy-to-azure-local) to change one.
+  Later changes use `scripts/rotate-database-passwords.ps1`, not ordinary deployment.
+  See the [README](../README.md#explicit-database-password-rotation).
 
 ### Calls between services
 

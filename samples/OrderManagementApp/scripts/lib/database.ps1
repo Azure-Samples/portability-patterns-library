@@ -99,6 +99,7 @@ function Get-OmsSecretData {
 
     $data = @{}
     $secret = kubectl get secret $Name --namespace $Namespace --context $KubeContext --ignore-not-found -o json 2>$null
+    if ($LASTEXITCODE -ne 0) { throw "Could not read Secret '$Namespace/$Name'." }
     if (-not $secret) { return $data }
     $values = ($secret | Out-String | ConvertFrom-Json).data
     if ($values) {
