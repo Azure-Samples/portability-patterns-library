@@ -1,8 +1,6 @@
 # Key Vault with the Secret Store extension on Azure Local
 
-> **Draft.** The Order Management sample doesn't use it yet. The sample is planned.
-
-The [Azure Key Vault Secret Store extension](https://learn.microsoft.com/azure/azure-arc/kubernetes/secret-store-extension) (generally available) is an Arc extension for Kubernetes clusters, including AKS on Azure Local. It copies secrets from Key Vault into Kubernetes Secrets, on a schedule, so workloads read them locally and keep working while the cluster is disconnected.
+The [Azure Key Vault Secret Store extension](https://learn.microsoft.com/azure/azure-arc/kubernetes/secret-store-extension) (generally available) is an Arc extension for Kubernetes clusters, including AKS on Azure Local. It copies secrets from Key Vault into Kubernetes Secrets on a schedule, so workloads read them locally and keep working while the cluster is disconnected.
 
 ```text
 Key Vault (Azure)
@@ -12,7 +10,7 @@ Secret Store extension (in the cluster)
       │  SecretProviderClass: which vault and which secrets
       │  SecretSync: which Kubernetes Secret to write
       ▼
-Kubernetes Secret  ──►  application pod (mounted file or environment variable)
+Kubernetes Secret  ──►  application pod (environment variable or mounted file)
 ```
 
 ## Key Vault on AKS compared with the extension on Azure Local
@@ -20,50 +18,45 @@ Kubernetes Secret  ──►  application pod (mounted file or environment varia
 | | AKS with the Key Vault Secrets Provider | AKS on Azure Local with the Secret Store extension |
 |---|---|---|
 | Who calls Key Vault | The CSI driver, as the application's workload identity | The extension, as its own workload identity |
-| Where the secret lives in the cluster | Mounted into the pod; optionally synced to a Kubernetes Secret | Always a Kubernetes Secret, stored in etcd |
+| Where the secret lives in the cluster | Mounted into the pod; optionally synced to a Kubernetes Secret | Always a Kubernetes Secret |
 | When Key Vault is unreachable | A new pod can't mount the secret | Pods keep reading the copied Secret |
 | Rotation | Polled by the driver | Polled by the extension (`rotationPollIntervalInSeconds`) |
-| Application reads | Files or environment variables | Files or environment variables |
-| Keys and certificates | Certificates can be retrieved as secrets; key operations call Key Vault | Same; key operations need the link to Azure |
+| Secrets | ✅ | ✅ |
+| Certificates | ✅ | ✅ With the private key, as a `kubernetes.io/tls` Secret; the key must be exportable |
+| Key operations (sign, encrypt, wrap) | Call Key Vault | Call Key Vault, so they need the link to Azure |
+| Direction | Key Vault → cluster | Key Vault → cluster. Secrets created on site aren't copied back. |
 
 The older Azure Key Vault Secrets Provider extension for Arc retires on 9 October 2027. Don't install it next to the Secret Store extension.
 
-## Setting it up on AKS on Azure Local
+## How the Order Management sample does it
 
-1. **Workload identity federation on the cluster.** On AKS on Azure Local it's [enabled when the cluster is created](https://learn.microsoft.com/azure/aks-hybrid-edge/local/hyperconverged/workload-identity) (`--enable-oidc-issuer --enable-workload-identity`, preview). An existing cluster has to be recreated.
-2. **A managed identity** with the Key Vault Secrets User role on the vault, and a federated credential for the extension's service account. See [workload identity federation in Arc-enabled Kubernetes](https://learn.microsoft.com/azure/azure-arc/kubernetes/conceptual-workload-identity).
-3. **The extension** installed on the cluster, with a rotation interval that fits how quickly a changed secret must arrive.
-4. **A `SecretProviderClass` and `SecretSync`** for each Kubernetes Secret, in the application's namespace. See the [configuration reference](https://learn.microsoft.com/azure/azure-arc/kubernetes/secret-store-extension-reference).
-5. **Restrict access to the Secret** with Kubernetes RBAC: only the application's service account and the extension should read it.
+On Azure every service signs in with workload identity, so there are no secrets. On Azure Local, the database passwords live in Key Vault:
 
-## How the Order Management sample will do it
-
-Planned:
-
-| Step | Plan |
+| Step | In the sample |
 |---|---|
-| What is stored | The application's own SQL Server login, replacing `sa`. |
-| How the application reads it | The SQL Recipe on Azure Local reads the copied Kubernetes Secret, so the application's configuration doesn't change. |
-| Azure | No Key Vault needed: every service signs in with workload identity. |
-
-## Risks to test
-
-- **The cluster's token issuer.** Enabling workload identity federation sets the issuer that Keycloak trusts for the application's tokens. That trust has to be checked after the cluster is recreated.
-- **cert-manager.** The extension requires the [Certificate Management for Azure Arc](https://learn.microsoft.com/azure/azure-arc/kubernetes/secret-store-extension) extension, which installs cert-manager and trust-manager. The connected registry extension already brings cert-manager to the cluster, so check that the two can coexist.
+| Workload identity on the cluster | [platform-resources.bicep](../../../samples/OrderManagementApp/infra/azurelocal/platform-resources.bicep) turns on the OIDC issuer and workload identity when the cluster is created, and installs the Certificate Management extension, the cluster's one cert-manager, which the Secret Store extension requires |
+| Vault, identity and extension | [key-vault.bicep](../../../samples/OrderManagementApp/infra/azurelocal/key-vault.bicep): Key Vault with RBAC and purge protection, a managed identity with Key Vault Secrets User federated with the `secret-sync` service account, and the extension (hourly poll) |
+| What is copied | [key-vault-sync.yaml](../../../samples/OrderManagementApp/infra/azurelocal/key-vault-sync.yaml): the SQL Server and PostgreSQL administrator passwords and each service's own database password, into Secret `oms-db-passwords` |
+| First passwords | [key-vault.ps1](../../../samples/OrderManagementApp/scripts/infra/azurelocal/key-vault.ps1) generates any password not yet in Key Vault and waits until the sync has copied it |
+| Getting a password to a service | [azurelocal.ps1](../../../samples/OrderManagementApp/scripts/deploy/azurelocal.ps1) sets each password in its database, then copies it into `<service>-db-credentials`, which the Recipe Pack gives to that service only as environment variables |
+| Rotation | Set a new version in Key Vault. After the next sync, run the deploy script again: it changes the password in the database and restarts the service. A pod that restarts in between keeps the password the database still has. |
+| Keycloak and the new issuer | Workload identity gives the cluster's tokens a public issuer URL. [realm.json](../../../samples/OrderManagementApp/infra/azurelocal/keycloak/realm.json) sets Keycloak's `issuerDiscoveryUrl` to `https://kubernetes.default.svc`, so Keycloak reads the signing keys from the API server, not from Azure. Check that the `jwks_uri` in `kubectl get --raw /.well-known/openid-configuration` is on site. |
 
 ## Not covered by the sample
 
-Before production:
+The sample is sample code. Before production:
 
-- encrypt Secrets at rest in etcd and confirm how your cluster does it;
-- monitor the extension's sync status and alert when a secret stops updating;
-- decide how long the site may run with a secret that can't be rotated.
+- confirm how Secrets are encrypted at rest in your cluster;
+- alert when a secret stops syncing;
+- decide how long the site may run with a secret that can't be rotated, within Arc's 90-day limit;
+- for public TLS certificates, prefer issuing them on each site (for example ACME with DNS validation) over copying them from Key Vault, so renewal doesn't depend on Azure.
 
 ## References
 
 - [Use the Secret Store extension](https://learn.microsoft.com/azure/azure-arc/kubernetes/secret-store-extension)
 - [Secret Store extension reference](https://learn.microsoft.com/azure/azure-arc/kubernetes/secret-store-extension-reference)
 - [Workload identity on AKS on Azure Local](https://learn.microsoft.com/azure/aks-hybrid-edge/local/hyperconverged/workload-identity)
+- [Workload identity federation in Arc-enabled Kubernetes](https://learn.microsoft.com/azure/azure-arc/kubernetes/conceptual-workload-identity)
+- [Arc-enabled Kubernetes connectivity modes](https://learn.microsoft.com/azure/azure-arc/kubernetes/conceptual-connectivity-modes)
 - [Key Vault Secrets Provider on AKS](https://learn.microsoft.com/azure/aks/csi-secrets-store-driver)
 - [Key Vault RBAC](https://learn.microsoft.com/azure/key-vault/general/rbac-guide)
-- [Key Vault best practices](https://learn.microsoft.com/azure/key-vault/general/best-practices)

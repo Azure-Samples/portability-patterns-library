@@ -1,8 +1,6 @@
 # OpenTelemetry Collector with Prometheus, Loki, Tempo and Grafana as an alternative to Application Insights
 
-> **Draft.** The Order Management sample doesn't use it yet. The sample is planned.
-
-On Azure Local, an on-site stack stores and shows the telemetry that Application Insights and Log Analytics hold on Azure. Every part runs in the cluster, so it keeps working when the site is cut off from Azure:
+On Azure Local, an on-site stack stores and shows the telemetry that Application Insights and Log Analytics hold on Azure. Every part runs in the cluster, and its images come from the in-cluster registry, so it keeps working when the site is cut off from Azure:
 
 | Part | Role | Licence |
 |---|---|---|
@@ -17,7 +15,7 @@ On Azure Local, an on-site stack stores and shows the telemetry that Application
 | Application Insights / Log Analytics | On-site stack | Notes |
 |---|---|---|
 | Connection string | Collector endpoint in `OTEL_EXPORTER_OTLP_ENDPOINT` | |
-| Azure Monitor OpenTelemetry Distro | OpenTelemetry SDK with the OTLP exporter | Same instrumentation libraries. |
+| Azure Monitor OpenTelemetry exporter or Distro | OpenTelemetry SDK with the OTLP exporter | Same instrumentation libraries. |
 | Requests, dependencies (traces) | Traces in Tempo | |
 | Custom metrics, performance counters | Metrics in Prometheus | |
 | Traces and exceptions (logs) | Logs in Loki, linked to traces by trace ID | |
@@ -30,26 +28,27 @@ On Azure Local, an on-site stack stores and shows the telemetry that Application
 | Microsoft Entra authentication for ingestion | Cluster-internal endpoint, network policies, optionally mutual TLS | |
 | Azure RBAC on the workspace | Grafana users and teams, signed in through the site's identity provider | Grafana supports OpenID Connect, so it can use Keycloak. |
 
-## How the Order Management sample will do it
+## How the Order Management sample does it
 
-Planned:
-
-| Step | Plan |
+| Step | In the sample |
 |---|---|
-| Instrumentation | The API, processor and inventory service use OpenTelemetry for ASP.NET Core, HTTP, SQL and the queue clients. |
-| Choosing the exporter | At startup from configuration: Azure Monitor on Azure, OTLP on Azure Local. Same images. |
-| One trace per order | Trace context travels in the queue message headers, from the API through the processor to the inventory service. |
-| Alerts on site | Dead-lettered orders, a stalled processor, low stock and expiring certificates. |
-| Images | Mirrored into the in-cluster connected registry, like every other image on Azure Local. |
+| Instrumentation | [TelemetryExtensions.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Diagnostics/TelemetryExtensions.cs): traces, metrics and logs for the API, processor and inventory service, including HTTP, SQL Server and Npgsql |
+| Choosing the exporter | The same file, at startup: Azure Monitor when `APPLICATIONINSIGHTS_CONNECTION_STRING` is set, OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Each target's Recipe Pack sets one of them, so the images are the same. |
+| Signing in to Application Insights | Local authentication is off; each service sends with its own managed identity and the Monitoring Metrics Publisher role ([platform-resources.bicep](../../../samples/OrderManagementApp/infra/azure/platform-resources.bicep)) |
+| One trace per order | [MessagingTelemetry.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Diagnostics/MessagingTelemetry.cs) carries the W3C trace context in the message: RabbitMQ headers or Service Bus application properties |
+| Business metrics | [OrderMetrics.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Diagnostics/OrderMetrics.cs): orders placed and completed, processing time, products below their reorder level |
+| The stack on site | [provision-observability.ps1](../../../samples/OrderManagementApp/scripts/infra/azurelocal/provision-observability.ps1) installs the collector, kube-prometheus-stack (Prometheus, Alertmanager, Grafana), Loki and Tempo from Helm charts with the [values in the sample](../../../samples/OrderManagementApp/infra/azurelocal/observability/README.md). Loki and Tempo run as single processes on persistent volumes. |
+| Grafana access | Signs in through Keycloak only. The realm role `Inventory.Manage` gets Editor, everyone else Viewer. |
+| Alerts | Azure: a dead-letter alert from the Service Bus Recipe, and log alerts for a stalled processor and low stock. Azure Local: [Prometheus rules](../../../samples/OrderManagementApp/infra/azurelocal/observability/monitoring/alerts.yaml) for dead-lettered messages, a stalled processor, low stock and overdue certificate renewals, sent by email through Alertmanager when SMTP is configured. |
 
 ## Not covered by the sample
 
-The stack will be sample code. Before production, add:
+The stack is sample code. Before production, add:
 
 - high availability for each component, or accept gaps in telemetry during restarts;
-- retention and storage sized for your volume;
+- retention and storage sized for your volume (the sample keeps metrics 15 days, logs 7 days and traces 3 days);
 - backups of dashboards and alert rules, ideally kept as code;
-- access control in Grafana through the site's identity provider.
+- pinned chart and image versions that you upgrade deliberately.
 
 ## References
 
