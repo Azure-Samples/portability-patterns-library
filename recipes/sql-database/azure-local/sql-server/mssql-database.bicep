@@ -35,6 +35,12 @@ but licensed for development and testing only.
 ''')
 param edition string = 'Developer'
 
+@description('''
+CPU cores the container may use. Standard and Enterprise are licensed per core, counted from what
+the container can use (with a minimum per container), so this also sets how many cores to license.
+''')
+param cpuLimit string = '2'
+
 @description('Size of the persistent volume holding the databases.')
 param storageSize string = '10Gi'
 
@@ -160,6 +166,7 @@ resource mssql 'apps/StatefulSet@v1' = {
                   memory: '2Gi'
                 }
                 limits: {
+                  cpu: cpuLimit
                   memory: '4Gi'
                 }
               }

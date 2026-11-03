@@ -182,6 +182,16 @@ else {
         if (-not $s.IngressIp) { Add-Result Network 'Ingress address' PASS "the first free address of $($s.LoadBalancerAddresses)" }
         elseif (Test-InRange $s.IngressIp $lbFirst $lbLast) { Add-Result Network 'Ingress address in load balancer range' PASS $s.IngressIp }
         else { Add-Result Network 'Ingress address in load balancer range' FAIL "$($s.IngressIp) is outside $($s.LoadBalancerAddresses)" }
+
+        # The ingress and Keycloak each take an address from the range.
+        $lbSize = (ConvertTo-UInt32 $lbLast) - (ConvertTo-UInt32 $lbFirst) + 1
+        if ($lbSize -ge 2) { Add-Result Network 'Load balancer addresses' PASS "$lbSize (the ingress and Keycloak take one each)" }
+        else { Add-Result Network 'Load balancer addresses' FAIL "$($s.LoadBalancerAddresses) has $lbSize; the ingress and Keycloak need one each" }
+        if ($s.KeycloakIp) {
+            if (-not (Test-InRange $s.KeycloakIp $lbFirst $lbLast)) { Add-Result Network 'Keycloak address in load balancer range' FAIL "$($s.KeycloakIp) is outside $($s.LoadBalancerAddresses)" }
+            elseif ($s.KeycloakIp -eq $s.IngressIp) { Add-Result Network 'Keycloak address' FAIL "$($s.KeycloakIp) is also the ingress address" }
+            else { Add-Result Network 'Keycloak address in load balancer range' PASS $s.KeycloakIp }
+        }
     }
     catch {
         Add-Result Network 'Addresses' FAIL "can't parse the address settings: $($_.Exception.Message)"
@@ -236,6 +246,12 @@ else {
         $notReady = @($nodes.items | Where-Object { ($_.status.conditions | Where-Object type -eq 'Ready').status -ne 'True' })
         if ($notReady) { Add-Result Cluster 'Nodes ready' FAIL "$($notReady.Count) of $($nodes.items.Count) not ready" }
         else { Add-Result Cluster 'Nodes ready' PASS "$($nodes.items.Count) nodes" }
+
+        # The RabbitMQ nodes and the PostgreSQL instances spread one per worker, so losing a worker
+        # loses one replica, not the service.
+        $workers = @($nodes.items | Where-Object { -not $_.metadata.labels.'node-role.kubernetes.io/control-plane' })
+        if ($workers.Count -ge 3) { Add-Result Cluster 'Workers' PASS "$($workers.Count)" }
+        else { Add-Result Cluster 'Workers' WARN "$($workers.Count); with fewer than 3, replicas share a worker and losing it takes the queue or a database down" }
 
         # The connected registry is installed from Azure, which can't check these; a wrong value
         # only fails once the extension is half installed.

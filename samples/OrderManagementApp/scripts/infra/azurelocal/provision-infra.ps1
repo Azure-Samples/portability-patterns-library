@@ -67,10 +67,11 @@ param(
     [string]$PodCidr,
     [int]$ControlPlaneCount = 1,
     [string]$ControlPlaneVmSize = 'Standard_A4_v2',
-    [int]$NodeCount = 2,
+    # Three workers, so each replica of RabbitMQ and the databases runs on its own node.
+    [int]$NodeCount = 3,
 
-    # List valid sizes with: az aksarc vmsize list --custom-location <custom-location-id>
-    [string]$NodeVmSize = 'Standard_A4_v2',
+    # 4 vCPUs and 16 GB. List valid sizes with: az aksarc vmsize list --custom-location <custom-location-id>
+    [string]$NodeVmSize = 'Standard_D4s_v3',
     [string]$KubernetesVersion = '1.33.5',
 
     [string]$AdminGroupName = 'azurelocal-aks-admins',

@@ -6,7 +6,11 @@ kind: Kustomization
 namespace: identity
 
 resources:
+  - service.yaml
   - keycloak.yaml
+
+# Keycloak's database is applied next to this, from database/: cloudnative-pg.yaml when Availability
+# is 'high', statefulset.yaml when it's 'standard'.
 
 # realm.json is imported when Keycloak first starts. Its ${...} placeholders are filled from the
 # keycloak-realm-settings ConfigMap and the oms-ad-bind Secret, which you create per site.
@@ -16,10 +20,9 @@ configMapGenerator:
       - realm.json
 
 # Pulls from the public registries by default. On a site that pulls from its own registry, such as
-# an ACR connected registry, point these at it:
+# an ACR connected registry, point Keycloak at it:
 #   kustomize edit set image quay.io/keycloak/keycloak=<registry>/keycloak/keycloak:26.8
+# and change the database's image in database/ to the same registry.
 images:
   - name: quay.io/keycloak/keycloak
     newTag: "26.8"
-  - name: docker.io/library/postgres
-    newTag: 17-alpine

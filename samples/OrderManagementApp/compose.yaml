@@ -1,6 +1,6 @@
 # Runs the whole app on your machine, with the same backing services as Azure Local:
-# RabbitMQ for the queue, SQL Server for orders, PostgreSQL for the inventory, Azurite for blob
-# storage and Keycloak for sign-in.
+# RabbitMQ for the queue, SQL Server for orders, PostgreSQL for the inventory, SeaweedFS for object
+# storage (S3) and Keycloak for sign-in.
 #
 #   docker compose up --build
 #
@@ -37,12 +37,16 @@ x-connections: &connections
   # The queue: Portability.Messaging/messageQueues
   CONNECTION_QUEUE_PROVIDER: rabbitmq
   CONNECTION_QUEUE_ENDPOINT: rabbitmq:5672
+  # The local broker has no TLS.
+  CONNECTION_QUEUE_TLS: optional
   CONNECTION_QUEUE_QUEUENAME: orders
   CONNECTION_QUEUE_USERNAME: oms
   CONNECTION_QUEUE_PASSWORD: ${LOCAL_PASSWORD:-Local-only-Passw0rd}
-  # Blob storage: Radius.Storage/objectStorage. Azurite's well-known development account.
+  # Object storage: Radius.Storage/objectStorage, an S3 bucket.
+  CONNECTION_ARCHIVE_ENDPOINT: http://seaweedfs:8333
   CONNECTION_ARCHIVE_CONTAINERNAME: orders
-  CONNECTION_ARCHIVE_CONNECTIONSTRING: DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;
+  CONNECTION_ARCHIVE_ACCESSKEYID: oms
+  CONNECTION_ARCHIVE_SECRETACCESSKEY: ${LOCAL_PASSWORD:-Local-only-Passw0rd}
   # The inventory service, called without a token here.
   Inventory__BaseUrl: http://inventory:8080
 
@@ -77,7 +81,7 @@ services:
       dbsetup: { condition: service_completed_successfully }
       rabbitmq: { condition: service_healthy }
       sql: { condition: service_healthy }
-      azurite: { condition: service_started }
+      seaweedfs: { condition: service_healthy }
       keycloak: { condition: service_healthy }
       inventory: { condition: service_started }
 
@@ -94,7 +98,7 @@ services:
       dbsetup: { condition: service_completed_successfully }
       rabbitmq: { condition: service_healthy }
       sql: { condition: service_healthy }
-      azurite: { condition: service_started }
+      seaweedfs: { condition: service_healthy }
       inventory: { condition: service_started }
 
   inventory:
@@ -162,9 +166,18 @@ services:
       interval: 10s
       retries: 18
 
-  azurite:
-    image: mcr.microsoft.com/azure-storage/azurite:3.35.0
-    command: azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck
+  # One SeaweedFS process (master, volume server, filer and S3 together): the store Azure Local runs
+  # replicated. The keys below make an S3 identity that may do everything.
+  seaweedfs:
+    image: docker.io/chrislusf/seaweedfs:4.51
+    command: ["server", "-dir=/data", "-s3", "-ip.bind=0.0.0.0", "-master.telemetry=false"]
+    environment:
+      AWS_ACCESS_KEY_ID: oms
+      AWS_SECRET_ACCESS_KEY: ${LOCAL_PASSWORD:-Local-only-Passw0rd}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8333/status"]
+      interval: 5s
+      retries: 24
 
   # The same realm as on Azure Local (infra/azurelocal/keycloak/realm.json), plus a local test user.
   # Its Active Directory connection points nowhere here; local users don't need it.

@@ -59,6 +59,8 @@ param(
     [string]$PullRegistry,
     [string]$PullSecretName = 'azurelocal-registry',
     [string]$ApplicationNamespace = 'oms-azurelocal',
+    # Secret with the site CA, from provision-ingress.ps1.
+    [string]$SiteCaSecretName = 'oms-site-ca',
     [string]$IngressClassName = 'nginx',
 
     [string]$CollectorChartVersion = '0.178.0',
@@ -80,8 +82,8 @@ param(
     [string]$CollectorQueueStorage = '2Gi',
 
     [string]$GrafanaUrl,
-    # The realm's address as browsers and Grafana reach it. Empty uses https://<node>:30443/realms/oms,
-    # Keycloak's NodePort, as keycloak.ps1 does.
+    # The realm's address as browsers and Grafana reach it. Empty uses https://<Keycloak's load
+    # balancer address>/realms/oms, as keycloak.ps1 does.
     [string]$KeycloakRealmUrl,
 
     [string]$SmtpHost,
@@ -108,7 +110,6 @@ Push-Location $repoRoot
 # other's Services in this namespace, and the app at otel-collector.observability.
 $Namespace = 'observability'
 $IdentityNamespace = 'identity'
-$KeycloakNodePort = 30443
 $valuesDir = Join-Path $repoRoot 'infra/azurelocal/observability'
 
 function Invoke-Checked([string]$What, [scriptblock]$Command) {
@@ -117,9 +118,7 @@ function Invoke-Checked([string]$What, [scriptblock]$Command) {
 }
 
 function Get-SecretData([string]$SecretNamespace, [string]$Name, [string]$Key) {
-    $escaped = $Key.Replace('.', '\.')
-    $value = kubectl get secret $Name -n $SecretNamespace --context $KubeContext --ignore-not-found -o "jsonpath={.data.$escaped}"
-    if ($value) { [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($value)) }
+    Get-OmsSecretValue -KubeContext $KubeContext -Namespace $SecretNamespace -Name $Name -Key $Key
 }
 
 # Writes a Secret from string values without them passing through the command line.
@@ -163,29 +162,11 @@ try {
         throw '-SmtpHost needs -SmtpFrom and -AlertEmailTo too.'
     }
 
-    kubectl create namespace $Namespace --context $KubeContext --dry-run=client -o yaml |
-        kubectl apply --context $KubeContext -f - | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Creating namespace '$Namespace' failed." }
-
     # connected-registry.ps1 writes the pull secret here; a registry set up before 'observability'
-    # was in its list hasn't, so take the application's.
-    if (-not (kubectl get secret $PullSecretName -n $Namespace --context $KubeContext --ignore-not-found -o name)) {
-        $dockerConfig = kubectl get secret $PullSecretName -n $ApplicationNamespace --context $KubeContext -o 'jsonpath={.data.\.dockerconfigjson}'
-        if ($LASTEXITCODE -ne 0 -or -not $dockerConfig) { throw "No pull secret '$PullSecretName' in '$ApplicationNamespace' to copy." }
-        @"
-apiVersion: v1
-kind: Secret
-type: kubernetes.io/dockerconfigjson
-metadata:
-  name: $PullSecretName
-  namespace: $Namespace
-data:
-  .dockerconfigjson: $dockerConfig
-"@ | kubectl apply --context $KubeContext -f - | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Copying the pull secret to '$Namespace' failed." }
-        Write-Host "    copied pull secret $ApplicationNamespace/$PullSecretName" -ForegroundColor DarkGray
-    }
-
+    # was in its list hasn't, so take the application's. The site CA lets Prometheus verify the
+    # brokers it scrapes over TLS.
+    Copy-OmsPullSecret -KubeContext $KubeContext -Namespace $Namespace -SourceNamespace $ApplicationNamespace -SecretName $PullSecretName
+    Copy-OmsSiteCa -KubeContext $KubeContext -Namespace $Namespace -SourceNamespace $ApplicationNamespace -SecretName $SiteCaSecretName
     # ------------------------------------------------------------------------------------------
     # 1. Site values: where Grafana is served, and where it finds Keycloak
     # ------------------------------------------------------------------------------------------
@@ -202,9 +183,8 @@ data:
     if (-not $grafanaPath) { throw "-GrafanaUrl '$GrafanaUrl' has no path. Grafana shares the app's address, so give it one, such as $GrafanaUrl/grafana." }
 
     if (-not $KeycloakRealmUrl) {
-        $nodeIp = kubectl get nodes --context $KubeContext -o 'jsonpath={.items[0].status.addresses[?(@.type=="InternalIP")].address}'
-        if ($LASTEXITCODE -ne 0 -or -not $nodeIp) { throw 'Could not read a node address for Keycloak''s URL. Pass -KeycloakRealmUrl.' }
-        $KeycloakRealmUrl = "https://${nodeIp}:$KeycloakNodePort/realms/oms"
+        $KeycloakRealmUrl = Get-OmsKeycloakIssuer $KubeContext 'oms' $IdentityNamespace
+        if (-not $KeycloakRealmUrl) { throw 'Keycloak''s Service has no load balancer address to build its URL from. Run scripts/infra/azurelocal/keycloak.ps1 first, or pass -KeycloakRealmUrl.' }
     }
     $KeycloakRealmUrl = $KeycloakRealmUrl.TrimEnd('/')
     Write-Host "==> Grafana at $GrafanaUrl, signing in through $KeycloakRealmUrl" -ForegroundColor Cyan
@@ -371,7 +351,7 @@ data:
     }
 
     # ------------------------------------------------------------------------------------------
-    # 6. RabbitMQ and cert-manager scraping, the app's alerts and dashboard
+    # 6. RabbitMQ, PostgreSQL and cert-manager scraping, the app's alerts and dashboard
     # ------------------------------------------------------------------------------------------
     Write-Host '==> Applying infra/azurelocal/observability/monitoring' -ForegroundColor Cyan
     # The PodMonitor selects cert-manager's controller by the labels its chart sets. The Arc
@@ -390,6 +370,7 @@ data:
     if ($LASTEXITCODE -ne 0) { throw 'Could not render infra/azurelocal/observability/monitoring.' }
     # The files name the default namespaces; a site that uses others gets its own.
     $rendered = $rendered -replace '^(\s+- )oms-azurelocal$', "`${1}$ApplicationNamespace" `
+        -replace '^(\s+serverName: metrics\.rabbitmq\.)oms-azurelocal$', "`${1}$ApplicationNamespace" `
         -replace '^(\s+- )cert-manager$', "`${1}$CertManagerNamespace" `
         -replace '^(\s+serverName: cert-manager\.)cert-manager(\.svc)$', "`${1}$CertManagerNamespace`${2}"
     $rendered | kubectl apply --context $KubeContext -f - | Out-Null

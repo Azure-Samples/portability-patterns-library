@@ -86,6 +86,8 @@ spec:
       ports:
         - { port: 1433, protocol: TCP }
 ---
+# The PostgreSQL servers, labelled app=postgres by both Recipes: the inventory service and the setup
+# job connect.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -104,6 +106,43 @@ spec:
       ports:
         - { port: 5432, protocol: TCP }
 ---
+# With high availability, the PostgreSQL pods CloudNativePG runs, selected by its cnpg.io/cluster
+# label, which its instances and the jobs that create replicas both carry: they replicate from each
+# other; the operator checks each instance's status on 8000; the monitoring namespace scrapes their
+# metrics.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-cluster
+  namespace: ${NAMESPACE}
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: cnpg.io/cluster, operator: Exists }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: cnpg.io/cluster, operator: Exists }
+      ports:
+        - { port: 5432, protocol: TCP }
+        - { port: 8000, protocol: TCP }
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: cnpg-system }
+      ports:
+        - { port: 8000, protocol: TCP }
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: ${MONITORING_NAMESPACE} }
+      ports:
+        - { port: 9187, protocol: TCP }
+---
+# The RabbitMQ brokers, labelled app=rabbitmq by both Recipes: the API and processor connect; with
+# high availability the nodes talk to each other (clustering and quorum queue replication) and the
+# Messaging Topology Operator manages queues through the management API; the monitoring namespace
+# scrapes the broker's metrics.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -119,26 +158,18 @@ spec:
             matchExpressions:
               - { key: radapp.io/resource, operator: In, values: [api, processor] }
       ports:
-        - { port: 5672, protocol: TCP }
+        - { port: 5671, protocol: TCP }  # AMQP over TLS
+    - from:
+        - podSelector:
+            matchLabels: { app: rabbitmq }
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: rabbitmq-system }
+      ports:
+        - { port: 15671, protocol: TCP }  # management API over TLS
     # Broker metrics, for the dead-letter alert.
     - from:
         - namespaceSelector:
             matchLabels: { kubernetes.io/metadata.name: ${MONITORING_NAMESPACE} }
       ports:
-        - { port: 15692, protocol: TCP }
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: storage-from-processor
-  namespace: ${NAMESPACE}
-spec:
-  podSelector:
-    matchLabels: { app: azurite }
-  policyTypes: [Ingress]
-  ingress:
-    - from:
-        - podSelector:
-            matchLabels: { radapp.io/resource: processor }
-      ports:
-        - { port: 10000, protocol: TCP }
+        - { port: 15691, protocol: TCP }  # Prometheus over TLS

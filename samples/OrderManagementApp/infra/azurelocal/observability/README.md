@@ -10,7 +10,7 @@ in the cluster. On Azure, Azure Monitor does this job.
 | [kube-prometheus-stack](./kube-prometheus-stack/values.yaml) | Prometheus, Alertmanager, Grafana, kube-state-metrics, node-exporter and the Prometheus operator |
 | [loki](./loki/values.yaml) | Log store, one process, chunks and index on its volume |
 | [tempo](./tempo/values.yaml) | Trace store, one process, blocks on its volume |
-| [monitoring](./monitoring) | RabbitMQ and cert-manager scraping, the app's alerts, the Order Management dashboard |
+| [monitoring](./monitoring) | RabbitMQ, PostgreSQL and cert-manager scraping, the app's alerts, the Order Management dashboard |
 
 The app's pods get `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector.observability.svc.cluster.local:4317`.
 
@@ -56,6 +56,9 @@ To serve Grafana at another address, pass `-GrafanaOrigin` to `keycloak.ps1` and
 | OmsInventoryBelowReorder | `oms_inventory_below_reorder` is above 0 |
 | CertificateRenewalOverdue | A cert-manager certificate is more than an hour past its renewal time and wasn't renewed (`certmanager_certificate_renewal_timestamp_seconds`) |
 | CertManagerMetricsMissing | Prometheus gets nothing from cert-manager, so the alert above can't fire |
+| PostgresInstanceDown | A PostgreSQL instance (the app's or Keycloak's database) has reported PostgreSQL down for 5 minutes (`cnpg_collector_up`) |
+| PostgresReplicationLagging | A replica is more than 5 minutes behind its primary (`cnpg_pg_replication_lag`) |
+| PostgresWalArchivingStalled | A database hasn't archived its write-ahead log for 30 minutes, so its backups have stopped (`cnpg_pg_stat_archiver_seconds_since_last_archival`) |
 
 The chart adds the usual Kubernetes alerts. With `SmtpHost`, `SmtpFrom` and `AlertEmailTo` set,
 Alertmanager emails warning and critical alerts. For a server that needs a password, create the

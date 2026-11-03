@@ -51,14 +51,17 @@ public sealed class RabbitMqMessageBroker : IMessageBroker
             // here; otherwise every reconnect would leak its socket.
             await CloseQuietlyAsync().ConfigureAwait(false);
 
-            var endpoint = new Uri($"amqp://{_options.Endpoint}");
+            var endpoint = new Uri($"{(_options.TlsRequired ? "amqps" : "amqp")}://{_options.Endpoint}");
             var factory = new ConnectionFactory
             {
                 HostName = endpoint.Host,
-                Port = endpoint.IsDefaultPort ? 5672 : endpoint.Port,
+                Port = endpoint.IsDefaultPort ? (_options.TlsRequired ? 5671 : 5672) : endpoint.Port,
                 UserName = _options.Username ?? "guest",
                 Password = _options.Password ?? "guest",
-                AutomaticRecoveryEnabled = true
+                AutomaticRecoveryEnabled = true,
+                // With TLS the broker's certificate must name its host and chain to a CA this process
+                // trusts; on Azure Local that is the site CA the platform gives every pod.
+                Ssl = new SslOption { Enabled = _options.TlsRequired, ServerName = endpoint.Host }
             };
 
             if (_tokenProvider is not null)
@@ -73,8 +76,8 @@ public sealed class RabbitMqMessageBroker : IMessageBroker
             }
 
             _logger.LogInformation(
-                "Connecting to RabbitMQ at {Host}:{Port} for queue {Queue} using {Auth}",
-                factory.HostName, factory.Port, _options.QueueName,
+                "Connecting to RabbitMQ at {Host}:{Port} ({Transport}) for queue {Queue} using {Auth}",
+                factory.HostName, factory.Port, _options.TlsRequired ? "TLS" : "no TLS", _options.QueueName,
                 _tokenProvider is null ? "a password" : "an access token");
 
             _connection = await factory.CreateConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -190,9 +193,12 @@ public sealed class RabbitMqMessageBroker : IMessageBroker
             closed.TrySetResult(channel.CloseReason?.ReplyText ?? "closed before subscribing");
         }
 
+        // One message at a time, like the handler: a prefetched message would wait unacknowledged
+        // behind the one in progress, which can take minutes while the inventory service is down,
+        // and RabbitMQ closes a channel holding a message unacknowledged past its consumer timeout.
         await channel.BasicQosAsync(
             prefetchSize: 0,
-            prefetchCount: 8,
+            prefetchCount: 1,
             global: false,
             cancellationToken: cancellationToken).ConfigureAwait(false);
 

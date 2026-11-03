@@ -226,7 +226,7 @@ grafana:
       name: Keycloak
       client_id: grafana
       scopes: openid profile email
-      auth_url: <keycloak-realm-url>/protocol/openid-connect/auth   # e.g. https://<node>:30443/realms/oms
+      auth_url: <keycloak-realm-url>/protocol/openid-connect/auth   # e.g. https://<keycloak address>/realms/oms
       token_url: <keycloak-realm-url>/protocol/openid-connect/token
       api_url: <keycloak-realm-url>/protocol/openid-connect/userinfo
       tls_client_ca: /etc/grafana/keycloak-ca/ca.crt
@@ -256,12 +256,33 @@ grafana:
     # before Grafana starts, by an init container that lists them once and exits (LIST; the
     # chart's default, WATCH, never exits and keeps Grafana from starting). The dashboard sidecar
     # keeps watching and Grafana re-reads its folder every 30 seconds.
+    # Both read only ConfigMaps in Grafana's own namespace, which is all the rbac below allows.
     datasources:
       initDatasources: true
       watchMethod: LIST
       skipReload: true
+      resource: configmap
     dashboards:
       skipReload: true
+      resource: configmap
+      # The chart's default is every namespace; the dashboards are all here.
+      searchNamespace: null
+
+  # The chart would let Grafana read every ConfigMap and Secret in the cluster. Its sidecars only
+  # need the dashboards' and data sources' ConfigMaps here, so it gets a Role for just those, and no
+  # access to Secrets anywhere.
+  rbac:
+    namespaced: true
+    useExistingRole: grafana-configmap-reader
+  extraObjects:
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: grafana-configmap-reader
+      rules:
+        - apiGroups: [""]
+          resources: ["configmaps"]
+          verbs: ["get", "list", "watch"]
 
   # Prometheus and Alertmanager come from the chart; these add the log and trace stores, linked both
   # ways: a trace opens its logs, a log line with a trace_id opens its trace.

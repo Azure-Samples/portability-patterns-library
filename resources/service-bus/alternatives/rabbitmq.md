@@ -2,7 +2,7 @@
 
 > **Draft.** Based on the Order Management sample.
 
-On Azure Local, RabbitMQ provides the queue that Azure Service Bus provides on Azure. The sample runs it as a container in the cluster, created by a recipe.
+On Azure Local, RabbitMQ provides the queue that Azure Service Bus provides on Azure. The sample runs it as a three-node cluster in the Kubernetes cluster: the recipe declares it, and the [RabbitMQ Cluster Operator](https://www.rabbitmq.com/kubernetes/operator/operator-overview) runs it.
 
 ## How it fits together
 
@@ -13,7 +13,7 @@ Order Intake / Order Processor      declare a queue, never name a broker
 Resource Type                       BusinessContinuity.Messaging/messageQueues
         │   (the environment's recipe pack chooses the recipe)
         ├── Azure pack                Service Bus recipe  → Azure Service Bus
-        └── Azure Local pack          RabbitMQ recipe     → RabbitMQ container
+        └── Azure Local pack          RabbitMQ recipe     → RabbitMQ cluster (Cluster Operator)
 ```
 
 At startup the worker reads the `provider` value that the recipe publishes (`rabbitmq` or `servicebus`) and creates the matching client. The rest of the worker only sees a publish interface and a subscribe interface.
@@ -48,15 +48,12 @@ The Service Bus SDK is built for Service Bus. Whether it works against RabbitMQ 
 1. **Password.** The recipe generates a username and password. Radius stores them in a Kubernetes Secret, and the application binds them as environment variables.
 2. **OAuth 2.0 with a customer-operated identity provider.** This is the same federated pattern Entra workload identity uses, with a different issuer. Set the issuer on the recipe. The worker sends its projected Kubernetes service account token to the issuer's token endpoint as a client assertion (`client_credentials` grant with a JWT bearer assertion), receives an access token, and presents it to RabbitMQ as the password. No secret is stored: the cluster issues and rotates the service account token. Authorization travels in the token, so RabbitMQ keeps no user record for the workload. The sample uses Keycloak federated with Active Directory. See the [RabbitMQ OAuth 2.0 guide](https://www.rabbitmq.com/docs/oauth2).
 
-## Observed limitations of the reference recipe
+## What the reference recipe sets up
 
-The reference recipe is sample code. As written it has these limitations:
+The recipe declares a `RabbitmqCluster` with three nodes, each with its own persistent volume, and, through the Messaging Topology Operator, the queue, a `<queue>.dead-letter` queue and a policy that moves a message there after `maxDeliveryCount` deliveries. Both queues are quorum queues, replicated to every node, so losing a node loses no message. It still has these limitations:
 
-- **No data volume.** Queues and messages are declared durable, but nothing persists the broker's data directory, so messages are lost if the pod is rescheduled.
-- **Single pod.** The recipe does not set replicas or a clustered queue type.
-- **No dead-lettering.** The queue type's `maxDeliveryCount` setting is not applied by this recipe.
-- **No TLS on the AMQP listener.**
-- **Management interface** is exposed on its own port and still uses the generated password.
+- **No TLS on the AMQP listener.** The operator supports it (`spec.tls`); the recipe doesn't turn it on.
+- **Management interface** uses the operator's generated default user.
 
 ## Required application changes
 

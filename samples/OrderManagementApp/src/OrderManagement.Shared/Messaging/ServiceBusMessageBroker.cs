@@ -70,7 +70,10 @@ public sealed class ServiceBusMessageBroker : IMessageBroker
         {
             AutoCompleteMessages = false,
             MaxConcurrentCalls = 4,
-            PrefetchCount = 8,
+            // No prefetch: a prefetched message is locked while it waits, and its lock isn't renewed
+            // until a handler takes it. With handlers waiting minutes for the inventory service, the
+            // waiting messages' locks would expire and use up their deliveries.
+            PrefetchCount = 0,
             // Longer than the processor's wait for the inventory service, so the lock is still
             // held when it finishes.
             MaxAutoLockRenewalDuration = TimeSpan.FromMinutes(10)

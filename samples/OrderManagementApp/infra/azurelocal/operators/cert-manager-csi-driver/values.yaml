@@ -1,0 +1,24 @@
+# Helm values for the cert-manager CSI driver on Azure Local. It issues each RabbitMQ pod its own
+# certificate, from the site CA, which the nodes present to each other: the RabbitMQ Cluster
+# Operator turns on mutual TLS between them (the queue Recipe's interNode setting) and needs this
+# driver for it. Install with:
+#
+#   helm upgrade --install cert-manager-csi-driver cert-manager-csi-driver `
+#     --repo https://charts.jetstack.io --version v0.16.1 `
+#     --namespace cert-manager-csi-driver --create-namespace `
+#     --values infra/azurelocal/operators/cert-manager-csi-driver/values.yaml
+#
+# Change the marked values for your site first. scripts/infra/azurelocal/provision-operators.ps1
+# does this for you.
+
+# Pulls from the in-cluster connected registry, so the driver restarts while the link to Azure is down.
+imageRegistry: <connected-registry-address>  # the connected registry's ClusterIP
+imagePullSecrets:
+  - name: azurelocal-registry
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    memory: 128Mi

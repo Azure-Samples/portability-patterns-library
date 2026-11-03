@@ -1,5 +1,8 @@
-# The app's RabbitMQ brokers. The Recipe names each broker's Service rabbitmq-<hash> and labels it
-# with that name, so this selects Services that have a 'name' label and keeps the rabbitmq-* ones.
+# The app's RabbitMQ clusters. The RabbitMQ Cluster Operator gives each cluster a client Service,
+# labelled app.kubernetes.io/component=rabbitmq, that serves the broker's metrics over TLS on port
+# 'prometheus-tls'. Prometheus checks the certificate against the site CA, from Secret oms-site-ca
+# here (provision-observability.ps1 copies it), for the name every RabbitMQ certificate in the app's
+# namespace carries (the queue Recipe's metricsServerName), since it reaches each node by address.
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
@@ -10,26 +13,27 @@ spec:
     matchNames:
       - oms-azurelocal
   selector:
-    matchExpressions:
-      - key: name
-        operator: Exists
+    matchLabels:
+      app.kubernetes.io/component: rabbitmq
   endpoints:
-    # Broker-wide totals and health.
-    - port: metrics
+    # Broker-wide totals and health, from every node.
+    - port: prometheus-tls
+      scheme: https
       path: /metrics
       interval: 30s
-      relabelings:
-        - sourceLabels: [__meta_kubernetes_service_label_name]
-          regex: rabbitmq-.+
-          action: keep
+      tlsConfig:
+        ca:
+          secret: { name: oms-site-ca, key: ca.crt }
+        serverName: metrics.rabbitmq.oms-azurelocal
     # Message counts per queue (rabbitmq_detailed_queue_messages{queue=...}), which the
     # dead-letter alert and the dashboard use. /metrics only has totals across all queues.
-    - port: metrics
+    - port: prometheus-tls
+      scheme: https
       path: /metrics/detailed
       params:
         family: [queue_coarse_metrics]
       interval: 30s
-      relabelings:
-        - sourceLabels: [__meta_kubernetes_service_label_name]
-          regex: rabbitmq-.+
-          action: keep
+      tlsConfig:
+        ca:
+          secret: { name: oms-site-ca, key: ca.crt }
+        serverName: metrics.rabbitmq.oms-azurelocal

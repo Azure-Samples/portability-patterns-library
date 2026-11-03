@@ -105,3 +105,45 @@ spec:
               The cert-manager PodMonitor in namespace observability finds no healthy target, so
               certificate expiry isn't being watched. Check that cert-manager's controller pods carry
               the labels the PodMonitor selects and that nothing blocks port 9402.
+
+    - name: oms.postgresql
+      rules:
+        - alert: PostgresInstanceDown
+          # CloudNativePG fails over to a replica on its own; this says an instance needs looking at
+          # before the cluster runs out of replicas.
+          expr: cnpg_collector_up == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "PostgreSQL instance {{ $labels.pod }} is down"
+            description: >-
+              Instance {{ $labels.pod }} of PostgreSQL cluster {{ $labels.cluster }} (namespace
+              {{ $labels.namespace }}) has reported PostgreSQL down for 5 minutes. Check it with
+              `kubectl get cluster {{ $labels.cluster }} -n {{ $labels.namespace }}` and the pod's logs.
+
+        - alert: PostgresReplicationLagging
+          expr: max by (namespace, cluster, pod) (cnpg_pg_replication_lag) > 300
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "PostgreSQL replica {{ $labels.pod }} is {{ $value | humanizeDuration }} behind"
+            description: >-
+              Replica {{ $labels.pod }} of cluster {{ $labels.cluster }} (namespace {{ $labels.namespace }})
+              is more than 5 minutes behind its primary. A failover now would lose the transactions it
+              hasn't received. Check the node's disk and network.
+
+        - alert: PostgresWalArchivingStalled
+          # The write-ahead log is archived at least every 5 minutes (CloudNativePG's archive_timeout).
+          # Archiving that stops means backups stop, and the log piles up on the database's volume.
+          expr: max by (namespace, cluster) (cnpg_pg_stat_archiver_seconds_since_last_archival) > 1800
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "PostgreSQL cluster {{ $labels.cluster }} hasn't archived its log for 30 minutes"
+            description: >-
+              Cluster {{ $labels.cluster }} (namespace {{ $labels.namespace }}) last archived write-ahead
+              log {{ $value | humanizeDuration }} ago, so its backups have stopped. Check the object store
+              in namespace object-store and the cluster's barman-cloud sidecar logs.

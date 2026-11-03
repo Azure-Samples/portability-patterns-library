@@ -140,5 +140,6 @@ output result object = {
     provider: 'servicebus'
     queueName: queueName
     endpoint: '${namespaceName}.servicebus.windows.net'
+    tls: 'required'
   }
 }

@@ -1,5 +1,7 @@
 # Shared by the deploy scripts of both targets: steps that run against the cluster after `rad deploy`.
 
+. (Join-Path $PSScriptRoot 'secrets.ps1')
+
 # Runs the database setup job (src/OrderManagement.DbSetup) to completion: it creates the schemas
 # and each service's least-privilege database user, as the database administrator. It runs outside
 # the Radius application because only it may hold administrator rights. $Environment holds plain
@@ -14,6 +16,9 @@ function Invoke-OmsDatabaseSetup {
         [hashtable]$Environment = @{},
         [hashtable]$SecretEnvironment = @{},
         [string]$ImagePullSecretName = '',
+        # Secret with the CA (key ca.crt) that issued the databases' certificates, so the job verifies
+        # them. PostgreSQL clients read PGSSLROOTCERT.
+        [string]$CaSecretName = '',
         [int]$TimeoutSeconds = 900
     )
 
@@ -25,14 +30,20 @@ function Invoke-OmsDatabaseSetup {
         }) + @($SecretEnvironment.GetEnumerator() | Sort-Object Name | ForEach-Object {
             @{ name = $_.Name; valueFrom = @{ secretKeyRef = @{ name = $_.Value.Secret; key = $_.Value.Key } } }
         })
+    $container = [ordered]@{
+        name            = $name
+        image           = $Image
+        env             = $env
+        securityContext = @{ allowPrivilegeEscalation = $false; runAsNonRoot = $true }
+    }
     $podSpec = [ordered]@{
         restartPolicy = 'Never'
-        containers    = @(@{
-                name            = $name
-                image           = $Image
-                env             = $env
-                securityContext = @{ allowPrivilegeEscalation = $false; runAsNonRoot = $true }
-            })
+        containers    = @($container)
+    }
+    if ($CaSecretName) {
+        $container.env += @{ name = 'PGSSLROOTCERT'; value = '/etc/database-ca/ca.crt' }
+        $container.volumeMounts = @(@{ name = 'database-ca'; mountPath = '/etc/database-ca'; readOnly = $true })
+        $podSpec.volumes = @(@{ name = 'database-ca'; secret = @{ secretName = $CaSecretName } })
     }
     if ($ServiceAccountName) { $podSpec.serviceAccountName = $ServiceAccountName }
     if ($ImagePullSecretName) { $podSpec.imagePullSecrets = @(@{ name = $ImagePullSecretName }) }
@@ -87,47 +98,6 @@ function Set-OmsNetworkPolicy {
         Replace('${MONITORING_NAMESPACE}', $(if ($MonitoringNamespace) { $MonitoringNamespace } else { 'kube-system' }))
     $manifest | kubectl apply --context $KubeContext -f - | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Applying the network policies failed.' }
-}
-
-# Reads every key of a Secret as plain text. Returns an empty hashtable when the Secret is missing.
-function Get-OmsSecretData {
-    param(
-        [Parameter(Mandatory = $true)][string]$KubeContext,
-        [Parameter(Mandatory = $true)][string]$Namespace,
-        [Parameter(Mandatory = $true)][string]$Name
-    )
-
-    $data = @{}
-    $secret = kubectl get secret $Name --namespace $Namespace --context $KubeContext --ignore-not-found -o json 2>$null
-    if (-not $secret) { return $data }
-    $values = ($secret | Out-String | ConvertFrom-Json).data
-    if ($values) {
-        foreach ($property in $values.PSObject.Properties) {
-            $data[$property.Name] = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($property.Value))
-        }
-    }
-    return $data
-}
-
-# Creates or replaces an Opaque Secret. The values go to kubectl on stdin, never on a command line.
-function Set-OmsSecret {
-    param(
-        [Parameter(Mandatory = $true)][string]$KubeContext,
-        [Parameter(Mandatory = $true)][string]$Namespace,
-        [Parameter(Mandatory = $true)][string]$Name,
-        [Parameter(Mandatory = $true)][hashtable]$Data
-    )
-
-    $encoded = @{}
-    foreach ($key in $Data.Keys) { $encoded[$key] = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$Data[$key])) }
-    @{
-        apiVersion = 'v1'
-        kind       = 'Secret'
-        type       = 'Opaque'
-        metadata   = @{ name = $Name; namespace = $Namespace }
-        data       = $encoded
-    } | ConvertTo-Json -Depth 5 | kubectl apply --context $KubeContext -f - | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Writing Secret '$Name' failed." }
 }
 
 # Reads a Radius resource's properties, for example the host a database Recipe reported.

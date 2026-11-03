@@ -9,9 +9,8 @@ using Microsoft.Extensions.Logging;
 namespace OrderManagement.Shared.Storage;
 
 /// <summary>
-/// Azure Blob Storage implementation. Backed by a real storage account in Azure (authenticated with
-/// Workload Identity) and by Azurite locally (authenticated with the well-known dev connection
-/// string emitted by the local recipe).
+/// Azure Blob Storage implementation: a storage account in Azure, authenticated with Workload
+/// Identity.
 /// </summary>
 public sealed class BlobArchiveStore : IArchiveStore
 {
@@ -24,40 +23,12 @@ public sealed class BlobArchiveStore : IArchiveStore
         _options = options;
         _logger = logger;
 
-        if (_options.UseManagedIdentity)
-        {
-            var endpoint = options.Endpoint ?? throw new InvalidOperationException(
-                "Object storage requires either 'endpoint' (with managed identity) or 'connectionString'.");
+        _logger.LogInformation("Connecting to blob endpoint {Endpoint} using workload identity", options.Endpoint);
 
-            _logger.LogInformation(
-                "Connecting to blob endpoint {Endpoint} using workload identity",
-                endpoint);
-
-            var credential = AzureCredentialFactory.Create();
-            var serviceClient = new BlobServiceClient(new Uri(endpoint), credential);
-            _containerClient = serviceClient.GetBlobContainerClient(options.ContainerName);
-        }
-        else
-        {
-            // A connection string means the local emulator. Azurite implements an older REST API
-            // than this SDK negotiates by default, which makes it reject requests with 400. Pinning
-            // the service version keeps the SDK within what the emulator understands. Real Azure
-            // Storage always uses the SDK default above.
-            _logger.LogInformation(
-                "Connecting to blob storage with a connection string (Azurite), pinned to service version {Version}",
-                EmulatorServiceVersion);
-
-            var clientOptions = new BlobClientOptions(EmulatorServiceVersion);
-            var serviceClient = new BlobServiceClient(options.ConnectionString, clientOptions);
-            _containerClient = serviceClient.GetBlobContainerClient(options.ContainerName);
-        }
+        var credential = AzureCredentialFactory.Create();
+        var serviceClient = new BlobServiceClient(new Uri(options.Endpoint!), credential);
+        _containerClient = serviceClient.GetBlobContainerClient(options.ContainerName);
     }
-
-    /// <summary>
-    /// REST API version used when talking to Azurite. Must not exceed what the emulator supports.
-    /// </summary>
-    private const BlobClientOptions.ServiceVersion EmulatorServiceVersion =
-        BlobClientOptions.ServiceVersion.V2023_11_03;
 
     public async Task InitializeAsync(CancellationToken cancellationToken)
     {
@@ -120,8 +91,8 @@ public sealed class BlobArchiveStore : IArchiveStore
         }
         catch (Azure.RequestFailedException ex) when (ex.ErrorCode == BlobErrorCode.ContainerNotFound)
         {
-            // The container can disappear after startup, for example when an emulator that keeps no
-            // data restarts. Without this every later order would fail until the worker restarts.
+            // The container can be deleted after startup. Without this every later order would fail
+            // until the worker restarts.
             _logger.LogWarning("Object storage container {Container} is missing; creating it again", _options.ContainerName);
             await _containerClient.CreateIfNotExistsAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
             await UploadAsync(blobClient, order, cancellationToken).ConfigureAwait(false);

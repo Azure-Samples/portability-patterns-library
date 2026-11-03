@@ -1,5 +1,7 @@
 # Shared by setup-platform.ps1 and deploy.ps1: per-target values from scripts/settings.json.
 
+. (Join-Path $PSScriptRoot 'secrets.ps1')
+
 function Read-OmsSettings([string]$Target, [string]$Path) {
     if (-not $Path) { $Path = Join-Path (Split-Path -Parent $PSScriptRoot) 'settings.json' }
     if (-not (Test-Path $Path)) {
@@ -63,18 +65,4 @@ function Restore-OmsSubscription([string]$SubscriptionId) {
     if ($SubscriptionId) { az account set --subscription $SubscriptionId 2>$null }
 }
 
-# Writes a file that holds credentials so only the current user can read it.
-function Write-OmsSecretFile([string]$Path, [string]$Content) {
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null
-    if (-not (Test-Path $Path)) { [IO.File]::WriteAllText($Path, '') }
-    Protect-OmsSecretPath $Path
-    [IO.File]::WriteAllText($Path, $Content, [Text.UTF8Encoding]::new($false))
-}
 
-# Owner-only access to a credentials file and its folder. A Windows profile is already private; on
-# Linux and macOS the default umask leaves both readable by other users.
-function Protect-OmsSecretPath([string]$Path) {
-    if ($IsWindows) { return }
-    [IO.File]::SetUnixFileMode((Split-Path -Parent $Path), [IO.UnixFileMode]'UserRead, UserWrite, UserExecute')
-    if (Test-Path $Path) { [IO.File]::SetUnixFileMode($Path, [IO.UnixFileMode]'UserRead, UserWrite') }
-}

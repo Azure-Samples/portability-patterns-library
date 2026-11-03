@@ -1,0 +1,21 @@
+# The PostgreSQL instances CloudNativePG runs: the app's inventory database and Keycloak's. Each
+# instance serves its metrics on port 'metrics' (9187). The cluster's name becomes the 'cluster' label.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: postgresql
+  namespace: observability
+spec:
+  namespaceSelector:
+    matchNames:
+      - oms-azurelocal
+      - identity
+  selector:
+    matchLabels:
+      cnpg.io/podRole: instance
+  podMetricsEndpoints:
+    - port: metrics
+      interval: 30s
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_label_cnpg_io_cluster]
+          targetLabel: cluster

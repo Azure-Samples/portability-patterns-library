@@ -29,6 +29,8 @@
   "AzureLocal": {
     "Common": {
       "KubeContext": "bcd-aksarc",
+      "ApplicationNamespace": "oms-azurelocal",
+      "Availability": "high",
       "SubscriptionId": "<subscription-id>",
       "RegistryName": "<acr-name>"
     },
@@ -58,8 +60,6 @@
     "Keycloak": {
       "AdServer": "<domain-controller-fqdn>",
       "AdDomain": "<ad-domain>",
-      "ImagePullSecretSourceNamespace": "oms-azurelocal",
-      "WorkloadNamespace": "oms-azurelocal",
       "AllowInClusterIssuer": true
     },
     "Observability": {

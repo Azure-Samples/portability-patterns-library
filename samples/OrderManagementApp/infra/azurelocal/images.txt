@@ -20,16 +20,32 @@ ghcr.io/radius-project/bicep:0.60                              bicep:0.60
 ghcr.io/radius-project/pre-upgrade:0.60                        pre-upgrade:0.60
 
 # Backing services the Recipes deploy. Paths match imageRepository in recipe-packs/azure-local.bicep.
+# postgres is for Availability 'standard' (the postgres-statefulset Recipe and Keycloak's database);
+# cloudnative-pg/postgresql for 'high'.
 mcr.microsoft.com/mssql/server:2022-latest                     mssql/server:2022-latest
-mcr.microsoft.com/azure-storage/azurite:3.35.0                 azure-storage/azurite:3.35.0
-docker.io/library/rabbitmq:4-management-alpine                 rabbitmq:4-management-alpine
+docker.io/library/rabbitmq:4.3.7-management-alpine             rabbitmq:4.3.7-management-alpine
+docker.io/library/postgres:17-alpine                           postgres:17-alpine
+ghcr.io/cloudnative-pg/postgresql:17.11-standard-trixie        cloudnative-pg/postgresql:17.11-standard-trixie
+
+# Operators that run the backing services when Availability is 'high', see infra/azurelocal/operators.
+# The tags match the chart and manifest versions provision-operators.ps1 pins.
+ghcr.io/cloudnative-pg/cloudnative-pg:1.30.1                   cloudnative-pg/cloudnative-pg:1.30.1
+ghcr.io/cloudnative-pg/plugin-barman-cloud:v0.15.1             cloudnative-pg/plugin-barman-cloud:v0.15.1
+ghcr.io/cloudnative-pg/plugin-barman-cloud-sidecar:v0.15.1     cloudnative-pg/plugin-barman-cloud-sidecar:v0.15.1
+ghcr.io/rabbitmq/cluster-operator:2.23.2                       rabbitmq/cluster-operator:2.23.2
+ghcr.io/rabbitmq/messaging-topology-operator:1.20.5            rabbitmq/messaging-topology-operator:1.20.5
+quay.io/jetstack/cert-manager-csi-driver:v0.16.1               jetstack/cert-manager-csi-driver:v0.16.1
+quay.io/jetstack/csi-node-driver-registrar:v2.18.0             jetstack/csi-node-driver-registrar:v2.18.0
+quay.io/jetstack/livenessprobe:v2.20.0                         jetstack/livenessprobe:v2.20.0
+
+# Object storage for the applications and the database backups, see infra/azurelocal/object-store.
+docker.io/chrislusf/seaweedfs:4.51                             chrislusf/seaweedfs:4.51
 
 # Radius's stock secrets Recipe. The tag must match radiusRecipeTag in recipe-packs/azure-local.bicep.
 ghcr.io/radius-project/kube-recipes/secrets:latest             radius-project/kube-recipes/secrets:latest  artifact
 
-# Keycloak, see infra/azurelocal/keycloak.
+# Keycloak, see infra/azurelocal/keycloak. Its database runs on one of the PostgreSQL images above.
 quay.io/keycloak/keycloak:26.8                                 keycloak/keycloak:26.8
-docker.io/library/postgres:17-alpine                           postgres:17-alpine
 
 # Ingress, see infra/azurelocal/ingress-nginx.
 registry.k8s.io/ingress-nginx/controller:v1.15.1               ingress-nginx/controller:v1.15.1

@@ -46,10 +46,10 @@ needs.
 
 | Dependency | On Azure | On Azure Local |
 |---|---|---|
-| Queue | Azure Service Bus | RabbitMQ container |
-| Object storage | Azure Blob Storage | Azurite container |
+| Queue | Azure Service Bus | RabbitMQ cluster, three nodes, run by the RabbitMQ Cluster Operator (one broker with `Availability` `standard`) |
+| Object storage | Azure Blob Storage | A bucket in the cluster's S3-compatible store (SeaweedFS), replicated across nodes |
 | SQL (orders) | Azure SQL Database | SQL Server container |
-| PostgreSQL (stock) | Azure Database for PostgreSQL flexible server | PostgreSQL container |
+| PostgreSQL (stock) | Azure Database for PostgreSQL flexible server | PostgreSQL cluster, three instances, run by the CloudNativePG operator and backed up to object storage in the cluster (one server, no backups, with `Availability` `standard`) |
 | User sign-in | Microsoft Entra ID | Keycloak, federated to the site's Active Directory |
 | How each service authenticates | Its own managed identity, through Entra Workload ID (no secrets) | Its own Kubernetes service account token, exchanged with Keycloak for the queue and the inventory service; its own database user, password from Key Vault |
 | Secrets | None: databases use Entra authentication | Database passwords in Azure Key Vault, synced into the cluster by the Secret Store extension |
@@ -87,15 +87,16 @@ All commands run from this folder, `samples/OrderManagementApp`.
 - An Azure Local instance, [deployed](https://learn.microsoft.com/azure/azure-local/deploy/deployment-introduction)
   and connected to Azure, with its custom location and a running Arc resource bridge. See the
   [system requirements](https://learn.microsoft.com/azure/azure-local/concepts/system-requirements-23h2).
-- Free capacity on the instance for the AKS cluster: three VMs of 4 vCPUs and 8 GB each (one control
-  plane, two nodes), plus about 50 GB of storage for the in-cluster registry and Keycloak's database.
+- Free capacity on the instance for the AKS cluster: four VMs, a control plane of 4 vCPUs and 8 GB
+  and three workers of 4 vCPUs and 16 GB each, plus about 210 GB of storage for the in-cluster
+  registry, the databases, the object store, the queue and monitoring.
 - A management machine on the site network, not an Azure Local node, that can also sign in to
   Azure, with the same tools as for Azure except azd. Microsoft recommends managing AKS on Azure
   Local from such a
   [client machine](https://learn.microsoft.com/azure/aks-hybrid-edge/local/aks-create-clusters-cli#install-the-azure-cli-extension)
   rather than from the nodes.
 - Free addresses on the site network for the AKS cluster: its control plane, a pool for the nodes and a
-  small range for the load balancer.
+  small range for the load balancer, of at least two addresses: one for the app, one for Keycloak.
 - The site's Active Directory, with the app's groups and a bind account for Keycloak. See
   [Connect your Active Directory](./docs/authentication.md#connect-your-active-directory).
 - Contributor and User Access Administrator on the subscription, and the right to create groups in
@@ -103,7 +104,7 @@ All commands run from this folder, `samples/OrderManagementApp`.
 
 ## Run the app locally
 
-The app runs with RabbitMQ, SQL Server, PostgreSQL, Azurite and Keycloak in containers: the same
+The app runs with RabbitMQ, SQL Server, PostgreSQL, SeaweedFS and Keycloak in containers: the same
 services as on Azure Local, with no cluster and no Radius.
 
 ```powershell
@@ -122,6 +123,13 @@ The build downloads packages from nuget.org and images from mcr.microsoft.com, d
 If your network blocks them, ask for access, or point the build at your own NuGet feed with a
 [NuGet.Config](https://learn.microsoft.com/nuget/reference/nuget-config-file) in this folder; the
 build uses it when it's there, and Git ignores it.
+
+To run the tests, which need no containers or cluster:
+
+```powershell
+dotnet test
+Invoke-Pester ./tests/scripts   # the setup scripts' credential helpers; needs Pester 5
+```
 
 ## Deploy to Azure
 
@@ -185,27 +193,62 @@ time, trust the site CA with the command it printed.
 
 To deploy a new version later, run `./scripts/deploy.ps1 -Target AzureLocal`.
 
-RabbitMQ, SQL Server and PostgreSQL each keep their data on a persistent volume on the cluster's
-default storage class, so a restarted pod keeps its queued messages, orders and stock. Azurite, a
-stand-in to be replaced, keeps none: the archived order files are lost when its pod restarts. An
-order that fails `maxDeliveryCount` times (10) moves to the `orders.dead-letter` queue, as it moves
-to the dead-letter queue in Service Bus on Azure. cert-manager renews the app's, Keycloak's and
-PostgreSQL's certificates on site, from the site CA, 30 days before they expire. For production, you
-would also need:
+The queue and the stock database are run by operators in the cluster, the way Azure runs them on
+Azure: the [RabbitMQ Cluster Operator](https://www.rabbitmq.com/kubernetes/operator/operator-overview)
+runs RabbitMQ on three nodes, with the queues replicated to each, and
+[CloudNativePG](https://cloudnative-pg.io) runs PostgreSQL as a primary and two replicas, failing
+over on its own. Keycloak runs two replicas on its own CloudNativePG database. Each replica runs on a
+different worker, so losing a worker loses no message, order or sign-in. The processor archives each
+order to S3-compatible storage in the cluster (SeaweedFS), which keeps two copies of every object on
+different workers. Both databases archive their write-ahead log and take a daily backup there too,
+so they can be restored to any point in the last 30 days. An order that fails `maxDeliveryCount` times (10)
+moves to the `orders.dead-letter` queue, as it moves to the dead-letter queue in Service Bus on Azure.
+Traffic inside the cluster is encrypted: the services reach RabbitMQ, PostgreSQL, the object store
+and Keycloak over TLS, with certificates from the site CA that every pod trusts, and RabbitMQ's
+nodes, PostgreSQL's replicas and the object store's components talk to each other over TLS too.
+cert-manager renews every certificate on site, 30 days before it expires. The operators are installed
+once, by the `Operators` setup step; see [Operators on Azure Local](./infra/azurelocal/operators/README.md).
 
-- **High availability:** this is a sample app with one replica of each service running. For
-  production, consider running multiple replicas of each service for HA.
-- **Backups:** nothing backs up the volumes. Schedule SQL Server and PostgreSQL backups and copy them
-  off the cluster.
-- **A supported object store:** Azurite is an emulator that keeps no data. Use an S3- or
-  Blob-compatible store supported for production.
+That is `Availability` `high`, the default. A site that can accept downtime and data loss for fewer
+resources can set `Common.Availability` to `standard` in the settings: RabbitMQ, PostgreSQL and
+Keycloak's database then run as one StatefulSet each, the object store as one server of each kind,
+with no operators and no backups. The app and its connections, TLS included, are the same either way;
+only the Recipe Pack picks different Recipes. See [Azure Local settings](./docs/azure-local-settings.md).
+
+### When the link to Azure is down
+
+Everything the app needs at run time is on site, so it keeps serving users: pods restart and move
+between workers with images from the in-cluster registry, users sign in through Keycloak and Active
+Directory, services get their tokens from Keycloak, and cert-manager renews certificates from the site
+CA. Database passwords already synced from Key Vault stay in the cluster.
+
+Installing and changing the deployment need the link: the setup steps download Helm charts and
+operator manifests from their public repositories, a new version is built and published in Azure
+and reaches the site through the connected registry, and changed passwords come from Key Vault.
+Plan installs and upgrades for when the site is connected. Azure Local itself has to connect at least
+once every 30 days; past that, running VMs, including the cluster's, keep running, but nothing on the
+instance can be created or changed.
+
+For production, you would also need:
+
+- **High availability for the rest:** SQL Server runs one instance, and the app's own services one
+  replica each. For SQL Server, consider
+  [SQL Managed Instance enabled by Azure Arc](https://learn.microsoft.com/azure/azure-arc/data/managed-instance-overview),
+  whose Business Critical tier fails over between replicas.
+- **Backups off site:** the PostgreSQL backups and the archived orders are in the same cluster as
+  the databases, which covers a failed instance or a bad change, not losing the cluster; copy them
+  off site (see [Object storage for Azure Local](./infra/azurelocal/object-store/README.md)). Nothing
+  backs up SQL Server; schedule its backups and copy them off the cluster.
 - **Sizing:** the volume sizes and CPU and memory limits are small defaults; set them from your load.
 - **Licensing:** SQL Server runs the Developer edition, which isn't licensed for production. Set
   `SqlServerEdition` in the `Deploy` settings to `Standard`, `Enterprise` or your product key.
-- **Upgrades:** the image tags float (`2022-latest`, `4-management-alpine`, `17-alpine`). Pin them,
-  and test upgrades before rolling them out.
-- **Hardening:** traffic to RabbitMQ and Azurite is not encrypted, and the app does not verify SQL
-  Server's certificate. Add TLS with trusted certificates.
+  Standard and Enterprise are licensed per core for what the container may use: `SqlServerCpuLimit`
+  in the same settings, 2 by default. See Microsoft's SQL Server licensing guide for the minimums.
+- **Upgrades:** the SQL Server image tag floats (`2022-latest`). Pin it, and test upgrades of every
+  image and operator before rolling them out.
+- **Hardening:** the app doesn't verify SQL Server's certificate; give SQL Server one from the site
+  CA. The platform's administrators hold broad rights (cluster administrator, the operators,
+  Owner on the Azure resource group for Radius); keep them to trusted operators.
 
 The database passwords live in Key Vault. To change one, set a new version of its secret in the
 vault (`sql-admin-password`, `postgres-admin-password`, `sql-api-password`,
@@ -236,4 +279,5 @@ remove them by hand if you no longer need them.
 |---|---|
 | [Move your app in five steps](./docs/move-your-app.md) | resource types, connections, Recipes, Recipe Packs, environments |
 | [How authentication works](./docs/authentication.md) | user sign-in, each service's identity and permissions, connecting Active Directory |
+| [Operators on Azure Local](./infra/azurelocal/operators/README.md) | how RabbitMQ and PostgreSQL run replicated, fail over and back up |
 | [Monitoring on Azure Local](./infra/azurelocal/observability/README.md) | the on-site metrics, logs, traces, dashboard and alerts |

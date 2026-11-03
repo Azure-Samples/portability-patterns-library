@@ -46,7 +46,7 @@ credential from what the platform provides, with no platform switch:
 | Service | Azure | Azure Local | Where the choice is made |
 |---|---|---|---|
 | Queue | [Entra Workload ID](https://learn.microsoft.com/azure/aks/workload-identity-overview) | the pod's Kubernetes token, exchanged at Keycloak for a token RabbitMQ accepts | [ServiceCollectionExtensions.cs](../src/OrderManagement.Shared/DependencyInjection/ServiceCollectionExtensions.cs) |
-| Object storage | Entra Workload ID | Azurite connection string from the Recipe | [ArchiveOptions.cs](../src/OrderManagement.Shared/Configuration/ArchiveOptions.cs) |
+| Object storage | Entra Workload ID | S3 keys the platform issues to the namespace, limited to its own buckets, given only to the services connected to object storage | [ArchiveOptions.cs](../src/OrderManagement.Shared/Configuration/ArchiveOptions.cs) |
 | SQL, PostgreSQL | Entra Workload ID: a database user for the service's managed identity | the service's own database login, password from Key Vault | [DatabaseCredentialProviders.cs](../src/OrderManagement.Shared/Identity/DatabaseCredentialProviders.cs) |
 | Inventory service | Entra Workload ID: a token for the `oms-inventory` app | the same Keycloak token as for the queue, which also names `oms-inventory` | [ServiceCollectionExtensions.cs](../src/OrderManagement.Shared/DependencyInjection/ServiceCollectionExtensions.cs) |
 

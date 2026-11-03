@@ -1,6 +1,7 @@
 // Local build of the stock Radius Kubernetes container Recipe (radius-project/resource-types-contrib,
 // Compute/containers). Changes from it are marked LOCAL ADDITION, and its Dapr sidecar support is
-// removed: no application in this library uses Dapr.
+// removed: no application in this library uses Dapr. The upstream Recipe is licensed under the
+// Apache License 2.0, which covers this file too: see kubernetes-containers.LICENSE.
 @description('Radius context object passed into the recipe.')
 param context object
 
@@ -41,6 +42,16 @@ Kubernetes Secrets, by name, whose keys become environment variables of every co
 contain {resource}, for credentials that differ per service. A missing Secret is skipped.
 ''')
 param containerEnvFromSecrets array = []
+
+@description('''
+Kubernetes Secrets, by Resource Type, for credentials the platform issues instead of that type's
+Recipe, such as keys to a shared object store. A container connected to a resource of the type gets
+the Secret's keys as CONNECTION_<NAME>_<KEY> variables; other containers don't.
+''')
+param connectionSecretNames object = {}
+
+@description('Pod labels, by Resource Type, for pods connected to a resource of that type, so the platform\'s network policies can let them in.')
+param connectionPodLabels object = {}
 
 extension kubernetes with {
   kubeConfig: ''
@@ -202,6 +213,29 @@ var secretNameEnvFrom = reduce(items(resourceConnections), [], (acc, conn) =>
           : acc
 )
 
+// LOCAL ADDITION. Platform credentials and pod labels for connections to the Resource Types named in
+// connectionSecretNames and connectionPodLabels. The type comes from the resolved resource or, while it
+// is still updating, from the declared source ID (.../providers/<namespace>/<type>/<name>).
+var platformConnectionEnvFrom = reduce(items(resourceConnections), [], (acc, conn) =>
+  disableDefaultEnvVars[conn.key]
+    ? acc
+    : concat(acc, map(
+        filter(items(connectionSecretNames), typeSecret =>
+          toLower(string(conn.value.?type ?? '')) == toLower(typeSecret.key) || (contains(connectionDefinitions, conn.key) && contains(toLower(string(connectionDefinitions[conn.key].?source ?? '')), toLower('/providers/${typeSecret.key}/')))),
+        typeSecret => {
+          prefix: toUpper('CONNECTION_${conn.key}_')
+          secretRef: {
+            name: string(typeSecret.value)
+          }
+        }))
+)
+var platformConnectionPodLabels = reduce(items(resourceConnections), {}, (acc, conn) =>
+  union(acc, reduce(
+    filter(items(connectionPodLabels), typeLabels =>
+      toLower(string(conn.value.?type ?? '')) == toLower(typeLabels.key) || (contains(connectionDefinitions, conn.key) && contains(toLower(string(connectionDefinitions[conn.key].?source ?? '')), toLower('/providers/${typeLabels.key}/')))),
+    {}, (labelAcc, typeLabels) => union(labelAcc, typeLabels.value)))
+)
+
 // Ordinary top-level scalar values and nested producer properties become
 // CONNECTION_<CONNECTION_NAME>_<PROPERTY_NAME>.
 // Null-valued properties are skipped: sensitive properties (e.g. a database
@@ -293,8 +327,8 @@ var containerSpecs = reduce(containerItems, [], (acc, item) => concat(acc, [{
     } : {},
     // Connections that surface secretName still inject that Kubernetes Secret via envFrom, followed
     // by the platform's Secrets. An explicit env entry wins over envFrom for the same name.
-    length(concat(secretNameEnvFrom, platformEnvFrom)) > 0 ? {
-      envFrom: concat(secretNameEnvFrom, platformEnvFrom)
+    length(concat(secretNameEnvFrom, platformConnectionEnvFrom, platformEnvFrom)) > 0 ? {
+      envFrom: concat(secretNameEnvFrom, platformConnectionEnvFrom, platformEnvFrom)
     } : {},
     // Add volume mounts, plus the platform's mounts
     (contains(item.value, 'volumeMounts') || length(platformVolumeMounts) > 0) ? {
@@ -456,7 +490,7 @@ resource deployment 'apps/Deployment@v1' = {
       metadata: {
         // Pod labels from platformOptions are merged in; the workload-identity webhook keys off
         // `azure.workload.identity/use` here, on the pod, not on the ServiceAccount.
-        labels: union(labels, platformPodLabels)
+        labels: union(labels, platformPodLabels, platformConnectionPodLabels)
       }
       spec: union(
         {

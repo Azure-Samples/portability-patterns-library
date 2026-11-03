@@ -39,6 +39,10 @@ types:
               type: string
               description: "(Read Only) Where to reach the broker: `host:port` for RabbitMQ, the namespace host name for Azure Service Bus. Set by the Recipe."
               readOnly: true
+            tls:
+              type: string
+              description: "(Read Only) `required` when the broker accepts only TLS connections, which the client verifies against the CAs it trusts; `optional` otherwise. Set by the Recipe."
+              readOnly: true
             secrets:
               type: object
               description: "(Read Only) Broker credentials, when the Recipe issues any. Injected into connected containers as CONNECTION_<NAME>_USERNAME and _PASSWORD. Absent when the broker accepts the workload's own identity, which the platform gives every pod rather than this queue."

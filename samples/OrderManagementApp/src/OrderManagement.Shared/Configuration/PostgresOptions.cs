@@ -36,24 +36,32 @@ public sealed class PostgresOptions
         };
     }
 
-    // Azure Database for PostgreSQL presents a certificate from a public CA for its own host name,
-    // so it is verified there. A cluster-local server has a self-signed one: encrypted, not verified.
-    private bool CanVerifyCertificate =>
-        Host.EndsWith(".postgres.database.azure.com", StringComparison.OrdinalIgnoreCase);
-
-    /// <summary>Connection string without a password; the data source supplies it per connection.</summary>
-    public string BuildConnectionString(string userName, string? database = null) =>
-        new NpgsqlConnectionStringBuilder
+    /// <summary>
+    /// Connection string without a password; the data source supplies it per connection. With TLS
+    /// required the server's certificate is verified: Azure Database for PostgreSQL has one from a
+    /// public CA; an in-cluster server's CA is the file in <c>PGSSLROOTCERT</c>, which the Azure
+    /// Local platform sets.
+    /// </summary>
+    public string BuildConnectionString(string userName, string? database = null)
+    {
+        var builder = new NpgsqlConnectionStringBuilder
         {
             Host = Host,
             Port = Port,
             Database = database ?? Database,
             Username = userName,
-            SslMode = TlsRequired
-                ? CanVerifyCertificate ? SslMode.VerifyFull : SslMode.Require
-                : SslMode.Prefer,
+            SslMode = TlsRequired ? SslMode.VerifyFull : SslMode.Prefer,
             Timeout = 30,
             CommandTimeout = 60,
             ApplicationName = "OrderManagement"
-        }.ConnectionString;
+        };
+
+        var rootCertificate = Environment.GetEnvironmentVariable("PGSSLROOTCERT");
+        if (!string.IsNullOrWhiteSpace(rootCertificate))
+        {
+            builder.RootCertificate = rootCertificate;
+        }
+
+        return builder.ConnectionString;
+    }
 }

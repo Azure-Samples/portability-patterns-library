@@ -13,8 +13,8 @@ namespace OrderManagement.Processor;
 /// archives each one as a JSON blob in object storage, and records it in SQL Server as processed,
 /// or rejected when the stock is not there. The blob is written before the SQL row so the row
 /// always points at an archive that exists; the reservation and the SQL upsert are idempotent per
-/// order, so a redelivered message is safe to reprocess. When an order fails on its last delivery,
-/// its stock is released before the broker dead-letters it.
+/// order, so a redelivered message is safe to reprocess. When an order fails on its last delivery
+/// and is not recorded, its stock is released before the broker dead-letters it.
 /// </summary>
 public sealed class OrderProcessor(
     IMessageSubscriber subscriber,
@@ -61,8 +61,9 @@ public sealed class OrderProcessor(
         }
         catch (Exception ex) when (message.IsLastDelivery)
         {
-            // The broker dead-letters the order after this, so the stock it may hold is given back.
-            await ReleaseStockAsync(order, ex).ConfigureAwait(false);
+            // The broker dead-letters the order after this, so the stock it may hold is given back,
+            // unless the order was recorded.
+            await ReleaseUnrecordedStockAsync(order, ex).ConfigureAwait(false);
             throw;
         }
     }
@@ -95,13 +96,38 @@ public sealed class OrderProcessor(
         }
     }
 
-    // Best effort, with its own timeout: the message is dead-lettered whether or not this works. A
-    // release that fails is logged, so the stock can be given back by hand.
-    private async Task ReleaseStockAsync(Order order, Exception failure)
+    // Best effort, with its own timeout: the message is dead-lettered whether or not this works.
+    // A failure can come after the order was recorded, for example when the SQL write committed but
+    // its reply was lost, and a recorded order keeps its stock. So the stock is released only when
+    // the order store says the order isn't there; when that can't be checked, it is kept and logged,
+    // to be settled by hand, rather than sold twice.
+    private async Task ReleaseUnrecordedStockAsync(Order order, Exception failure)
     {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        StoredOrder? recorded;
+        try
+        {
+            recorded = await orderStore.GetForCustomerAsync(order.OrderId, order.CustomerId, timeout.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(failure,
+                "Order {OrderId} failed on its last delivery and will be dead-lettered; its stock is kept because the order store could not be checked ({Reason}). Release it by hand if the order isn't recorded",
+                order.OrderId, ExceptionSummary.Describe(ex));
+            return;
+        }
+
+        if (recorded is not null)
+        {
+            logger.LogError(failure,
+                "Order {OrderId} failed on its last delivery after it was recorded as {Status}; it will be dead-lettered and keeps its stock",
+                order.OrderId, recorded.Status);
+            return;
+        }
+
         logger.LogError(failure, "Order {OrderId} failed on its last delivery and will be dead-lettered; releasing its stock",
             order.OrderId);
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         try
         {
             await inventory.ReleaseAsync(order.OrderId, timeout.Token).ConfigureAwait(false);

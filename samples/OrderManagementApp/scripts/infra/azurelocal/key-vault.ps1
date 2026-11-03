@@ -49,6 +49,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
+. (Join-Path $repoRoot 'scripts/lib/secrets.ps1')
 
 # The passwords this sample keeps in Key Vault.
 $secretNames = @('sql-admin-password', 'postgres-admin-password', 'sql-api-password', 'sql-processor-password', 'postgres-inventory-password')
@@ -115,27 +116,35 @@ finally { Remove-Item $parametersFile -ErrorAction SilentlyContinue }
 
 # Role assignments take a few minutes to apply, so the first writes may be refused.
 Write-Host "==> Setting the passwords that aren't in Key Vault yet" -ForegroundColor Cyan
-foreach ($name in $secretNames) {
-    $exists = $false
-    for ($attempt = 1; $attempt -le 20; $attempt++) {
-        az keyvault secret show --vault-name $KeyVaultName --name $name --query id --output tsv 2>$null | Out-Null
-        if ($LASTEXITCODE -eq 0) { $exists = $true; break }
-        $errorText = az keyvault secret show --vault-name $KeyVaultName --name $name 2>&1 | Out-String
-        if ($errorText -match 'SecretNotFound|was not found') { break }
-        Start-Sleep -Seconds 15
-    }
-    if ($exists) { Write-Host "    $name (kept)" -ForegroundColor DarkGray; continue }
-
-    $valueFile = Join-Path ([IO.Path]::GetTempPath()) "oms-secret-$([guid]::NewGuid().ToString('N'))"
-    try {
-        [IO.File]::WriteAllText($valueFile, (New-DatabasePassword), [Text.UTF8Encoding]::new($false))
-        Invoke-Checked "az keyvault secret set $name" {
-            az keyvault secret set --vault-name $KeyVaultName --name $name --file $valueFile --encoding utf-8 --output none
+$valueDirectory = New-OmsPrivateDirectory
+try {
+    foreach ($name in $secretNames) {
+        # A password is generated only for a secret Key Vault says doesn't exist. Any other failure,
+        # such as access not granted yet, is retried, then stops the script: overwriting a secret it
+        # couldn't read would change a database password nobody asked to change.
+        $state = 'unknown'
+        for ($attempt = 1; $attempt -le 20; $attempt++) {
+            $errorText = az keyvault secret show --vault-name $KeyVaultName --name $name --query id --output tsv 2>&1 | Out-String
+            if ($LASTEXITCODE -eq 0) { $state = 'exists'; break }
+            if ($errorText -match 'SecretNotFound|was not found') { $state = 'missing'; break }
+            Start-Sleep -Seconds 15
         }
+        if ($state -eq 'unknown') { throw "Could not read Key Vault secret '$name', so it was left as it is: $($errorText.Trim())" }
+        if ($state -eq 'exists') { Write-Host "    $name (kept)" -ForegroundColor DarkGray; continue }
+
+        # The value goes to az in a file, never on a command line.
+        $valueFile = Join-Path $valueDirectory $name
+        try {
+            Write-OmsSecretFile $valueFile (New-DatabasePassword)
+            Invoke-Checked "az keyvault secret set $name" {
+                az keyvault secret set --vault-name $KeyVaultName --name $name --file $valueFile --encoding utf-8 --output none
+            }
+        }
+        finally { Remove-Item $valueFile -ErrorAction SilentlyContinue }
+        Write-Host "    $name (generated)" -ForegroundColor DarkGray
     }
-    finally { Remove-Item $valueFile -ErrorAction SilentlyContinue }
-    Write-Host "    $name (generated)" -ForegroundColor DarkGray
 }
+finally { Remove-Item $valueDirectory -Recurse -Force -ErrorAction SilentlyContinue }
 
 Write-Host "==> Syncing passwords from Key Vault '$($outputs.keyVaultName.value)' into '$ApplicationNamespace'" -ForegroundColor Cyan
 kubectl create namespace $ApplicationNamespace --context $KubeContext --dry-run=client -o yaml |

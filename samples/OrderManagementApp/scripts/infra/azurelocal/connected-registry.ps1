@@ -23,8 +23,8 @@
          pulls from the registry, and the registry CA as ConfigMap '<CaConfigMapName>' in the
          application namespace for deploy.ps1 to hand to the Radius control plane.
 
-    -Repositories is the complete list the connected registry syncs: repositories left out are
-    removed from its scope.
+    -Repositories, plus every Azure Local Recipe under recipes/, is the complete list the connected
+    registry syncs: repositories left out are removed from its scope.
     Idempotent. Token passwords and the sync connection string are only generated when they are not
     already in place, since regenerating them breaks whatever is using the old value. The pull
     credential goes from Azure straight into the cluster's Secrets, never to a file.
@@ -60,30 +60,43 @@ param(
     [string]$ClientTokenName = 'bcd-azurelocal-pull',
     [string]$PullSecretName = 'azurelocal-registry',
     [string]$CaConfigMapName = 'azurelocal-registry-ca',
-    [string[]]$PullSecretNamespaces = @('oms-azurelocal', 'identity', 'radius-system', 'ingress-nginx', 'observability'),
     [string]$ApplicationNamespace = 'oms-azurelocal',
+    # Namespaces that pull from the connected registry, besides the application's: the platform's.
+    # With -Availability high, the operators' namespaces too.
+    [string[]]$PullSecretNamespaces = @('identity', 'radius-system', 'ingress-nginx', 'observability', 'object-store'),
+    [ValidateSet('high', 'standard')]
+    [string]$Availability = 'high',
 
     [string]$RadiusVersion = '0.60',
 
-    # Repositories synced into the cluster. Base build images (dotnet/*) are deliberately absent:
-    # builds run against the cloud registry, only runtime images are needed on site.
+    # Repositories synced into the cluster, besides the Recipes. Base build images (dotnet/*) are
+    # deliberately absent: builds run against the cloud registry, only runtime images are needed on
+    # site.
     [string[]]$Repositories = @(
         'ucpd', 'controller', 'applications-rp', 'dynamic-rp', 'deployment-engine', 'dashboard', 'bicep', 'pre-upgrade',
-        'rabbitmq', 'mssql/server', 'azure-storage/azurite',
-        'keycloak/keycloak', 'postgres',
+        'rabbitmq', 'mssql/server', 'postgres',
+        'keycloak/keycloak',
+        'cloudnative-pg/cloudnative-pg', 'cloudnative-pg/postgresql',
+        'cloudnative-pg/plugin-barman-cloud', 'cloudnative-pg/plugin-barman-cloud-sidecar',
+        'rabbitmq/cluster-operator', 'rabbitmq/messaging-topology-operator', 'chrislusf/seaweedfs',
+        'jetstack/cert-manager-csi-driver', 'jetstack/csi-node-driver-registrar', 'jetstack/livenessprobe',
         'ingress-nginx/controller', 'ingress-nginx/kube-webhook-certgen',
         'otel/opentelemetry-collector-contrib', 'grafana/loki', 'grafana/tempo', 'grafana/grafana', 'kiwigrid/k8s-sidecar',
         'prometheus/prometheus', 'prometheus/alertmanager', 'prometheus/node-exporter',
         'prometheus-operator/prometheus-operator', 'prometheus-operator/prometheus-config-reloader',
         'kube-state-metrics/kube-state-metrics',
         'oms/api', 'oms/processor', 'oms/inventory', 'oms/dbsetup',
-        'recipes/rabbitmq-queue', 'recipes/azurite-objectstorage', 'recipes/mssql-database', 'recipes/postgres-database',
-        'recipes/kubernetes-containers', 'recipes/kubernetes-routes', 'radius-project/kube-recipes/secrets'
+        'radius-project/kube-recipes/secrets'
     )
 )
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
+. (Join-Path $repoRoot 'scripts/lib/secrets.ps1')
+. (Join-Path $repoRoot 'scripts/lib/recipes.ps1')
+if ($Availability -eq 'high') { $PullSecretNamespaces += @('cnpg-system', 'rabbitmq-system', 'cert-manager-csi-driver') }
+$PullSecretNamespaces = @($ApplicationNamespace) + @($PullSecretNamespaces | Where-Object { $_ -ne $ApplicationNamespace } | Select-Object -Unique)
+$Repositories = @(@($Repositories) + @(Get-LibraryRecipe -Platform azure-local | ForEach-Object { Get-LibraryRecipeRepository $_ }) | Select-Object -Unique)
 
 function Invoke-Checked {
     param(
@@ -110,15 +123,8 @@ function Invoke-AzProbe {
     return $text
 }
 
-function Get-KubeSecretValue {
-    param([string]$Namespace, [string]$Name, [string]$Key)
-
-    $ErrorActionPreference = 'Continue'
-    $escapedKey = $Key.Replace('.', '\.')
-    $value = kubectl get secret $Name --namespace $Namespace --context $KubeContext `
-        --ignore-not-found --output "jsonpath={.data.$escapedKey}" 2>$null
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($value)) { return $null }
-    return [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($value))
+function Get-KubeSecretValue([string]$Namespace, [string]$Name, [string]$Key) {
+    Get-OmsSecretValue -KubeContext $KubeContext -Namespace $Namespace -Name $Name -Key $Key
 }
 
 $temporaryFiles = @()

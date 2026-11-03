@@ -105,14 +105,14 @@ resource azureRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
       // settings chosen by the platform (see recipes/kubernetes/kubernetes-containers.bicep).
       'Radius.Compute/containers': {
         kind: 'bicep'
-        source: '${registry}/recipes/kubernetes-containers:${tag}'
+        source: '${registry}/recipes/kubernetes/kubernetes-containers:${tag}'
         parameters: containerIdentityParameters
       }
       // What the application publishes is a route it declares; the managed ingress, host name and
       // certificate are the platform's.
       'Radius.Compute/routes': {
         kind: 'bicep'
-        source: '${registry}/recipes/kubernetes-routes:${tag}'
+        source: '${registry}/recipes/kubernetes/kubernetes-routes:${tag}'
         parameters: routeIngressParameters
       }
       'Radius.Security/secrets': {
@@ -121,7 +121,7 @@ resource azureRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
       }
       'Portability.Messaging/messageQueues': {
         kind: 'bicep'
-        source: '${registry}/recipes/servicebus-queue:${tag}'
+        source: '${registry}/recipes/service-bus/servicebus-queue:${tag}'
         parameters: {
           location: location
           senderPrincipalIds: queueSenderPrincipalIds
@@ -132,7 +132,7 @@ resource azureRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
       }
       'Radius.Storage/objectStorage': {
         kind: 'bicep'
-        source: '${registry}/recipes/blob-objectstorage:${tag}'
+        source: '${registry}/recipes/blob-storage/blob-objectstorage:${tag}'
         parameters: {
           location: location
           contributorPrincipalIds: storageContributorPrincipalIds
@@ -141,7 +141,7 @@ resource azureRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
       }
       'Radius.Data/sqlServerDatabases': {
         kind: 'bicep'
-        source: '${registry}/recipes/azuresql-database:${tag}'
+        source: '${registry}/recipes/azure-sql/azuresql-database:${tag}'
         parameters: {
           location: sqlLocation
           administratorPrincipalId: databaseAdministratorPrincipalId
@@ -151,7 +151,7 @@ resource azureRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
       }
       'Radius.Data/postgreSqlDatabases': {
         kind: 'bicep'
-        source: '${registry}/recipes/postgres-flexible-database:${tag}'
+        source: '${registry}/recipes/flexible-server/postgres-flexible-database:${tag}'
         parameters: {
           location: postgresLocation
           administratorPrincipalId: databaseAdministratorPrincipalId

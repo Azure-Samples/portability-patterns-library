@@ -3,9 +3,8 @@
 #
 #   kubectl apply -k infra/azurelocal/observability/monitoring
 #
-# The app's namespace (oms-azurelocal) and cert-manager's (cert-manager) are written in
-# rabbitmq-servicemonitor.yaml and cert-manager-podmonitor.yaml; the script replaces them when
-# your site uses others.
+# The app's namespace (oms-azurelocal), Keycloak's (identity) and cert-manager's (cert-manager) are
+# written in the ServiceMonitor and PodMonitors; the script replaces them when your site uses others.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
@@ -13,6 +12,7 @@ namespace: observability
 
 resources:
   - rabbitmq-servicemonitor.yaml
+  - postgresql-podmonitor.yaml
   - cert-manager-podmonitor.yaml
   - cert-manager-metrics-ca.yaml
   - alerts.yaml

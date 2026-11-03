@@ -56,12 +56,17 @@ Third-party materials remain subject to their respective licenses and terms:
   [`wwwroot/lib/msal-browser`](./samples/OrderManagementApp/src/OrderManagement.Api/wwwroot/lib/msal-browser).
   Its [MIT license](./samples/OrderManagementApp/src/OrderManagement.Api/wwwroot/lib/msal-browser/LICENSE)
   is included alongside the bundle.
-- NuGet dependencies, including Azure SDK libraries, Microsoft.Identity.Web,
-  Dapper, Microsoft.Data.SqlClient, and RabbitMQ.Client, are referenced by the
+- The container Recipe [`recipes/kubernetes/kubernetes-containers.bicep`](./recipes/kubernetes/kubernetes-containers.bicep)
+  is adapted from the Kubernetes container Recipe in
+  [radius-project/resource-types-contrib](https://github.com/radius-project/resource-types-contrib),
+  under the Apache License 2.0. The file marks the changes, and its
+  [license](./recipes/kubernetes/kubernetes-containers.LICENSE) is included alongside it.
+- NuGet dependencies, including Azure SDK libraries, the AWS SDK for .NET (S3),
+  Microsoft.Identity.Web, Dapper, Microsoft.Data.SqlClient, and RabbitMQ.Client, are referenced by the
   sample's project files and restored during the build. Refer to each package
   for its license and notices.
 - Deployment definitions use external tools and container images, including
-  Radius, Kubernetes, RabbitMQ, Azurite, SQL Server, and Keycloak. These components
+  Radius, Kubernetes, RabbitMQ, SeaweedFS, SQL Server, and Keycloak. These components
   have their own licenses and usage terms; this repository's license does not
   replace them.
 

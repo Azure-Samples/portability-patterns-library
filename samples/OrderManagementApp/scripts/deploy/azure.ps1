@@ -34,7 +34,7 @@
 .EXAMPLE
     # Private registry: supply a scoped ACR token so the Radius control plane can pull Recipes.
     #   az acr token create --registry mycr --name bcd-recipe-puller `
-    #       --repository recipes/kubernetes-containers content/read --expiration-in-days 30
+    #       --repository recipes/kubernetes/kubernetes-containers content/read --expiration-in-days 30
     ./scripts/deploy/azure.ps1 `
         -Registry mycr.azurecr.io `
         -SubscriptionId <sub-id> `
@@ -177,7 +177,7 @@ try {
             # repository is listed individually. Refreshed on each run so it never silently expires.
             Write-Host "==> Minting a read-only Recipe pull token for $Registry ($RecipeTokenDays days)" -ForegroundColor Cyan
             $RegistryUsername = 'bcd-recipe-puller'
-            $repositories = Get-LibraryRecipe -Platform azure | ForEach-Object { "recipes/$($_.BaseName)" }
+            $repositories = Get-LibraryRecipe -Platform azure | ForEach-Object { Get-LibraryRecipeRepository $_ }
             $scopeArguments = $repositories | ForEach-Object { '--repository', $_, 'content/read', 'metadata/read' }
 
             az acr scope-map show --registry $acrName --name $RegistryUsername --only-show-errors 2>$null | Out-Null

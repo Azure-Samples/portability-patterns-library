@@ -1,0 +1,20 @@
+# Keycloak's address on the site network: a load balancer address from the Arc load balancer, on
+# port 443. Browsers, the app's pods, RabbitMQ and Grafana all reach Keycloak here, so its issuer URL,
+# https://<address>/realms/oms, doesn't depend on any one node. Its certificate names this address.
+#
+# The Arc load balancer gives the Service the first free address of its range. keycloak.ps1 then pins
+# it with the metallb.io/loadBalancerIPs annotation, so later runs keep it; to choose one, add that
+# annotation before applying. MetalLB refuses a Service that also sets spec.loadBalancerIP.
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: identity
+spec:
+  type: LoadBalancer
+  selector:
+    app: keycloak
+  ports:
+    - name: https
+      port: 443
+      targetPort: 8443

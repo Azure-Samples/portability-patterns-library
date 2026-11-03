@@ -96,12 +96,12 @@ param controlPlaneCount int = 1
 @description('VM size of the control plane nodes. List sizes with: az aksarc vmsize list --custom-location <id>')
 param controlPlaneVmSize string = 'Standard_A4_v2'
 
-@description('Number of worker nodes.')
+@description('Number of worker nodes. Three lets the RabbitMQ cluster and the databases\' replicas each run on a different node, so losing one node loses no service.')
 @minValue(1)
-param nodeCount int = 2
+param nodeCount int = 3
 
-@description('VM size of the worker nodes.')
-param nodeVmSize string = 'Standard_A4_v2'
+@description('VM size of the worker nodes: 4 vCPUs and 16 GB holds the replicated backing services, Keycloak and monitoring.')
+param nodeVmSize string = 'Standard_D4s_v3'
 
 @description('Kubernetes version. List versions with: az aksarc get-versions --custom-location <id>')
 param kubernetesVersion string

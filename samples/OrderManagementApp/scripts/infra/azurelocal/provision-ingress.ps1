@@ -59,6 +59,8 @@ param(
     [string]$IssuerName = 'site-ca',
     [string]$CaSecretName = 'site-ca',
     [string]$CaCommonName = 'BCD Azure Local Site CA',
+    # Where the site CA's certificate is published in the application namespace.
+    [string]$SiteCaSecretName = 'oms-site-ca',
     [int]$CertificateDays = 90
 )
 
@@ -73,9 +75,7 @@ function Invoke-Checked([string]$What, [scriptblock]$Command) {
 }
 
 function Get-SecretData([string]$Namespace, [string]$Name, [string]$Key) {
-    $escaped = $Key.Replace('.', '\.')
-    $value = kubectl get secret $Name -n $Namespace --context $KubeContext --ignore-not-found -o "jsonpath={.data.$escaped}"
-    if ($value) { [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($value)) }
+    Get-OmsSecretValue -KubeContext $KubeContext -Namespace $Namespace -Name $Name -Key $Key
 }
 
 function Set-TlsSecret([string]$Namespace, [string]$Name, [string]$CertPem, [string]$KeyPem) {
@@ -210,6 +210,20 @@ $dnsNames
 "@ | kubectl apply --context $KubeContext -f - | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Creating the Certificate '$ApplicationNamespace/$TlsSecretName' failed." }
     Wait-OmsCertificate $KubeContext $ApplicationNamespace $TlsSecretName
+
+    # The site CA's certificate (public), for the app's pods and jobs to verify the servers it
+    # signs, such as PostgreSQL.
+    @"
+apiVersion: v1
+kind: Secret
+type: Opaque
+metadata:
+  name: $SiteCaSecretName
+  namespace: $ApplicationNamespace
+data:
+  ca.crt: $([Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($caCertPem)))
+"@ | kubectl apply --context $KubeContext -f - | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Writing Secret '$ApplicationNamespace/$SiteCaSecretName' failed." }
 
     $leafPem = Get-SecretData $ApplicationNamespace $TlsSecretName 'tls.crt'
     $leaf = [Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPem($leafPem)

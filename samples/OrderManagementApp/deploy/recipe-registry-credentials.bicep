@@ -13,9 +13,9 @@
 // schema but not yet supported. Use a scoped ACR token rather than enabling the ACR admin user:
 //
 //   az acr token create --registry <acr> --name recipe-puller \
-//       --repository recipes/kubernetes-containers content/read --output json
+//       --repository recipes/kubernetes/kubernetes-containers content/read --output json
 //
-// (one --repository per Recipe under recipes/ at the repository root)
+// (one --repository per Recipe under recipes/ at the repository root, as recipes/<implementation>/<name>)
 //
 // DEPLOYMENT ORDER
 // The Environment references these settings, so the two cannot be created in a single pass.

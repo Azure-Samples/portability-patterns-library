@@ -3,7 +3,7 @@
 // This file is environment-agnostic. It declares *what* the application needs -- a queue, object
 // storage, a SQL database, a PostgreSQL database, and three containers -- and never states *how*
 // those are provisioned. The Recipe Pack bound to the target Environment decides whether the queue
-// is RabbitMQ or Azure Service Bus, whether object storage is Azurite or Azure Blob Storage, and
+// is RabbitMQ or Azure Service Bus, whether object storage is an S3 bucket or Azure Blob Storage, and
 // whether the databases are containers or Azure SQL Database and Azure Database for PostgreSQL.
 //
 // Each service signs in to its databases as its own least-privilege user, never as administrator:
@@ -133,7 +133,7 @@ resource queue 'Portability.Messaging/messageQueues@2025-08-01-preview' = {
   }
 }
 
-// Portable object storage: Azure Blob Storage on Azure, an Azurite container on Azure Local.
+// Portable object storage: Azure Blob Storage on Azure, a bucket in the site's S3 store on Azure Local.
 resource archive 'Radius.Storage/objectStorage@2025-08-01-preview' = {
   name: 'archive'
   properties: {

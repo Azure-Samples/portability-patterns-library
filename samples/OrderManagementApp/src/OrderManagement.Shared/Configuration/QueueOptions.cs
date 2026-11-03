@@ -24,6 +24,13 @@ public sealed class QueueOptions
     /// </summary>
     public required string Endpoint { get; init; }
 
+    /// <summary>
+    /// <c>CONNECTION_QUEUE_TLS</c>: <c>required</c> (default) or <c>optional</c>. With TLS required the
+    /// RabbitMQ client connects over TLS and verifies the broker's certificate against the CAs the
+    /// process trusts. Service Bus always uses TLS.
+    /// </summary>
+    public required bool TlsRequired { get; init; }
+
     // RabbitMQ credentials, present only when the Recipe issues them. When it doesn't, the broker
     // accepts the pod's own identity instead (see WorkloadTokenOptions.FromEnvironment).
     public string? Username { get; init; }
@@ -48,11 +55,20 @@ public sealed class QueueOptions
                 $"Unsupported queue provider '{other}'. Expected 'rabbitmq' or 'servicebus'.")
         };
 
+        var tls = values.Get("tls")?.Trim().ToLowerInvariant() ?? "required";
+
         return new QueueOptions
         {
             Provider = provider,
             QueueName = values.Get("queueName") ?? "orders",
             Endpoint = values.GetRequired("endpoint"),
+            TlsRequired = tls switch
+            {
+                "required" => true,
+                "optional" => false,
+                _ => throw new InvalidOperationException(
+                    $"Unsupported TLS setting '{tls}' for connection '{connectionName}'. Expected 'required' or 'optional'.")
+            },
             Username = values.Get("username"),
             Password = values.Get("password"),
             MaxDeliveryCount = values.GetInt32("maxDeliveryCount", 10)

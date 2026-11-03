@@ -17,8 +17,28 @@
 //
 // Credentials that can't come from that identity, such as each service's database password, are
 // synced into the cluster from Azure Key Vault and reach the service through containerEnvFromSecrets.
+//
+// Availability picks how the queue and PostgreSQL run. Both settings return the same connection
+// values, so the application is the same either way:
+//
+//   * 'high'     - operators the platform installs run them (provision-operators.ps1): three
+//     RabbitMQ nodes (rabbitmq-operator), and a PostgreSQL primary with replicas and continuous
+//     backups to the object store (cloudnative-pg). A node can fail without losing a message or a
+//     committed transaction.
+//   * 'standard' - one StatefulSet each, with no operators and no backups (rabbitmq-statefulset,
+//     postgres-statefulset). Fewer resources, for sites that accept downtime while a pod restarts and
+//     data lost with a volume.
+//
+// SQL Server, object storage, the containers and routes use the same Recipes in both.
 
 extension radius
+
+@description('''
+How the queue and PostgreSQL run: 'high' (operator-run, replicated, backed up) or 'standard' (one
+StatefulSet each). The platform must match: setup-platform.ps1 with the same Availability.
+''')
+@allowed([ 'high', 'standard' ])
+param availability string = 'high'
 
 @description('''
 Address of the in-cluster connected registry: the ClusterIP of its Service. Holds both the Recipes and
@@ -42,22 +62,52 @@ param radiusRecipeTag string = 'latest'
 param plainHttp bool = false
 
 @description('Tag of the RabbitMQ image mirrored into the registry.')
-param rabbitMqTag string = '4-management-alpine'
+param rabbitMqTag string = '4.3.7-management-alpine'
+
+@description('RabbitMQ nodes when availability is \'high\'. Three keeps the queues available, with no message lost, when one node fails.')
+param rabbitMqReplicas int = 3
 
 @description('Tag of the SQL Server image mirrored into the registry.')
 param sqlServerTag string = '2022-latest'
 
-@description('Tag of the Azurite image mirrored into the registry.')
-param azuriteTag string = '3.35.0'
+@description('Tag of the CloudNativePG PostgreSQL image mirrored into the registry, used when availability is \'high\'.')
+param postgresTag string = '17.11-standard-trixie'
 
-@description('Tag of the PostgreSQL image mirrored into the registry.')
-param postgresTag string = '17-alpine'
+@description('Tag of the official PostgreSQL image mirrored into the registry, used when availability is \'standard\'.')
+param postgresStatefulSetTag string = '17-alpine'
+
+@description('PostgreSQL instances per database when availability is \'high\': one primary, the rest replicas that take over if it fails.')
+param postgresInstances int = 3
+
+@description('HTTPS endpoint of the S3-compatible store that PostgreSQL backups go to (scripts/infra/azurelocal/provision-object-store.ps1) when availability is \'high\'. Empty takes no backups.')
+param backupEndpoint string = ''
+
+@description('Bucket on that endpoint for the application namespace\'s backups.')
+param backupBucket string = ''
+
+@description('Secret in the application namespace with that bucket\'s credentials, keys ACCESS_KEY_ID and ACCESS_SECRET_KEY, and the store\'s CA, key ca.crt.')
+param backupCredentialsSecretName string = ''
+
+@description('How long PostgreSQL backups are kept: the window a database can be restored to any point in.')
+param backupRetention string = '30d'
+
+@description('HTTPS endpoint of the site\'s S3 object store (scripts/infra/azurelocal/provision-object-store.ps1), which holds the application\'s object storage buckets.')
+param objectStoreEndpoint string = ''
+
+@description('Secret in the application namespace with that namespace\'s keys to the store, ACCESSKEYID and SECRETACCESSKEY. Only containers connected to object storage get them.')
+param objectStoreCredentialsSecretName string = ''
 
 @description('SQL Server edition, or a product key. Developer is free but not licensed for production use.')
 param sqlServerEdition string = 'Developer'
 
-@description('cert-manager ClusterIssuer that issues certificates for in-cluster services, such as PostgreSQL. Empty serves them without TLS.')
+@description('CPU cores SQL Server may use. Per-core editions (Standard, Enterprise) are licensed for the cores a container can use, so this also sets how many to license.')
+param sqlServerCpuLimit string = '2'
+
+@description('cert-manager ClusterIssuer, a CA issuer, that issues certificates for in-cluster services: the queue and PostgreSQL. Empty serves them without TLS.')
 param certificateIssuer string = ''
+
+@description('Existing Secret in the application namespace with that issuer\'s CA certificate under `ca.crt`. Every container gets it, so clients verify those services.')
+param siteCaSecretName string = ''
 
 @description('''
 Kubernetes Secrets, by name, whose keys become environment variables of every container, such as
@@ -130,25 +180,54 @@ var identityProviderMounts = !useIdentityProvider ? [] : concat([
 ], empty(oauthCaSecretName) ? [] : [
   { name: 'identity-ca', mountPath: '/etc/identity-ca', readOnly: true }
 ])
-// .NET and most runtimes read SSL_CERT_FILE, so the application trusts the issuer with no code.
-var identityProviderEnv = !useIdentityProvider ? [] : concat([
+var identityProviderEnv = !useIdentityProvider ? [] : [
   { name: 'IDENTITY_TOKEN_FILE', value: identityTokenPath }
   { name: 'IDENTITY_CLIENT_ID', value: oauthClientId }
   { name: 'IDENTITY_TOKEN_ENDPOINT', value: identityTokenEndpoint }
-], empty(oauthCaSecretName) ? [] : [
-  { name: 'SSL_CERT_FILE', value: '/etc/identity-ca/ca.crt' }
-])
+]
 
 var telemetryEnv = empty(otlpEndpoint) ? [] : [
   { name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: otlpEndpoint }
 ]
 
+// Site CA: every container trusts the CA that signs the in-cluster services' certificates: the
+// queue, the object store, PostgreSQL and the identity provider. .NET and most runtimes read
+// SSL_CERT_FILE as the CAs they trust, so clients verify those services with no code; PostgreSQL
+// clients (Npgsql, libpq) read PGSSLROOTCERT instead. Without a site CA, the identity provider's CA
+// is the one trusted.
+var useSiteCa = !empty(siteCaSecretName)
+var siteCaVolumes = !useSiteCa ? [] : [
+  {
+    name: 'site-ca'
+    secret: { secretName: siteCaSecretName }
+  }
+]
+var siteCaMounts = !useSiteCa ? [] : [
+  { name: 'site-ca', mountPath: '/etc/site-ca', readOnly: true }
+]
+var siteCaEnv = useSiteCa ? [
+  { name: 'SSL_CERT_FILE', value: '/etc/site-ca/ca.crt' }
+  { name: 'PGSSLROOTCERT', value: '/etc/site-ca/ca.crt' }
+] : (useIdentityProvider && !empty(oauthCaSecretName) ? [
+  { name: 'SSL_CERT_FILE', value: '/etc/identity-ca/ca.crt' }
+] : [])
+
+// Object storage: the platform, not the Recipe, holds the keys to the shared store, and gives them
+// only to containers connected to an objectStorage resource. Their pods get a label the store's
+// network policy lets in.
+var objectStorageType = 'Radius.Storage/objectStorage'
+var connectionParameters = empty(objectStoreCredentialsSecretName) ? {} : {
+  connectionSecretNames: { '${objectStorageType}': objectStoreCredentialsSecretName }
+  connectionPodLabels: { '${objectStorageType}': { 'object-store/client': 'true' } }
+}
+
 var containerPlatformParameters = union(
   useIdentityProvider ? { serviceAccountName: serviceAccountName } : {},
+  connectionParameters,
   {
-    platformPodVolumes: identityProviderVolumes
-    containerVolumeMounts: identityProviderMounts
-    containerEnv: concat(identityProviderEnv, telemetryEnv)
+    platformPodVolumes: concat(identityProviderVolumes, siteCaVolumes)
+    containerVolumeMounts: concat(identityProviderMounts, siteCaMounts)
+    containerEnv: concat(identityProviderEnv, telemetryEnv, siteCaEnv)
     containerEnvFromSecrets: containerEnvFromSecrets
   }
 )
@@ -159,59 +238,78 @@ var queueOAuthParameters = empty(oauthIssuer) ? {} : {
   oauthCaSecretName: oauthCaSecretName
 }
 
+// The queue and PostgreSQL Recipes for the availability, each given only the parameters it declares.
+var highAvailability = availability == 'high'
+
+var queueRecipe = highAvailability ? 'rabbitmq-operator/rabbitmq-queue' : 'rabbitmq-statefulset/rabbitmq-queue'
+var queueParameters = union({
+  imageRegistry: registry
+  imageRepository: 'rabbitmq'
+  tag: rabbitMqTag
+  imagePullSecretName: imagePullSecretName
+  certificateIssuer: certificateIssuer
+}, highAvailability ? { replicas: rabbitMqReplicas } : {}, queueOAuthParameters)
+
+var postgresRecipe = highAvailability ? 'cloudnative-pg/postgres-database' : 'postgres-statefulset/postgres-database'
+var postgresParameters = highAvailability ? {
+  imageRegistry: registry
+  imageRepository: 'cloudnative-pg/postgresql'
+  tag: postgresTag
+  instances: postgresInstances
+  imagePullSecretName: imagePullSecretName
+  certificateIssuer: certificateIssuer
+  backupEndpoint: backupEndpoint
+  backupBucket: backupBucket
+  backupCredentialsSecretName: backupCredentialsSecretName
+  backupRetention: backupRetention
+} : {
+  imageRegistry: registry
+  imageRepository: 'postgres'
+  tag: postgresStatefulSetTag
+  imagePullSecretName: imagePullSecretName
+  certificateIssuer: certificateIssuer
+}
+
 resource azureLocalRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
   name: 'azure-local-recipes'
   properties: {
     recipes: {
       'Portability.Messaging/messageQueues': {
         kind: 'bicep'
-        source: '${registry}/recipes/rabbitmq-queue:${tag}'
+        source: '${registry}/recipes/${queueRecipe}:${tag}'
         plainHttp: plainHttp
-        parameters: union({
-          imageRegistry: registry
-          imageRepository: 'rabbitmq'
-          tag: rabbitMqTag
-          imagePullSecretName: imagePullSecretName
-        }, queueOAuthParameters)
+        parameters: queueParameters
       }
       'Radius.Storage/objectStorage': {
         kind: 'bicep'
-        source: '${registry}/recipes/azurite-objectstorage:${tag}'
+        source: '${registry}/recipes/seaweedfs/seaweedfs-objectstorage:${tag}'
         plainHttp: plainHttp
         parameters: {
-          imageRegistry: registry
-          imageRepository: 'azure-storage/azurite'
-          tag: azuriteTag
-          imagePullSecretName: imagePullSecretName
+          endpoint: objectStoreEndpoint
         }
       }
       'Radius.Data/sqlServerDatabases': {
         kind: 'bicep'
-        source: '${registry}/recipes/mssql-database:${tag}'
+        source: '${registry}/recipes/sql-server/mssql-database:${tag}'
         plainHttp: plainHttp
         parameters: {
           imageRegistry: registry
           imageRepository: 'mssql/server'
           tag: sqlServerTag
           edition: sqlServerEdition
+          cpuLimit: sqlServerCpuLimit
           imagePullSecretName: imagePullSecretName
         }
       }
       'Radius.Data/postgreSqlDatabases': {
         kind: 'bicep'
-        source: '${registry}/recipes/postgres-database:${tag}'
+        source: '${registry}/recipes/${postgresRecipe}:${tag}'
         plainHttp: plainHttp
-        parameters: {
-          imageRegistry: registry
-          imageRepository: 'postgres'
-          tag: postgresTag
-          imagePullSecretName: imagePullSecretName
-          certificateIssuer: certificateIssuer
-        }
+        parameters: postgresParameters
       }
       'Radius.Compute/containers': {
         kind: 'bicep'
-        source: '${registry}/recipes/kubernetes-containers:${tag}'
+        source: '${registry}/recipes/kubernetes/kubernetes-containers:${tag}'
         plainHttp: plainHttp
         parameters: union({
           imagePullSecretName: imagePullSecretName
@@ -221,7 +319,7 @@ resource azureLocalRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
       // are the platform's.
       'Radius.Compute/routes': {
         kind: 'bicep'
-        source: '${registry}/recipes/kubernetes-routes:${tag}'
+        source: '${registry}/recipes/kubernetes/kubernetes-routes:${tag}'
         plainHttp: plainHttp
         parameters: {
           ingressClassName: ingressClassName

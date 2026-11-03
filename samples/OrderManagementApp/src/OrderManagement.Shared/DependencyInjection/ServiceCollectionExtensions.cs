@@ -124,7 +124,16 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddOrderArchive(this IServiceCollection services)
     {
         services.AddSingleton(sp => ArchiveOptions.FromConfiguration(sp.GetRequiredService<IConfiguration>()));
-        services.AddSingleton<IArchiveStore, BlobArchiveStore>();
+        services.AddSingleton<IArchiveStore>(sp =>
+        {
+            var options = sp.GetRequiredService<ArchiveOptions>();
+            var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+            return options.Provider switch
+            {
+                ArchiveProvider.S3 => new S3ArchiveStore(options, loggerFactory.CreateLogger<S3ArchiveStore>()),
+                _ => new BlobArchiveStore(options, loggerFactory.CreateLogger<BlobArchiveStore>())
+            };
+        });
         return services;
     }
 

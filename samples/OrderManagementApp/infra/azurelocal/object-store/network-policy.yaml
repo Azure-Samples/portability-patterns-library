@@ -1,0 +1,30 @@
+# Only the store's clients may reach it, and only over HTTPS: application pods connected to object
+# storage (the Recipe Pack labels them object-store/client) and the PostgreSQL instances that back
+# up. Pods in the object-store namespace itself (the store's components, which talk over mutual TLS,
+# and its bucket creation job) reach each other on every port. Applied by provision-object-store.ps1
+# with ${OBJECT_STORAGE_NAMESPACES} and ${BACKUP_NAMESPACES} filled in.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: s3-from-clients
+  namespace: object-store
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchExpressions:
+              - { key: kubernetes.io/metadata.name, operator: In, values: [${OBJECT_STORAGE_NAMESPACES}] }
+          podSelector:
+            matchLabels: { object-store/client: "true" }
+        - namespaceSelector:
+            matchExpressions:
+              - { key: kubernetes.io/metadata.name, operator: In, values: [${BACKUP_NAMESPACES}] }
+          podSelector:
+            matchExpressions:
+              - { key: cnpg.io/cluster, operator: Exists }
+      ports:
+        - { port: 8443, protocol: TCP }
+    - from:
+        - podSelector: {}

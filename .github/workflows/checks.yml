@@ -71,6 +71,9 @@ jobs:
       - name: Build
         run: dotnet build OrderManagement.sln --configuration Release
 
+      - name: Unit tests
+        run: dotnet test OrderManagement.sln --configuration Release --no-build
+
       # The same steps a developer follows in the README to run the app locally.
       - name: Start the app with docker compose
         run: |
@@ -94,10 +97,12 @@ jobs:
           inventory /healthz
           test "$(inventory /api/products | jq 'length')" = 5
           test "$(inventory /api/products | jq '[.[] | select(.available > 0)] | length')" = 5
-          # The processor exits if it can't reach the queue, the database or blob storage.
+          # The processor exits if it can't reach the queue, the database or object storage.
           sleep 30
           test "$(docker compose ps processor --format '{{.State}}')" = running
           test "$(docker compose ps inventory --format '{{.State}}')" = running
+          # It created its bucket with the S3 keys it was given.
+          docker compose exec -T seaweedfs sh -c 'echo s3.bucket.list | weed shell' | grep -w orders
 
       - name: Logs
         if: failure()
@@ -116,6 +121,19 @@ jobs:
         run: |
           kubectl kustomize infra/azurelocal/keycloak > /dev/null
           jq empty infra/azurelocal/keycloak/realm.json local/keycloak-users.json
+
+      - name: Operators and object store
+        run: |
+          kubectl kustomize infra/azurelocal/operators/rabbitmq/cluster-operator > /dev/null
+          kubectl kustomize infra/azurelocal/operators/rabbitmq/messaging-topology-operator > /dev/null
+          helm template cnpg cloudnative-pg --repo https://cloudnative-pg.github.io/charts \
+            --version 0.29.1 --values infra/azurelocal/operators/cloudnative-pg/values.yaml > /dev/null
+          helm template barman-cloud plugin-barman-cloud --repo https://cloudnative-pg.github.io/charts \
+            --version 0.8.1 --values infra/azurelocal/operators/plugin-barman-cloud/values.yaml > /dev/null
+          helm template cert-manager-csi-driver cert-manager-csi-driver --repo https://charts.jetstack.io \
+            --version v0.16.1 --values infra/azurelocal/operators/cert-manager-csi-driver/values.yaml > /dev/null
+          helm template seaweedfs seaweedfs --repo https://seaweedfs.github.io/seaweedfs/helm \
+            --version 4.51.0 --values infra/azurelocal/object-store/values.yaml > /dev/null
 
       - name: Ingress values
         run: |
@@ -141,3 +159,10 @@ jobs:
           $findings = Invoke-ScriptAnalyzer -Path scripts -Recurse -Settings scripts/PSScriptAnalyzerSettings.psd1
           $findings | Format-Table ScriptName, Line, RuleName, Message -AutoSize -Wrap
           if ($findings) { exit 1 }
+
+      - name: PowerShell tests
+        shell: pwsh
+        run: |
+          Install-Module Pester -MinimumVersion 5.5 -Force -Scope CurrentUser
+          $result = Invoke-Pester tests/scripts -Output Detailed -PassThru
+          exit $result.FailedCount

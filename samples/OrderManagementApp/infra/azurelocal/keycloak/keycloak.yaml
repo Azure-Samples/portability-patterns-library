@@ -1,8 +1,10 @@
-# Keycloak with a PostgreSQL database, in the identity namespace.
+# Keycloak in the identity namespace: two replicas on separate nodes, sharing the database in
+# database/ and clustering through it, so sign-in survives losing a node. Users reach it on the load
+# balancer address in service.yaml.
 #
 # Expects these to exist in the identity namespace (see README.md in this folder):
 #   Secret keycloak-admin           username, password    bootstrap admin
-#   Secret keycloak-db              username, password    database login
+#   Secret keycloak-db              username, password    database login (type kubernetes.io/basic-auth)
 #   Secret keycloak-tls             tls.crt, tls.key      Keycloak's serving certificate, from cert-manager
 #   Secret cluster-ca               cluster-ca.pem        the cluster's CA, to verify service account tokens
 #   Secret oms-ad-bind              bind-upn, bind-password   read-only directory account
@@ -26,84 +28,17 @@ subjects:
     name: default
     namespace: identity
 ---
-apiVersion: v1
-kind: Service
-metadata:
-  name: keycloak-db
-  namespace: identity
-spec:
-  selector:
-    app: keycloak-db
-  ports:
-    - port: 5432
-      targetPort: 5432
----
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: keycloak-db
-  namespace: identity
-spec:
-  serviceName: keycloak-db
-  replicas: 1
-  selector:
-    matchLabels:
-      app: keycloak-db
-  template:
-    metadata:
-      labels:
-        app: keycloak-db
-    spec:
-      imagePullSecrets:
-        - name: azurelocal-registry
-      containers:
-        - name: postgres
-          image: docker.io/library/postgres
-          env:
-            - name: POSTGRES_DB
-              value: keycloak
-            - name: POSTGRES_USER
-              valueFrom:
-                secretKeyRef: { name: keycloak-db, key: username }
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: keycloak-db, key: password }
-            - name: PGDATA
-              value: /var/lib/postgresql/data/pgdata
-          ports:
-            - containerPort: 5432
-          readinessProbe:
-            exec:
-              command: ["pg_isready", "-U", "keycloak", "-d", "keycloak"]
-            initialDelaySeconds: 10
-            periodSeconds: 10
-          volumeMounts:
-            - name: data
-              mountPath: /var/lib/postgresql/data
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 8Gi
----
-# Reached on every node's address at port 30443, so the issuer URL is https://<node address>:30443/realms/oms.
-apiVersion: v1
-kind: Service
+# Keeps one Keycloak serving while a node is drained.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
 metadata:
   name: keycloak
   namespace: identity
 spec:
-  type: NodePort
+  minAvailable: 1
   selector:
-    app: keycloak
-  ports:
-    - name: https
-      port: 8443
-      targetPort: 8443
-      nodePort: 30443
+    matchLabels:
+      app: keycloak
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -111,7 +46,14 @@ metadata:
   name: keycloak
   namespace: identity
 spec:
-  replicas: 1
+  replicas: 2
+  # One pod at a time, and the new one ready before an old one stops, so the cluster always has a
+  # member to join and sign-in never pauses.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: keycloak
@@ -122,11 +64,22 @@ spec:
     spec:
       imagePullSecrets:
         - name: azurelocal-registry
+      # Lets a stopping pod leave the cluster cleanly and hand its sessions over.
+      terminationGracePeriodSeconds: 60
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: keycloak
       containers:
         - name: keycloak
           image: quay.io/keycloak/keycloak
           args: ["start", "--import-realm", "--optimized=false"]
-          # Site values for the ${...} placeholders in realm.json.
+          # Site values: KC_HOSTNAME, and the ${...} placeholders in realm.json.
           envFrom:
             - configMapRef:
                 name: keycloak-realm-settings
@@ -149,8 +102,10 @@ spec:
                 secretKeyRef: { name: keycloak-admin, key: password }
             - name: KC_DB
               value: postgres
+            # The read-write Service: CloudNativePG's follows the primary through a failover, and
+            # database/statefulset.yaml's has the same name.
             - name: KC_DB_URL
-              value: jdbc:postgresql://keycloak-db:5432/keycloak
+              value: jdbc:postgresql://keycloak-db-rw:5432/keycloak
             - name: KC_DB_USERNAME
               valueFrom:
                 secretKeyRef: { name: keycloak-db, key: username }
@@ -165,14 +120,12 @@ spec:
             # its next read, with no restart.
             - name: KC_HTTPS_CERTIFICATES_RELOAD_PERIOD
               value: 10m
-            - name: KC_HOSTNAME_STRICT
-              value: "false"
             - name: KC_HEALTH_ENABLED
               value: "true"
-            # One replica, so no clustering. Otherwise a restarted pod waits on its predecessor's
-            # membership row in the database and never finishes starting.
+            # The replicas find each other through the database (the default jdbc-ping stack) and
+            # share sessions, so either one can serve any user.
             - name: KC_CACHE
-              value: local
+              value: ispn
             # Exchanging a Kubernetes service account token needs this feature, at v1.
             - name: KC_FEATURES
               value: kubernetes-service-accounts:v1
@@ -180,7 +133,12 @@ spec:
             - name: KC_TRUSTSTORE_PATHS
               value: /opt/keycloak/conf/truststores
           ports:
-            - containerPort: 8443
+            - name: https
+              containerPort: 8443
+            - name: jgroups
+              containerPort: 7800
+            - name: jgroups-fd
+              containerPort: 57800
           readinessProbe:
             httpGet:
               path: /health/ready
@@ -189,6 +147,12 @@ spec:
             initialDelaySeconds: 30
             periodSeconds: 10
             failureThreshold: 30
+          resources:
+            requests:
+              cpu: 250m
+              memory: 768Mi
+            limits:
+              memory: 1536Mi
           volumeMounts:
             - name: realm
               mountPath: /opt/keycloak/data/import

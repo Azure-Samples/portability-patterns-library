@@ -87,6 +87,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
+. (Join-Path $repoRoot 'scripts/lib/secrets.ps1')
 Push-Location $repoRoot
 
 function Test-Elevated {
@@ -468,30 +469,18 @@ try {
             kubectl --context $KubeContext create namespace $SecretNamespace `
                 --dry-run=client --output yaml | kubectl --context $KubeContext apply -f - | Out-Null
 
-            # Replaced rather than patched, so a re-run that reset the password stays consistent.
-            kubectl --context $KubeContext -n $SecretNamespace delete secret $SecretName `
-                --ignore-not-found | Out-Null
-
-            # Quoted because a generated password may contain characters PowerShell would
-            # otherwise treat as syntax when building the argument.
-            kubectl --context $KubeContext -n $SecretNamespace create secret generic $SecretName `
-                "--from-literal=bind-dn=$($created.BindDn)" `
-                "--from-literal=bind-upn=$($created.BindUpn)" `
-                "--from-literal=bind-password=$bindPassword" `
-                "--from-literal=demo-upn=$($created.DemoUpn)" `
-                "--from-literal=demo-password=$demoPassword" | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw 'Could not write the bind credential Secret.' }
-
-            # The inventory administrator's credentials join the same Secret, for sign-in tests.
-            $patchFile = New-TemporaryFile
-            try {
-                Set-Content -Path $patchFile -Encoding ascii -Value (@{
-                        stringData = @{ 'inventory-admin-upn' = $created.InventoryAdminUpn; 'inventory-admin-password' = $inventoryAdminPassword }
-                    } | ConvertTo-Json -Compress)
-                kubectl --context $KubeContext -n $SecretNamespace patch secret $SecretName --type merge --patch-file $patchFile | Out-Null
-                if ($LASTEXITCODE -ne 0) { throw 'Could not add the inventory administrator to the bind credential Secret.' }
+            # Every key at once, so a re-run that reset a password stays consistent. The values go to
+            # kubectl on stdin, never on a command line. The inventory administrator's credentials
+            # are for sign-in tests.
+            Set-OmsSecret -KubeContext $KubeContext -Namespace $SecretNamespace -Name $SecretName -Data @{
+                'bind-dn'                  = $created.BindDn
+                'bind-upn'                 = $created.BindUpn
+                'bind-password'            = $bindPassword
+                'demo-upn'                 = $created.DemoUpn
+                'demo-password'            = $demoPassword
+                'inventory-admin-upn'      = $created.InventoryAdminUpn
+                'inventory-admin-password' = $inventoryAdminPassword
             }
-            finally { Remove-Item $patchFile -ErrorAction SilentlyContinue }
 
             Write-Host "    secret/$SecretName in namespace $SecretNamespace" -ForegroundColor DarkGray
 
