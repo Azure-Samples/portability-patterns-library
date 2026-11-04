@@ -14,12 +14,12 @@
     running when the link to Azure is down:
 
       1. CloudNativePG, from its Helm chart, into cnpg-system. Values:
-         infra/azurelocal/operators/cloudnative-pg/values.yaml.
+         infra/azurelocal/operators/cloudnative-pg/operator/values.yaml.
       2. The Barman Cloud plugin, from its Helm chart, into cnpg-system. Values:
-         infra/azurelocal/operators/plugin-barman-cloud/values.yaml.
+         infra/azurelocal/operators/cloudnative-pg/plugin-barman-cloud/values.yaml.
       3. The cert-manager CSI driver, from its Helm chart, into cert-manager-csi-driver. It gives each
          RabbitMQ pod its own certificate from the site CA, for mutual TLS between the nodes.
-         Values: infra/azurelocal/operators/cert-manager-csi-driver/values.yaml.
+         Values: infra/azurelocal/operators/rabbitmq/cert-manager-csi-driver/values.yaml.
       4. The RabbitMQ Cluster Operator and then the Messaging Topology Operator, from the RabbitMQ
          team's release manifests, into rabbitmq-system: infra/azurelocal/operators/rabbitmq. The
          topology operator reaches the brokers over HTTPS, so it gets the site CA.
@@ -105,14 +105,14 @@ $common = @('--namespace', $CnpgNamespace, '--kube-context', $KubeContext, '--wa
 Write-Host "==> Installing CloudNativePG (chart $CloudNativePgChartVersion) from $PullRegistry" -ForegroundColor Cyan
 Invoke-Checked 'helm upgrade --install cnpg' {
     helm upgrade --install cnpg cloudnative-pg --repo $ChartRepository --version $CloudNativePgChartVersion @common `
-        --values (Join-Path $operatorsDir 'cloudnative-pg/values.yaml') `
+        --values (Join-Path $operatorsDir 'cloudnative-pg/operator/values.yaml') `
         --set "image.repository=$PullRegistry/cloudnative-pg/cloudnative-pg"
 }
 
 Write-Host "==> Installing the Barman Cloud backup plugin (chart $BarmanCloudChartVersion)" -ForegroundColor Cyan
 Invoke-Checked 'helm upgrade --install barman-cloud' {
     helm upgrade --install barman-cloud plugin-barman-cloud --repo $ChartRepository --version $BarmanCloudChartVersion @common `
-        --values (Join-Path $operatorsDir 'plugin-barman-cloud/values.yaml') `
+        --values (Join-Path $operatorsDir 'cloudnative-pg/plugin-barman-cloud/values.yaml') `
         --set "image.registry=$PullRegistry" --set "sidecarImage.registry=$PullRegistry"
 }
 
@@ -120,7 +120,7 @@ Write-Host "==> Installing the cert-manager CSI driver (chart $CsiDriverChartVer
 Invoke-Checked 'helm upgrade --install cert-manager-csi-driver' {
     helm upgrade --install cert-manager-csi-driver cert-manager-csi-driver --repo https://charts.jetstack.io `
         --version $CsiDriverChartVersion --namespace $CsiDriverNamespace --kube-context $KubeContext --wait --timeout 10m `
-        --values (Join-Path $operatorsDir 'cert-manager-csi-driver/values.yaml') --set "imageRegistry=$PullRegistry"
+        --values (Join-Path $operatorsDir 'rabbitmq/cert-manager-csi-driver/values.yaml') --set "imageRegistry=$PullRegistry"
 }
 
 # The topology operator manages objects inside clusters the cluster operator runs, so it goes second.

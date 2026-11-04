@@ -4,7 +4,7 @@
 #
 #   helm upgrade --install cnpg cloudnative-pg --repo https://cloudnative-pg.github.io/charts `
 #     --version 0.29.1 --namespace cnpg-system --create-namespace `
-#     --values infra/azurelocal/operators/cloudnative-pg/values.yaml
+#     --values infra/azurelocal/operators/cloudnative-pg/operator/values.yaml
 #
 # Change the marked values for your site first. scripts/infra/azurelocal/provision-operators.ps1
 # does this for you.

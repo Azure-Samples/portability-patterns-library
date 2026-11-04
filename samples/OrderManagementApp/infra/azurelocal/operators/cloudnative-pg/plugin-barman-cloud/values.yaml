@@ -4,7 +4,7 @@
 #
 #   helm upgrade --install barman-cloud plugin-barman-cloud --repo https://cloudnative-pg.github.io/charts `
 #     --version 0.8.1 --namespace cnpg-system `
-#     --values infra/azurelocal/operators/plugin-barman-cloud/values.yaml
+#     --values infra/azurelocal/operators/cloudnative-pg/plugin-barman-cloud/values.yaml
 #
 # Its certificates come from the cluster's cert-manager. Change the marked values for your site first;
 # scripts/infra/azurelocal/provision-operators.ps1 does this for you.

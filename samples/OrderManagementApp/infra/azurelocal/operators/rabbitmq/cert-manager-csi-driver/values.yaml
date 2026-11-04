@@ -6,7 +6,7 @@
 #   helm upgrade --install cert-manager-csi-driver cert-manager-csi-driver `
 #     --repo https://charts.jetstack.io --version v0.16.1 `
 #     --namespace cert-manager-csi-driver --create-namespace `
-#     --values infra/azurelocal/operators/cert-manager-csi-driver/values.yaml
+#     --values infra/azurelocal/operators/rabbitmq/cert-manager-csi-driver/values.yaml
 #
 # Change the marked values for your site first. scripts/infra/azurelocal/provision-operators.ps1
 # does this for you.

@@ -195,11 +195,11 @@ jobs:
           kubectl kustomize infra/azurelocal/operators/rabbitmq/cluster-operator > /dev/null
           kubectl kustomize infra/azurelocal/operators/rabbitmq/messaging-topology-operator > /dev/null
           helm template cnpg cloudnative-pg --repo https://cloudnative-pg.github.io/charts \
-            --version 0.29.1 --values infra/azurelocal/operators/cloudnative-pg/values.yaml > /dev/null
+            --version 0.29.1 --values infra/azurelocal/operators/cloudnative-pg/operator/values.yaml > /dev/null
           helm template barman-cloud plugin-barman-cloud --repo https://cloudnative-pg.github.io/charts \
-            --version 0.8.1 --values infra/azurelocal/operators/plugin-barman-cloud/values.yaml > /dev/null
+            --version 0.8.1 --values infra/azurelocal/operators/cloudnative-pg/plugin-barman-cloud/values.yaml > /dev/null
           helm template cert-manager-csi-driver cert-manager-csi-driver --repo https://charts.jetstack.io \
-            --version v0.16.1 --values infra/azurelocal/operators/cert-manager-csi-driver/values.yaml > /dev/null
+            --version v0.16.1 --values infra/azurelocal/operators/rabbitmq/cert-manager-csi-driver/values.yaml > /dev/null
           helm template seaweedfs seaweedfs --repo https://seaweedfs.github.io/seaweedfs/helm \
             --version 4.51.0 --values infra/azurelocal/object-store/values.yaml > /dev/null
 

@@ -24,11 +24,11 @@ Keycloak's database is a CloudNativePG `Cluster` too, in [../keycloak/database/c
 
 | File | What it installs |
 | --- | --- |
-| [cloudnative-pg/values.yaml](./cloudnative-pg/values.yaml) | CloudNativePG, from its Helm chart, into `cnpg-system` |
-| [plugin-barman-cloud/values.yaml](./plugin-barman-cloud/values.yaml) | The Barman Cloud plugin, into `cnpg-system` |
+| [cloudnative-pg/operator/values.yaml](./cloudnative-pg/operator/values.yaml) | CloudNativePG, from its Helm chart, into `cnpg-system` |
+| [cloudnative-pg/plugin-barman-cloud/values.yaml](./cloudnative-pg/plugin-barman-cloud/values.yaml) | The Barman Cloud plugin, into `cnpg-system` |
 | [rabbitmq/cluster-operator](./rabbitmq/cluster-operator/kustomization.yaml) | The RabbitMQ Cluster Operator release, into `rabbitmq-system` |
 | [rabbitmq/messaging-topology-operator](./rabbitmq/messaging-topology-operator/kustomization.yaml) | The Messaging Topology Operator release, into `rabbitmq-system` |
-| [cert-manager-csi-driver/values.yaml](./cert-manager-csi-driver/values.yaml) | The cert-manager CSI driver, from its Helm chart, into `cert-manager-csi-driver` |
+| [rabbitmq/cert-manager-csi-driver/values.yaml](./rabbitmq/cert-manager-csi-driver/values.yaml) | The cert-manager CSI driver, from its Helm chart, into `cert-manager-csi-driver` |
 
 [provision-operators.ps1](../../../scripts/infra/azurelocal/provision-operators.ps1) installs them,
 the `Operators` step of `setup-platform.ps1`, which skips it with `standard`. Each file says how to
