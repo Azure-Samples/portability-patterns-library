@@ -13,6 +13,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\OrderManagement.Processor\OrderManagement.Processor.csproj" />
     <ProjectReference Include="..\..\src\OrderManagement.Shared\OrderManagement.Shared.csproj" />
+    <ProjectReference Include="..\..\src\OrderManagement.DbSetup\OrderManagement.DbSetup.csproj" />
   </ItemGroup>
 
   <ItemGroup>

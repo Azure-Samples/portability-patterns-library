@@ -1,7 +1,8 @@
+using DbUp;
+using DbUp.Postgresql;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Npgsql;
-using NpgsqlTypes;
 using OrderManagement.Shared.Configuration;
 using OrderManagement.Shared.Identity;
 using OrderManagement.Shared.Persistence;
@@ -9,47 +10,19 @@ using OrderManagement.Shared.Persistence;
 namespace OrderManagement.DbSetup;
 
 /// <summary>
-/// The inventory database (the <c>inventorydb</c> connection): schema <c>inventory</c>, seed
-/// products, and the <c>inventory</c> role with row access only. On Azure the role is the inventory
-/// service's Entra identity (<c>INVENTORY_OBJECT_ID</c>); elsewhere a password role
-/// (<c>INVENTORY_DB_PASSWORD</c>).
+/// The inventory database (the <c>inventorydb</c> connection): its migrations (schema
+/// <c>inventory</c> and the starting products), and the <c>inventory</c> role with row access only.
+/// On Azure the role is the inventory service's Entra identity (<c>INVENTORY_OBJECT_ID</c>);
+/// elsewhere a password role (<c>INVENTORY_DB_PASSWORD</c>).
 /// </summary>
 public sealed class PostgresSetup(IConfiguration configuration, ILoggerFactory loggerFactory) : IDatabaseSetup
 {
     private const string Role = DatabaseCredentialProviders.DefaultPostgresUserName;
 
-    private static readonly string[] SchemaStatements =
-    [
-        "CREATE SCHEMA IF NOT EXISTS inventory",
-        """
-        CREATE TABLE IF NOT EXISTS inventory.products
-        (
-            sku           text          PRIMARY KEY,
-            name          text          NOT NULL,
-            unit_price    numeric(12,2) NOT NULL CHECK (unit_price >= 0),
-            currency      char(3)       NOT NULL,
-            available     int           NOT NULL CHECK (available >= 0),
-            reorder_level int           NOT NULL DEFAULT 0
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS inventory.reservations
-        (
-            order_id   uuid        PRIMARY KEY,
-            status     text        NOT NULL,
-            created_at timestamptz NOT NULL DEFAULT now()
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS inventory.reservation_lines
-        (
-            order_id uuid NOT NULL REFERENCES inventory.reservations (order_id) ON DELETE CASCADE,
-            sku      text NOT NULL REFERENCES inventory.products (sku),
-            quantity int  NOT NULL CHECK (quantity > 0),
-            PRIMARY KEY (order_id, sku)
-        )
-        """
-    ];
+    // Held for the whole run, so two runs at once (two deployments, say) take turns. Any fixed number
+    // works; this one is the job's own.
+    private const long LockKey = 0x4F4D_5344_4253_4554;
+    private static readonly TimeSpan LockTimeout = TimeSpan.FromMinutes(10);
 
     private readonly ILogger _logger = loggerFactory.CreateLogger<PostgresSetup>();
 
@@ -65,30 +38,38 @@ public sealed class PostgresSetup(IConfiguration configuration, ILoggerFactory l
             options.Host, options.Database, admin.Description);
 
         // Databases and roles are server-wide; Entra principals can only be created from 'postgres'.
-        await using (var server = PostgresDataSourceFactory.Create(options, admin, loggerFactory, database: "postgres"))
-        await using (var connection = await ConnectionRetry.OpenAsync(
-            token => server.OpenConnectionAsync(token).AsTask(), $"PostgreSQL {options.Host}", _logger, cancellationToken))
-        {
-            await EnsureDatabaseAsync(connection, options.Database, cancellationToken);
-            await EnsureRoleAsync(connection, cancellationToken);
-        }
+        // That connection holds the lock until the end.
+        await using var server = PostgresDataSourceFactory.Create(options, admin, loggerFactory, database: "postgres");
+        await using var session = await ConnectionRetry.OpenAsync(
+            token => server.OpenConnectionAsync(token).AsTask(), $"PostgreSQL {options.Host}", _logger, cancellationToken);
+        await LockAsync(session, cancellationToken);
+        await EnsureDatabaseAsync(session, options.Database, cancellationToken);
+        await EnsureRoleAsync(session, cancellationToken);
 
         await using var database = PostgresDataSourceFactory.Create(options, admin, loggerFactory);
-        await using var db = await ConnectionRetry.OpenAsync(
-            token => database.OpenConnectionAsync(token).AsTask(), $"PostgreSQL database {options.Database}", _logger, cancellationToken);
+        Migrations.Apply(
+            DeployChanges.To.PostgresqlDatabase(new PostgresqlConnectionManager(database))
+                .JournalToPostgresqlTable("public", "schemaversions"),
+            "Postgres", loggerFactory);
 
-        foreach (var statement in SchemaStatements)
-        {
-            await ExecuteAsync(db, statement, cancellationToken);
-        }
-
-        await SeedAsync(db, cancellationToken);
-
+        // Every table in the schema, including ones a later migration adds.
+        await using var db = await database.OpenConnectionAsync(cancellationToken);
         await ExecuteAsync(db, $"GRANT CONNECT ON DATABASE {Identifier(options.Database)} TO {Identifier(Role)}", cancellationToken);
         await ExecuteAsync(db, $"GRANT USAGE ON SCHEMA inventory TO {Identifier(Role)}", cancellationToken);
         await ExecuteAsync(db, $"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA inventory TO {Identifier(Role)}", cancellationToken);
 
         _logger.LogInformation("Role {Role} has SELECT, INSERT, UPDATE, DELETE on schema inventory", Role);
+    }
+
+    // A session-level advisory lock, released when the connection closes.
+    private static async Task LockAsync(NpgsqlConnection session, CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand("SELECT pg_advisory_lock(@key)", session)
+        {
+            CommandTimeout = (int)LockTimeout.TotalSeconds
+        };
+        command.Parameters.AddWithValue("key", LockKey);
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private async Task EnsureDatabaseAsync(NpgsqlConnection connection, string databaseName, CancellationToken cancellationToken)
@@ -158,34 +139,6 @@ public sealed class PostgresSetup(IConfiguration configuration, ILoggerFactory l
         }
 
         _logger.LogInformation("Password role {Role} {State}", Role, roleExists ? "updated" : "created");
-    }
-
-    private async Task SeedAsync(NpgsqlConnection connection, CancellationToken cancellationToken)
-    {
-        var products = SeedCatalog.Products;
-        await using var seed = new NpgsqlCommand(
-            """
-            INSERT INTO inventory.products (sku, name, unit_price, currency, available, reorder_level)
-            SELECT seed.sku, seed.name, seed.unit_price, @currency, @available, @reorderLevel
-            FROM unnest(@skus, @names, @prices) AS seed(sku, name, unit_price)
-            WHERE NOT EXISTS (SELECT 1 FROM inventory.products)
-            """, connection);
-        seed.Parameters.Add(new NpgsqlParameter("skus", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = products.Select(p => p.Sku).ToArray() });
-        seed.Parameters.Add(new NpgsqlParameter("names", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = products.Select(p => p.Name).ToArray() });
-        seed.Parameters.Add(new NpgsqlParameter("prices", NpgsqlDbType.Array | NpgsqlDbType.Numeric) { Value = products.Select(p => p.UnitPrice).ToArray() });
-        seed.Parameters.AddWithValue("currency", SeedCatalog.Currency);
-        seed.Parameters.AddWithValue("available", SeedCatalog.StartingStock);
-        seed.Parameters.AddWithValue("reorderLevel", SeedCatalog.ReorderLevel);
-
-        var inserted = await seed.ExecuteNonQueryAsync(cancellationToken);
-        if (inserted > 0)
-        {
-            _logger.LogInformation("Seeded {Count} products", inserted);
-        }
-        else
-        {
-            _logger.LogInformation("Products already present; seed skipped");
-        }
     }
 
     private static async Task ExecuteAsync(NpgsqlConnection connection, string sql, CancellationToken cancellationToken)

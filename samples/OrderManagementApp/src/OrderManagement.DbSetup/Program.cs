@@ -5,9 +5,9 @@ using Microsoft.Extensions.Logging;
 using OrderManagement.DbSetup;
 using OrderManagement.Shared.Diagnostics;
 
-// One-shot job, run before the services start: creates and migrates the databases, seeds the
-// inventory and grants each service its least-privilege principal. Each database is set up only
-// when its connection is given, so the job can serve SQL, PostgreSQL or both.
+// One-shot job, run before the services start: creates the databases, applies their migrations
+// (Migrations/, with DbUp) and grants each service its least-privilege principal. Each database is
+// set up only when its connection is given, so the job can serve SQL, PostgreSQL or both.
 var builder = Host.CreateApplicationBuilder(args);
 builder.Logging.AddSimpleConsole(options => options.SingleLine = true);
 // Npgsql logs every command at Information; this job's own messages say what it did.

@@ -1,4 +1,5 @@
 using Dapper;
+using DbUp;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -9,10 +10,11 @@ using OrderManagement.Shared.Persistence;
 namespace OrderManagement.DbSetup;
 
 /// <summary>
-/// The orders database (the <c>sql</c> connection): <c>dbo.Orders</c>, and a database user per
-/// service with only the rights it needs. On Azure the users are the services' Entra identities
-/// (<c>SQL_API_CLIENT_ID</c>, <c>SQL_PROCESSOR_CLIENT_ID</c>: their managed identities' client IDs);
-/// elsewhere they are SQL logins (<c>SQL_API_PASSWORD</c>, <c>SQL_PROCESSOR_PASSWORD</c>).
+/// The orders database (the <c>sql</c> connection): its migrations (<c>dbo.Orders</c>), and a
+/// database user per service with only the rights it needs. On Azure the users are the services'
+/// Entra identities (<c>SQL_API_CLIENT_ID</c>, <c>SQL_PROCESSOR_CLIENT_ID</c>: their managed
+/// identities' client IDs); elsewhere they are SQL logins (<c>SQL_API_PASSWORD</c>,
+/// <c>SQL_PROCESSOR_PASSWORD</c>).
 /// </summary>
 public sealed class SqlServerSetup(IConfiguration configuration, ILoggerFactory loggerFactory) : IDatabaseSetup
 {
@@ -20,46 +22,9 @@ public sealed class SqlServerSetup(IConfiguration configuration, ILoggerFactory 
 
     private sealed record Principal(string Name, string? ClientId, string? Password, string Permissions);
 
-    // One statement per command: a column added by one statement can only be referenced by the next
-    // once it has run.
-    private static readonly string[] SchemaStatements =
-    [
-        """
-        IF OBJECT_ID(N'dbo.Orders', N'U') IS NULL
-        CREATE TABLE dbo.Orders
-        (
-            OrderId         UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
-            CustomerId      NVARCHAR(128)    NOT NULL,
-            CustomerName    NVARCHAR(256)    NOT NULL,
-            LineCount       INT              NOT NULL,
-            Total           DECIMAL(18, 2)   NOT NULL,
-            Currency        NCHAR(3)         NOT NULL,
-            LinesJson       NVARCHAR(MAX)    NOT NULL,
-            PlacedAt        DATETIMEOFFSET   NOT NULL,
-            ArchiveUri      NVARCHAR(1000)   NOT NULL,
-            ProcessedAt     DATETIMEOFFSET   NOT NULL,
-            Status          NVARCHAR(16)     NOT NULL CONSTRAINT DF_Orders_Status DEFAULT N'Processed',
-            StatusReason    NVARCHAR(256)    NULL
-        );
-        """,
-        """
-        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_Orders_Customer_PlacedAt' AND object_id = OBJECT_ID(N'dbo.Orders'))
-        CREATE INDEX IX_Orders_Customer_PlacedAt ON dbo.Orders (CustomerId, PlacedAt DESC);
-        """,
-        // Tables created before orders could be rejected: every existing order was processed.
-        """
-        IF COL_LENGTH(N'dbo.Orders', N'Status') IS NULL
-        ALTER TABLE dbo.Orders ADD Status NVARCHAR(16) NOT NULL CONSTRAINT DF_Orders_Status DEFAULT N'Processed';
-        """,
-        """
-        IF COL_LENGTH(N'dbo.Orders', N'StatusReason') IS NULL
-        ALTER TABLE dbo.Orders ADD StatusReason NVARCHAR(256) NULL;
-        """,
-        """
-        IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_Orders_Status' AND parent_object_id = OBJECT_ID(N'dbo.Orders'))
-        ALTER TABLE dbo.Orders ADD CONSTRAINT CK_Orders_Status CHECK (Status IN (N'Processed', N'Rejected'));
-        """
-    ];
+    // Held for the whole run, so two runs at once (two deployments, say) take turns.
+    private const string LockResource = "OrderManagement.DbSetup";
+    private static readonly TimeSpan LockTimeout = TimeSpan.FromMinutes(10);
 
     public string Name => "SQL";
 
@@ -79,33 +44,60 @@ public sealed class SqlServerSetup(IConfiguration configuration, ILoggerFactory 
         // SQL logins live in master, and a SQL Server container starts without the application
         // database. With Entra users only (Azure SQL) the database exists and master is not needed.
         var loginPrincipals = principals.Where(principal => principal.ClientId is null).ToList();
-        if (admin is PasswordCredentialProvider || loginPrincipals.Count > 0)
+        var useMaster = admin is PasswordCredentialProvider || loginPrincipals.Count > 0;
+
+        await using var session = await ConnectionRetry.OpenAsync(
+            token => connections.OpenAsync(useMaster ? "master" : null, token), $"SQL Server {options.Host}", _logger, cancellationToken);
+        await LockAsync(session, cancellationToken);
+
+        if (useMaster)
         {
-            await using var master = await ConnectionRetry.OpenAsync(
-                token => connections.OpenAsync("master", token), $"SQL Server {options.Host}", _logger, cancellationToken);
-            await EnsureDatabaseAsync(master, options.Database, cancellationToken);
+            await EnsureDatabaseAsync(session, options.Database, cancellationToken);
             foreach (var principal in loginPrincipals)
             {
-                await EnsureLoginAsync(master, principal, cancellationToken);
+                await EnsureLoginAsync(session, principal, cancellationToken);
             }
         }
 
-        await using var database = await ConnectionRetry.OpenAsync(
-            connections.OpenAsync, $"SQL database {options.Database} on {options.Host}", _logger, cancellationToken);
-
-        foreach (var statement in SchemaStatements)
+        // DbUp opens its own connections; the credential is read once, and a token lasts far longer
+        // than the migrations take. The journal is dbo.SchemaVersions.
+        var credential = await admin.GetCredentialAsync(cancellationToken);
+        Migrations.Apply(DeployChanges.To.SqlDatabase(() =>
         {
-            await database.ExecuteAsync(new CommandDefinition(statement, cancellationToken: cancellationToken));
-        }
+            var connection = new SqlConnection(options.BuildConnectionString(credential));
+            if (credential.IsAccessToken)
+            {
+                connection.AccessToken = credential.Secret;
+            }
 
-        _logger.LogInformation("Table dbo.Orders is up to date in {Database}", options.Database);
+            return connection;
+        }), "SqlServer", loggerFactory);
 
+        await using var applicationDatabase = useMaster ? await connections.OpenAsync(cancellationToken) : null;
+        var database = applicationDatabase ?? session;
         foreach (var principal in principals)
         {
             await EnsureUserAsync(database, principal, cancellationToken);
             await database.ExecuteAsync(new CommandDefinition(
                 $"GRANT {principal.Permissions} ON dbo.Orders TO [{principal.Name}];", cancellationToken: cancellationToken));
             _logger.LogInformation("Database user {User} has {Permissions} on dbo.Orders", principal.Name, principal.Permissions);
+        }
+    }
+
+    // An application lock owned by the session, released when the connection closes.
+    private static async Task LockAsync(SqlConnection session, CancellationToken cancellationToken)
+    {
+        var result = await session.ExecuteScalarAsync<int>(new CommandDefinition(
+            """
+            DECLARE @result INT;
+            EXEC @result = sp_getapplock @Resource = @resource, @LockMode = N'Exclusive', @LockOwner = N'Session', @LockTimeout = @timeout;
+            SELECT @result;
+            """,
+            new { resource = LockResource, timeout = (int)LockTimeout.TotalMilliseconds },
+            commandTimeout: (int)LockTimeout.TotalSeconds + 30, cancellationToken: cancellationToken));
+        if (result < 0)
+        {
+            throw new InvalidOperationException($"Another database setup held the lock for over {LockTimeout.TotalMinutes} minutes (sp_getapplock returned {result}).");
         }
     }
 

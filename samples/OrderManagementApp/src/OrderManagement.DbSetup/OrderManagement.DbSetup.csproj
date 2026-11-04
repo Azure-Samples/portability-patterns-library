@@ -10,4 +10,14 @@
   <ItemGroup>
     <ProjectReference Include="..\OrderManagement.Shared\OrderManagement.Shared.csproj" />
   </ItemGroup>
+
+  <!-- Applied in name order by DbUp; see Migrations.cs. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Migrations\**\*.sql" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="dbup-postgresql" Version="6.1.5" />
+    <PackageReference Include="dbup-sqlserver" Version="7.2.0" />
+  </ItemGroup>
 </Project>

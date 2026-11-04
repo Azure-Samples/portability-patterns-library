@@ -67,8 +67,11 @@ Keycloak only compares it to the token's `iss` claim.
 
 No service is a database administrator. A one-off setup job,
 [OrderManagement.DbSetup](../src/OrderManagement.DbSetup/Program.cs), runs at each deployment as
-the administrator: it creates the schemas and a database user for each service, with only the rights
-in the table above.
+the administrator: it applies the schema's migrations and creates a database user for each service,
+with only the rights in the table above. A migration is a numbered `.sql` file in
+[Migrations](../src/OrderManagement.DbSetup/Migrations), applied once by
+[DbUp](https://dbup.readthedocs.io) and recorded in the database's `SchemaVersions` table; to change
+the schema, add the next file rather than editing one already applied.
 
 - **Azure:** Azure SQL and PostgreSQL accept Entra sign-in only, with no passwords. Their
   administrator is a dedicated managed identity, `id-oms-db-admin`, used by the setup job alone. The
