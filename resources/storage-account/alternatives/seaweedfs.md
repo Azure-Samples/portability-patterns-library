@@ -1,7 +1,5 @@
 # SeaweedFS as an alternative to Azure Blob storage
 
-> **Draft.** Links to the sample's code follow once the SeaweedFS implementation is in the Order Management sample.
-
 [SeaweedFS](https://github.com/seaweedfs/seaweedfs) is an open-source distributed store (Apache-2.0) that serves objects over an [S3 API](https://github.com/seaweedfs/seaweedfs/wiki/Amazon-S3-API). On Azure Local it runs in the cluster, from the [Helm chart](https://github.com/seaweedfs/seaweedfs/tree/master/k8s/charts/seaweedfs), and keeps the objects that Blob storage keeps on Azure. It's built for many small files: each object is one disk read, with about 40 bytes of metadata.
 
 | Part | Role |
@@ -37,8 +35,9 @@
 ## On Azure Local
 
 - **Replication and Storage Spaces Direct.** The cluster's node disks already sit on Storage Spaces Direct, which keeps copies of every write. SeaweedFS's own replication protects against losing a node or volume server; choose its replication factor knowing the disks underneath are already redundant.
+- **One store per cluster.** Run it once, as a platform service, and give each application its own buckets and keys, rather than one store per application.
 - **Images.** Mirror the SeaweedFS images into the in-cluster registry, like every other image on Azure Local, so a restarted pod still finds its image without the link to Azure.
-- **Credentials.** Temporary credentials from service account tokens keep the application free of stored keys. Static access keys belong in a Kubernetes Secret, ideally synced from a vault (see the [Key Vault guide](../../key-vault/README.md)).
+- **Credentials.** Temporary credentials from service account tokens keep the application free of stored keys. Static keys belong in a Kubernetes Secret given only to the pods that need them.
 - **TLS.** Serve the S3 endpoint with a certificate from the site CA, and have the application trust it.
 
 ## How the Order Management sample does it
@@ -47,18 +46,22 @@ The processor archives each order as a JSON object:
 
 | Step | In the sample |
 |---|---|
-| Same deployment definition on both targets | The app declares a `Radius.Storage/objectStorage` resource. On Azure its Recipe creates a storage account; on Azure Local, SeaweedFS. |
-| Interface the application codes against | `IArchiveStore`, with a Blob implementation and an S3 implementation |
-| Choosing the implementation at startup | From the values the storage Recipe returns |
-| Idempotent writes | Each order's object is named after the order, so a redelivered order overwrites the same object |
+| Same deployment definition on both targets | The app declares a [`Radius.Storage/objectStorage`](../../../samples/OrderManagementApp/deploy/app.bicep) resource. On Azure the [Blob Recipe](../../../recipes/object-storage/azure/blob-storage/blob-objectstorage.bicep) creates a storage account; on Azure Local the [SeaweedFS Recipe](../../../recipes/object-storage/azure-local/seaweedfs/seaweedfs-objectstorage.bicep) creates nothing: it names a bucket, `<namespace>.<containerName>`, and returns the store's endpoint. |
+| The store | Installed once per cluster by [provision-object-store.ps1](../../../samples/OrderManagementApp/scripts/infra/azurelocal/provision-object-store.ps1) with [these values](../../../samples/OrderManagementApp/infra/azurelocal/object-store/values.yaml): three masters, three volume servers keeping two copies of every object, two filers and two S3 gateways, each on its own node. With availability `standard`, one of each. See the [object store README](../../../samples/OrderManagementApp/infra/azurelocal/object-store/README.md). |
+| Encryption | HTTPS with a certificate from the site CA, mutual TLS between the store's components, and every chunk encrypted before it reaches a volume server |
+| Access | An S3 identity per namespace, allowed only that namespace's buckets. The Recipe Pack gives its keys only to containers connected to object storage, and a [network policy](../../../samples/OrderManagementApp/infra/azurelocal/object-store/network-policy.yaml) lets only them in. |
+| Interface the application codes against | `IArchiveStore`, with [BlobArchiveStore.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Storage/BlobArchiveStore.cs) and [S3ArchiveStore.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Storage/S3ArchiveStore.cs), which uses the AWS SDK for .NET with path-style addressing |
+| Choosing the implementation at startup | [ArchiveOptions.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Configuration/ArchiveOptions.cs): S3 when the connection carries access keys, otherwise Blob storage with workload identity |
+| Idempotent writes | Both write `yyyy/MM/dd/<order id>.json`, so a redelivered order overwrites the same object |
+| Other uses of the store | CloudNativePG backs up PostgreSQL to it, in a bucket per namespace with its own keys |
 
 ## Not covered by the sample
 
 The sample's SeaweedFS is sample code. Before production, add:
 
-- three masters and enough volume servers for your replication;
-- backups, or replication to a second site;
-- TLS on every endpoint and credentials scoped per bucket;
+- a copy of the buckets off the cluster, for example with `weed filer.remote.sync` to Blob storage while the link is up;
+- capacity planning: the sample gives each volume server 20 GB;
+- rotation of the S3 keys, which are generated once and kept in the cluster;
 - monitoring of capacity and volume health.
 
 ## References

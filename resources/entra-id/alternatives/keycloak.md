@@ -35,7 +35,7 @@ API (Microsoft.Identity.Web) checks scope access_as_user and the roles claim
 | Entra registrations | [app-identity.bicep](../../../samples/OrderManagementApp/infra/azure/app-identity.bicep): browser app, API with scope `access_as_user` and app roles, role assignments |
 | Keycloak counterparts | [realm.json](../../../samples/OrderManagementApp/infra/azurelocal/keycloak/realm.json): clients `oms-spa` and `oms-api`, client scope `api://oms-api/access_as_user` with mappers for `aud`, `scp`, `roles` and `oid`, realm roles granted to groups |
 | Active Directory | [ad-setup.ps1](../../../samples/OrderManagementApp/scripts/infra/azurelocal/ad-setup.ps1): OU `OMS`, groups `oms-app-readers`, `oms-app-writers`, `oms-inventory-admins`, a restricted read-only bind account, LDAPS. See [Connect your Active Directory](../../../samples/OrderManagementApp/docs/authentication.md#connect-your-active-directory). |
-| Keycloak on site | [keycloak.ps1](../../../samples/OrderManagementApp/scripts/infra/azurelocal/keycloak.ps1) and [keycloak.yaml](../../../samples/OrderManagementApp/infra/azurelocal/keycloak/keycloak.yaml): Keycloak with PostgreSQL, a certificate from the site CA, the realm imported with site values |
+| Keycloak on site | [keycloak.ps1](../../../samples/OrderManagementApp/scripts/infra/azurelocal/keycloak.ps1) and the [Keycloak folder](../../../samples/OrderManagementApp/infra/azurelocal/keycloak/README.md): two replicas on separate nodes, an address on the site network from the Arc load balancer, a certificate from the site CA, the realm imported with site values. Its database is a CloudNativePG cluster with backups, or one PostgreSQL server with availability `standard`. |
 | Settings per target | [azurelocal.ps1](../../../samples/OrderManagementApp/scripts/deploy/azurelocal.ps1) sets the authority, metadata address and known authorities for the API and browser app |
 | Other apps on the same sign-in | Grafana signs in through Keycloak too, with its roles from the same realm |
 
@@ -43,7 +43,7 @@ API (Microsoft.Identity.Web) checks scope access_as_user and the roles claim
 
 The sample's Keycloak setup is sample code. Before production, add:
 
-- more than one Keycloak replica, and a highly available, backed-up database;
+- a copy of its database backups off the cluster;
 - multifactor authentication;
 - certificates from your organization's CA, rather than the CA the setup script generates;
 - protection for the Keycloak administrator account and a plan for rotating signing keys;

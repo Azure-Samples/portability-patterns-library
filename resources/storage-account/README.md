@@ -17,7 +17,7 @@ Azure Storage isn't available on Azure Local. This guide covers two of its servi
 - **The data model:** containers become buckets, blobs become objects, with the same names, prefixes, content types and user metadata.
 - **The payloads and the application logic** behind your own storage interface.
 - **Common features under other names:** versioning, immutability (S3 Object Lock), lifecycle rules, tags, and shared access signatures as presigned URLs.
-- **Password-free access**, if the store accepts tokens: SeaweedFS can exchange OpenID Connect or Kubernetes service account tokens for temporary credentials.
+- **Access without a stored key**, if the store accepts tokens: SeaweedFS can exchange OpenID Connect or Kubernetes service account tokens for temporary credentials. The sample uses S3 keys the platform issues per namespace instead.
 
 ### What you need to change
 
@@ -35,7 +35,7 @@ How Blob storage maps to SeaweedFS, and what to watch on Azure Local: [SeaweedFS
 | Pattern | Limitation for this resource |
 |---|---|
 | [Data store](https://learn.microsoft.com/azure/architecture/guide/technology-choices/data-store-overview) | Not the Blob API, so the Blob SDK doesn't work against it. Objects and buckets carry over; access tiers, append and page blobs, change feed and Event Grid events don't. |
-| [Workload identity](https://learn.microsoft.com/entra/workload-id/workload-identities-overview) | No Entra ID role assignments. Use S3 access keys, or temporary credentials from the site's identity provider or the cluster's service account tokens. |
+| [Workload identity](https://learn.microsoft.com/entra/workload-id/workload-identities-overview) | No Entra ID role assignments. Use S3 access keys, or temporary credentials from the site's identity provider or the cluster's service account tokens. The sample uses keys the platform generates per namespace, limited to that namespace's buckets. |
 | [Reliability](https://learn.microsoft.com/azure/well-architected/reliability/) | You host, size, back up and scale the store. There's no [geo-redundant storage](https://learn.microsoft.com/azure/storage/common/storage-redundancy); copying to a second site is yours to set up. Azure Local's Storage Spaces Direct already keeps copies of the cluster's disks, so size the store's own replication with that in mind. |
 
 **Data:** blobs don't move by themselves. Copy them with a tool that speaks both APIs, such as [rclone](https://rclone.org/).
@@ -76,4 +76,4 @@ Other options for specific uses: Samba (GPL-3.0) for SMB shares from Linux; Ceph
 
 ## Sample
 
-The [Order Management sample](../../samples/OrderManagementApp/README.md) archives each order as a JSON object: in Blob storage on Azure and in SeaweedFS on Azure Local. It doesn't use Azure Files.
+The [Order Management sample](../../samples/OrderManagementApp/README.md) archives each order as a JSON object: in Blob storage on Azure and in SeaweedFS on Azure Local, where SeaweedFS also holds the PostgreSQL backups. [SeaweedFS as an alternative](./alternatives/seaweedfs.md#how-the-order-management-sample-does-it) points to the code. The sample doesn't use Azure Files.
