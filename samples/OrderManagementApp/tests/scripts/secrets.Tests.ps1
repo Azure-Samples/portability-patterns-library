@@ -64,16 +64,3 @@ Describe 'Get-OmsSecretValue' {
         { Get-OmsSecretValue -KubeContext 'ctx' -Namespace 'ns' -Name 'ca' -Key 'ca.crt' } | Should -Throw
     }
 }
-
-Describe 'New-OmsPrivateDirectory' {
-    It 'creates a new folder that only the current user can open' {
-        $path = New-OmsPrivateDirectory
-        try {
-            Test-Path $path -PathType Container | Should -BeTrue
-            if (-not (Test-OmsPrivateByDefault)) {
-                [IO.File]::GetUnixFileMode($path) | Should -Be ([IO.UnixFileMode]'UserRead, UserWrite, UserExecute')
-            }
-        }
-        finally { Remove-Item $path -Recurse -Force }
-    }
-}

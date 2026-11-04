@@ -155,7 +155,10 @@ function New-ParameterFile {
         parameters     = $parameters
     }
 
-    $path = Join-Path ([System.IO.Path]::GetTempPath()) "oms-params-$([guid]::NewGuid().ToString('N')).json"
+    # Owner-only, as New-TemporaryFile creates it, since it can carry passwords; kept as .json.
+    $file = New-TemporaryFile
+    $path = "$($file.FullName).json"
+    Move-Item $file $path
     # Windows PowerShell's 'utf8' encoding emits a BOM, which the rad CLI rejects with
     # "invalid character 'ï' looking for beginning of value".
     [System.IO.File]::WriteAllText($path, ($document | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))

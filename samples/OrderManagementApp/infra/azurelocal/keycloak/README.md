@@ -108,5 +108,5 @@ ClusterIssuer and fills in the settings from the cluster. It also prepares the a
 ## Changing the realm
 
 Keycloak imports `realm.json` only when the `oms` realm doesn't exist yet. To apply a change, delete
-the realm in the admin console and restart Keycloak, or run the script with `-ReimportRealm`.
-The new realm has new signing keys, so restart the app's pods afterwards.
+the realm in the admin console and restart Keycloak. The new realm has new signing keys, so restart
+the app's pods afterwards.

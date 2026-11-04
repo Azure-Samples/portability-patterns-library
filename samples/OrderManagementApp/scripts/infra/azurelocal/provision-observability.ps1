@@ -28,8 +28,7 @@
 
     Prerequisites: scripts/infra/azurelocal/connected-registry.ps1 (the images, and the pull secret
     in 'observability'), provision-ingress.ps1 (ingress and site CA) and keycloak.ps1 (the 'grafana'
-    client and its secret). A realm imported before the 'grafana' client existed needs
-    keycloak.ps1 -ReimportRealm.
+    client and its secret).
 
 .PARAMETER GrafanaUrl
     Where people open Grafana, with its path and no trailing slash, such as

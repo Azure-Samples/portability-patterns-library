@@ -159,7 +159,7 @@ try {
                 --query value --output json | ConvertFrom-Json)) | Select-Object -First 1
     if ($group -and -not $group.uniqueName -and $PSCmdlet.ShouldProcess($AdminGroupName, 'Set uniqueName so Bicep manages the group')) {
         Write-Host "==> Adopting existing Entra group '$AdminGroupName'" -ForegroundColor Cyan
-        $bodyFile = Join-Path ([IO.Path]::GetTempPath()) "oms-group-$PID.json"
+        $bodyFile = New-TemporaryFile
         try {
             Set-Content -Path $bodyFile -Value (@{ uniqueName = $AdminGroupName } | ConvertTo-Json -Compress) -Encoding ascii
             Invoke-Checked 'az rest PATCH group uniqueName' {
@@ -217,8 +217,8 @@ try {
         parameters     = [ordered]@{}
     }
     foreach ($key in $parameters.Keys) { $parametersDocument.parameters[$key] = @{ value = $parameters[$key] } }
-    $parametersFile = Join-Path ([IO.Path]::GetTempPath()) "oms-azurelocal-platform-$PID.json"
     # A temporary input, written even under -WhatIf so the what-if can read it.
+    $parametersFile = New-TemporaryFile -WhatIf:$false
     $parametersDocument | ConvertTo-Json -Depth 10 | Set-Content -Path $parametersFile -Encoding utf8 -WhatIf:$false
 
     $template = 'infra/azurelocal/platform.bicep'
@@ -245,7 +245,8 @@ try {
         az aksarc get-credentials --name $ClusterName --resource-group $ResourceGroup `
             --admin --context $KubeContext --file $kubeconfigFile --overwrite-existing
     }
-    Protect-OmsSecretPath $kubeconfigFile
+    # The admin certificate's key: owner-only.
+    if ($IsLinux -or $IsMacOS) { [IO.File]::SetUnixFileMode($kubeconfigFile, 'UserRead, UserWrite') }
 
     Write-Host "`n================ Platform ready ================" -ForegroundColor Green
     Write-Host "Resource group   : $ResourceGroup"

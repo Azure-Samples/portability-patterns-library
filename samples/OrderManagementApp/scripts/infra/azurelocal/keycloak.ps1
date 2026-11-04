@@ -74,12 +74,6 @@
     directory's enterprise CA, handed over in the 'oms-ad-ca' Secret. Pass -UseLdaps:$false to fall back to plain LDAP on
     389, which sends the bind password and every user password across the network in the clear.
 
-.PARAMETER ReimportRealm
-    Delete the 'oms' realm and import realm.json again. Keycloak imports a realm only when it does
-    not exist, so this is how a changed realm.json reaches a running Keycloak. The new realm has new
-    signing keys, so restart the app's pods afterwards or they reject tokens until their key cache
-    refreshes.
-
 .PARAMETER CertificateIssuer
     cert-manager ClusterIssuer that issues and renews Keycloak's certificate, and with -Availability
     standard its database's, 'site-ca' from provision-ingress.ps1 by default. Pass '' to supply
@@ -112,7 +106,6 @@ param(
     # Secret identity/keycloak-tls yourself.
     [string]$CertificateIssuer = 'site-ca',
 
-    [switch]$ReimportRealm,
     [switch]$SkipVerify,
 
     # Accept the cluster's default issuer, https://kubernetes.default.svc.cluster.local, on a cluster
@@ -123,7 +116,6 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
 . (Join-Path $repoRoot 'scripts/lib/cluster.ps1')
-. (Join-Path $repoRoot 'scripts/lib/site-https.ps1')
 
 # Names fixed by the files in infra/azurelocal/keycloak.
 $Namespace = 'identity'
@@ -138,9 +130,6 @@ $keycloakDir = Join-Path $repoRoot 'infra/azurelocal/keycloak'
 $highAvailability = $Availability -eq 'high'
 $databaseManifest = Join-Path $keycloakDir "database/$(if ($highAvailability) { 'cloudnative-pg' } else { 'statefulset' }).yaml"
 Push-Location $repoRoot
-
-# Windows PowerShell does not load this assembly by default.
-Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
 
 function Invoke-Checked {
     param(
@@ -165,8 +154,7 @@ function New-RandomSecret {
     return [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
 }
 
-# Keycloak's certificate comes from the site CA, which this machine doesn't trust. Calls to it trust
-# that CA alone, read from the cluster (Get-KeycloakCa), so they never skip the certificate check.
+# The CA behind Keycloak's certificate, which workloads and browsers check Keycloak against.
 function Get-KeycloakCa {
     # cert-manager writes the issuing CA next to the certificate as ca.crt. A self-signed certificate
     # supplied by hand has none; then the certificate itself is what's trusted.
@@ -174,60 +162,6 @@ function Get-KeycloakCa {
     if (-not $ca) { $ca = Get-SecretValue -Name 'keycloak-tls' -Key 'tls.crt' }
     if (-not $ca) { throw "Secret '$Namespace/keycloak-tls' holds no certificate to check Keycloak's against." }
     $ca
-}
-
-# The response body, or $null while Keycloak isn't answering yet. A certificate it can't verify is an
-# error, not a reason to keep waiting.
-function Invoke-KeycloakGet {
-    param([Parameter(Mandatory = $true)][string]$Uri)
-
-    $client = New-OmsSiteHttpClient -CaPem (Get-KeycloakCa)
-    try {
-        $response = $client.GetAsync($Uri).GetAwaiter().GetResult()
-        if (-not $response.IsSuccessStatusCode) { return $null }
-        return $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-    }
-    catch [System.Net.Http.HttpRequestException] {
-        if ($_.Exception.GetBaseException() -is [System.Security.Authentication.AuthenticationException]) { throw }
-        return $null
-    }
-    finally { $client.Dispose() }
-}
-
-# Keycloak imports a realm only when one does not already exist, so a changed realm document is
-# ignored until the old realm is removed.
-function Remove-KeycloakRealm {
-    param(
-        [Parameter(Mandatory = $true)][string]$BaseUrl,
-        [Parameter(Mandatory = $true)][string]$Password,
-        [Parameter(Mandatory = $true)][string]$Realm
-    )
-
-    $client = New-OmsSiteHttpClient -CaPem (Get-KeycloakCa) -TimeoutSeconds 60
-    try {
-        $fields = [System.Collections.Generic.Dictionary[string, string]]::new()
-        $fields.Add('client_id', 'admin-cli')
-        $fields.Add('grant_type', 'password')
-        $fields.Add('username', 'admin')
-        $fields.Add('password', $Password)
-
-        $tokenResponse = $client.PostAsync("$BaseUrl/realms/master/protocol/openid-connect/token",
-            [System.Net.Http.FormUrlEncodedContent]::new($fields)).GetAwaiter().GetResult()
-        if (-not $tokenResponse.IsSuccessStatusCode) {
-            throw "Could not obtain an admin token ($([int]$tokenResponse.StatusCode))."
-        }
-        $token = ($tokenResponse.Content.ReadAsStringAsync().GetAwaiter().GetResult() |
-                ConvertFrom-Json).access_token
-
-        $client.DefaultRequestHeaders.Authorization =
-            [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $token)
-
-        $delete = $client.DeleteAsync("$BaseUrl/admin/realms/$Realm").GetAwaiter().GetResult()
-        if (-not $delete.IsSuccessStatusCode -and [int]$delete.StatusCode -ne 404) {
-            throw "Deleting realm '$Realm' returned $([int]$delete.StatusCode)."
-        }
-    }
-    finally { $client.Dispose() }
 }
 
 try {
@@ -549,43 +483,17 @@ Certificate first, then create the Secret (deleting the Certificate may delete t
     }
 
     Write-Host "==> Waiting for Keycloak to become ready" -ForegroundColor Cyan
-    if ($settingsChanged -and -not $ReimportRealm) {
+    if ($settingsChanged) {
         kubectl --context $KubeContext -n $Namespace rollout restart deployment $ReleaseName | Out-Null
     }
     Invoke-Checked 'keycloak rollout' {
         kubectl --context $KubeContext -n $Namespace rollout status deployment $ReleaseName --timeout=900s | Out-Null
     }
 
-    if ($ReimportRealm) {
-        Write-Host "==> Replacing the existing '$RealmName' realm" -ForegroundColor Cyan
-        Remove-KeycloakRealm -BaseUrl $keycloakUrl -Password $adminPassword `
-            -Realm $RealmName
-
-        kubectl --context $KubeContext -n $Namespace rollout restart deployment $ReleaseName | Out-Null
-        Invoke-Checked 'keycloak restart' {
-            kubectl --context $KubeContext -n $Namespace rollout status deployment $ReleaseName --timeout=900s | Out-Null
-        }
-    }
-
+    # Keycloak imports the realm on start and only becomes ready once it has, so the rollout above
+    # covers the realm. An LDAP misconfiguration shows up as a federation provider that loads but
+    # never returns a user, which only Keycloak's log shows.
     if (-not $SkipVerify) {
-        Write-Host "==> Checking that the realm imported and the directory answered" -ForegroundColor Cyan
-
-        $discoveryUrl = "$issuerUrl/.well-known/openid-configuration"
-        $realmDoc = $null
-        $deadline = (Get-Date).AddMinutes(3)
-        while ((Get-Date) -lt $deadline) {
-            $realmDoc = Invoke-KeycloakGet -Uri $discoveryUrl
-            if ($realmDoc) { break }
-            Start-Sleep -Seconds 10
-        }
-
-        if (-not $realmDoc) {
-            throw "Realm '$RealmName' did not answer at $discoveryUrl. Check: kubectl --context $KubeContext -n $Namespace logs deploy/$ReleaseName"
-        }
-        Write-Host "    realm '$RealmName' is serving discovery" -ForegroundColor DarkGray
-
-        # An LDAP misconfiguration shows up as a federation provider that loads but never returns
-        # a user, which the discovery check above would not catch.
         $ldapError = kubectl --context $KubeContext -n $Namespace logs "deploy/$ReleaseName" --tail=200 |
             Select-String -Pattern 'ERROR|WARN' |
             Select-String -Pattern 'ldap|NamingException|federation'
@@ -607,7 +515,7 @@ Certificate first, then create the Secret (deleting the Certificate may delete t
     # lets a strict TLS client, such as the Erlang one RabbitMQ uses, build a valid path.
     $keycloakCert = Get-KeycloakCa
 
-    $caFile = Join-Path ([IO.Path]::GetTempPath()) "keycloak-ca-$([guid]::NewGuid().ToString('N')).crt"
+    $caFile = New-TemporaryFile
     try {
         Set-Content -Path $caFile -Value $keycloakCert -Encoding ascii -NoNewline
 
@@ -634,7 +542,7 @@ Certificate first, then create the Secret (deleting the Certificate may delete t
     Write-Host "Grafana client   : grafana, for $GrafanaOrigin (secret $Namespace/grafana-oauth)"
     Write-Host ''
     Write-Host 'A workload authenticates with its ServiceAccount token and no secret:' -ForegroundColor Yellow
-    Write-Host '  curl -sk "$ISSUER/protocol/openid-connect/token" \'
+    Write-Host '  curl --cacert /etc/identity-ca/ca.crt "$ISSUER/protocol/openid-connect/token" \'
     Write-Host '    -d grant_type=client_credentials \'
     Write-Host "    -d client_id=workload-<service> \"
     Write-Host '    -d client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer \'

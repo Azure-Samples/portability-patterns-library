@@ -23,8 +23,7 @@ Keycloak, with the `Observability` section of `scripts/settings.json`. It needs:
 - The images in the connected registry: they're in [images.txt](../images.txt) and in the
   connected registry's list. Run `import-images.ps1` and `connected-registry.ps1` after a chart
   version changes.
-- Keycloak with the `grafana` client (`keycloak.ps1`). A realm imported before that client
-  existed needs `keycloak.ps1 -ReimportRealm`.
+- Keycloak with the `grafana` client (`keycloak.ps1`).
 
 Each values file says how to install that chart by hand.
 

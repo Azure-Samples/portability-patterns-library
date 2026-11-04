@@ -196,7 +196,9 @@ function New-ParameterFile {
         parameters     = $parameters
     }
 
-    $path = Join-Path ([System.IO.Path]::GetTempPath()) "bcd-infra-params-$([guid]::NewGuid().ToString('N')).json"
+    $file = New-TemporaryFile
+    $path = "$($file.FullName).json"
+    Move-Item $file $path
     # Windows PowerShell's 'utf8' encoding emits a BOM, which the JSON parsers behind the az and
     # rad CLIs both reject.
     [System.IO.File]::WriteAllText($path, ($document | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))

@@ -127,8 +127,8 @@ domain administrator:
 ```
 
 The listing limits cover the containers and domain controllers that exist when the script runs, so
-run it again after adding either. That resets the bind password, so then run `keycloak.ps1
--ReimportRealm` and restart the app's pods.
+run it again after adding either. That resets the bind password: set the new one in the Keycloak
+admin console, under **oms** > **User federation** > **active-directory** > **Bind credentials**.
 Some things stay readable, as they are for every account in the domain: the names of the containers
 directly under the domain root (Keycloak has to find the OU there), the sub-containers of Group
 Policy objects, the forest's configuration, schema and DNS partitions, and the domain controllers'

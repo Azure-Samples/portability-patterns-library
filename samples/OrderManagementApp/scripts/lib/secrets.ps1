@@ -1,5 +1,4 @@
-# Shared by the scripts that handle credentials: Kubernetes Secrets, and local files that hold a
-# credential while a command reads them. Works in Windows PowerShell 5.1 and PowerShell 7.
+# Shared by the scripts that read and write Kubernetes Secrets.
 
 # Reads every key of a Secret as plain text. Returns an empty hashtable when the Secret doesn't
 # exist; throws when it can't be read, so a caller never mistakes a failed read for a missing Secret
@@ -60,35 +59,4 @@ function Set-OmsSecret {
         data       = $encoded
     } | ConvertTo-Json -Depth 5 | kubectl apply --context $KubeContext -f - | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Writing Secret '$Namespace/$Name' failed." }
-}
-
-# A Windows user profile, and so its temporary folder, is private already. On Linux and macOS the
-# default umask leaves new files and folders readable by other users.
-function Test-OmsPrivateByDefault { $PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows }
-
-# Creates a folder under the temporary directory that only the current user can open, for files that
-# hold a credential while a command reads them. Delete it when done. On Linux and macOS it is created
-# with owner-only access, so there is no moment when another user could read what goes in it.
-function New-OmsPrivateDirectory {
-    $path = Join-Path ([IO.Path]::GetTempPath()) "oms-$([guid]::NewGuid().ToString('N'))"
-    if (Test-OmsPrivateByDefault) { New-Item -ItemType Directory -Path $path | Out-Null }
-    else { [IO.Directory]::CreateDirectory($path, [IO.UnixFileMode]'UserRead, UserWrite, UserExecute') | Out-Null }
-    $path
-}
-
-# Writes a file that holds credentials so only the current user can read it. Its folder is made
-# owner-only too, so put it in a folder of its own (New-OmsPrivateDirectory, or one such as ~/.kube)
-# rather than a shared one.
-function Write-OmsSecretFile([string]$Path, [string]$Content) {
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null
-    if (-not (Test-Path $Path)) { [IO.File]::WriteAllText($Path, '') }
-    Protect-OmsSecretPath $Path
-    [IO.File]::WriteAllText($Path, $Content, [Text.UTF8Encoding]::new($false))
-}
-
-# Owner-only access to a credentials file and its folder.
-function Protect-OmsSecretPath([string]$Path) {
-    if (Test-OmsPrivateByDefault) { return }
-    [IO.File]::SetUnixFileMode((Split-Path -Parent $Path), [IO.UnixFileMode]'UserRead, UserWrite, UserExecute')
-    if (Test-Path $Path) { [IO.File]::SetUnixFileMode($Path, [IO.UnixFileMode]'UserRead, UserWrite') }
 }

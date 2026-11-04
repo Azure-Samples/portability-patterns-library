@@ -487,7 +487,7 @@ try {
             # Keycloak is not domain joined, so it never receives the root certificate the way a
             # member machine would; it has to be handed over explicitly for LDAPS to validate.
             if ($caCertPem) {
-                $caFile = Join-Path ([IO.Path]::GetTempPath()) "oms-ad-ca-$PID.crt"
+                $caFile = New-TemporaryFile
                 try {
                     Set-Content -Path $caFile -Value $caCertPem -Encoding ascii
                     kubectl --context $KubeContext -n $SecretNamespace delete secret $CaSecretName `

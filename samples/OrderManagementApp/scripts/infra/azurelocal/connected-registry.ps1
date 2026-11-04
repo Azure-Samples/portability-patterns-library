@@ -167,7 +167,7 @@ try {
             parameters     = [ordered]@{}
         }
         foreach ($key in $parameters.Keys) { $document.parameters[$key] = @{ value = $parameters[$key] } }
-        $file = Join-Path ([System.IO.Path]::GetTempPath()) "oms-connected-registry-$([guid]::NewGuid().ToString('N')).json"
+        $file = New-TemporaryFile
         try {
             [System.IO.File]::WriteAllText($file, ($document | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
             Invoke-Checked 'az deployment group create' {
@@ -273,7 +273,7 @@ try {
     $caPem = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($caSecret.data.'ca.crt'))
     Write-Host "    from $($caSecret.metadata.namespace)/$($caSecret.metadata.name)" -ForegroundColor DarkGray
 
-    $caFile = Join-Path ([System.IO.Path]::GetTempPath()) "bcd-cr-ca-$([guid]::NewGuid().ToString('N')).crt"
+    $caFile = New-TemporaryFile
     $temporaryFiles += $caFile
     [System.IO.File]::WriteAllText($caFile, $caPem, [System.Text.UTF8Encoding]::new($false))
     kubectl create configmap $CaConfigMapName --context $KubeContext --namespace $ApplicationNamespace `

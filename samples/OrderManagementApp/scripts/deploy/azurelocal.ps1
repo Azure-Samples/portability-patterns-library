@@ -169,7 +169,10 @@ function New-ParameterFile {
         parameters     = $parameters
     }
 
-    $path = Join-Path ([System.IO.Path]::GetTempPath()) "oms-azurelocal-params-$([guid]::NewGuid().ToString('N')).json"
+    # Owner-only, as New-TemporaryFile creates it, since it carries the database passwords; kept as .json.
+    $file = New-TemporaryFile
+    $path = "$($file.FullName).json"
+    Move-Item $file $path
     # The rad CLI rejects a UTF-8 BOM.
     [System.IO.File]::WriteAllText($path, ($document | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
     return $path
@@ -211,7 +214,7 @@ try {
     if ([string]::IsNullOrWhiteSpace($registryCaPem)) {
         throw "ConfigMap '$RegistryCaConfigMapName' is missing from '$ApplicationNamespace'. Run scripts/infra/azurelocal/connected-registry.ps1 first."
     }
-    $registryCaFile = Join-Path ([System.IO.Path]::GetTempPath()) "oms-azurelocal-ca-$([guid]::NewGuid().ToString('N')).crt"
+    $registryCaFile = New-TemporaryFile
     $temporaryFiles += $registryCaFile
     [System.IO.File]::WriteAllText($registryCaFile, $registryCaPem, [System.Text.UTF8Encoding]::new($false))
 
@@ -251,6 +254,8 @@ try {
         if (-not $dockerConfig.auths) { $dockerConfig.auths = @{} }
         $dockerConfig.auths[$pushRegistry] = @{ auth = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("${acrUser}:$acrToken")) }
         [System.IO.File]::WriteAllText($dockerConfigFile, ($dockerConfig | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))
+        # Owner-only, as docker and podman keep it.
+        if ($IsLinux -or $IsMacOS) { [System.IO.File]::SetUnixFileMode($dockerConfigFile, 'UserRead, UserWrite') }
     }
     $acrToken = $null
 
