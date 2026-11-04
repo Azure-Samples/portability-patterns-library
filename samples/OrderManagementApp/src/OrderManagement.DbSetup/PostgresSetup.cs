@@ -135,10 +135,11 @@ public sealed class PostgresSetup(
                 $"No principal for '{Role}': set INVENTORY_OBJECT_ID (Entra) or INVENTORY_DB_PASSWORD (password role).");
         }
 
-        // The server gets a SCRAM verifier, never the password. ALTER applies a changed (rotated) one.
+        // ALTER applies a changed (rotated) password. PostgreSQL stores it hashed (SCRAM-SHA-256).
         var verb = roleExists ? "ALTER" : "CREATE";
         await ExecuteAsync(connection,
-            $"{verb} ROLE {Identifier(Role)} WITH LOGIN PASSWORD '{ScramSha256.CreateVerifier(password)}'", cancellationToken);
+            $"{verb} ROLE {Identifier(Role)} WITH LOGIN PASSWORD '{password.Replace("'", "''", StringComparison.Ordinal)}'",
+            cancellationToken);
         _logger.LogInformation("Password role {Role} {State}", Role, roleExists ? "updated" : "created");
     }
 

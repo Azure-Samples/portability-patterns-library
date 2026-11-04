@@ -5,8 +5,8 @@ namespace OrderManagement.Tests.Integration;
 
 /// <summary>
 /// The database setup job against a real PostgreSQL: it can run again at any time without changing
-/// anything, and the inventory role signs in with its password (sent as a SCRAM verifier) and gets
-/// only the rights the service uses.
+/// anything, and the inventory role signs in with its password and gets only the rights the service
+/// uses.
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class PostgresSetupTests(PostgresFixture database)
@@ -29,7 +29,6 @@ public sealed class PostgresSetupTests(PostgresFixture database)
     {
         Skip.If(database.Unavailable is not null, database.Unavailable);
 
-        // Signing in at all proves the SCRAM verifier matches the password.
         await using var connection = await database.Inventory.OpenConnectionAsync();
         await using var products = new NpgsqlCommand("SELECT count(*) FROM inventory.products", connection);
         Assert.True((long)(await products.ExecuteScalarAsync())! >= 5);
