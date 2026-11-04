@@ -16,7 +16,7 @@ Azure Database for PostgreSQL flexible server isn't available on Azure Local. Th
 - **Encrypted, verified connections:** the server presents a certificate the client checks, from a public CA on Azure and from the site's CA on Azure Local.
 - **Authentication model**, depending on how you connect to flexible server today:
   - **Password (PostgreSQL login):** stays a password.
-  - **Microsoft Entra ID with workload identity:** becomes a password for the service's own role. Keep it outside the cluster, for example in [Key Vault](../key-vault/README.md), so it isn't the only copy. See [Signing in](#signing-in).
+  - **Microsoft Entra ID with workload identity:** becomes a password for the service's own role, or a client certificate (see [Signing in](#signing-in)). Generate and rotate the password on site, or bring it from [Key Vault](../key-vault/README.md) if it already lives in Azure.
 
 ## What you need to change
 
@@ -38,9 +38,9 @@ How flexible server maps to each alternative, and how the sample does each step:
 | Stored secret | None | A password per role, kept in Key Vault and synced into the cluster |
 | In Npgsql | [`UsePeriodicPasswordProvider`](https://www.npgsql.org/doc/security.html) supplies a fresh token for new connections | The same hook supplies the password |
 
-Password-free options on Azure Local exist but aren't used by the sample:
+Password-free options on Azure Local exist but aren't used by the sample, which uses passwords for PostgreSQL as it does for SQL Server:
 
-- **Client certificates** ([`cert` authentication](https://www.postgresql.org/docs/current/auth-cert.html)): short-lived certificates from cert-manager, no stored password. CloudNativePG supports them natively.
+- **Client certificates** ([`cert` authentication](https://www.postgresql.org/docs/current/auth-cert.html)): CloudNativePG trusts a client CA you give it, and PostgreSQL maps the certificate's name to the role. cert-manager's CSI driver can give each pod a short-lived certificate named after its service account, renewed automatically, with no stored password. Npgsql takes the certificate files in place of a password.
 - **PostgreSQL 18 [OAuth sign-in](https://www.postgresql.org/docs/current/auth-oauth.html)** with the site's identity provider: Npgsql doesn't support it yet ([npgsql/npgsql#6156](https://github.com/npgsql/npgsql/issues/6156)).
 
 ## Observed limitations

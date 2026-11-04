@@ -51,7 +51,7 @@ The Recipe is sample code. Before production, add:
 
 - a copy of the backups off the cluster, and a tested restore;
 - a plan for PostgreSQL major version upgrades, kept in step with Azure (the sample runs 17 on every target);
-- client certificates, if you want no stored password.
+- client certificates for the services, if you want no stored password: a client CA in `certificates.clientCASecret`, a `cert` rule in `pg_hba`, and a certificate per pod from the cert-manager CSI driver.
 
 ## References
 
