@@ -284,7 +284,8 @@ metadata:
         Write-Host "==> Installing the Radius control plane with workload identity enabled" -ForegroundColor Cyan
         try {
             Invoke-Checked 'rad install' {
-                rad install kubernetes --kubecontext $radiusContext --set global.azureWorkloadIdentity.enabled=true
+                # The sample doesn't use the Radius dashboard; not running it removes a Node.js runtime to patch.
+                rad install kubernetes --kubecontext $radiusContext --set global.azureWorkloadIdentity.enabled=true --set dashboard.enabled=false
             }
         }
         finally {

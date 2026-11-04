@@ -19,7 +19,6 @@ ghcr.io/radius-project/controller:0.60                         controller:0.60
 ghcr.io/radius-project/applications-rp:0.60                    applications-rp:0.60
 ghcr.io/radius-project/dynamic-rp:0.60                         dynamic-rp:0.60
 ghcr.io/radius-project/deployment-engine:0.60                  deployment-engine:0.60
-ghcr.io/radius-project/dashboard:0.60                          dashboard:0.60
 ghcr.io/radius-project/bicep:0.60                              bicep:0.60
 ghcr.io/radius-project/pre-upgrade:0.60                        pre-upgrade:0.60
 

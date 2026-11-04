@@ -78,7 +78,7 @@ param(
     # deliberately absent: builds run against the cloud registry, only runtime images are needed on
     # site. oras is what deploy/azurelocal.ps1 checks the sync with.
     [string[]]$Repositories = @(
-        'ucpd', 'controller', 'applications-rp', 'dynamic-rp', 'deployment-engine', 'dashboard', 'bicep', 'pre-upgrade',
+        'ucpd', 'controller', 'applications-rp', 'dynamic-rp', 'deployment-engine', 'bicep', 'pre-upgrade',
         'rabbitmq', 'mssql/server', 'postgres',
         'keycloak/keycloak', 'adorsys/keycloak-config-cli',
         'cloudnative-pg/cloudnative-pg', 'cloudnative-pg/postgresql',

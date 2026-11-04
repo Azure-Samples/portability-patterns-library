@@ -414,6 +414,8 @@ try {
             '--set', "global.imageRegistry=$PullRegistry",
             '--set', "global.imageTag=$RadiusVersion",
             '--set', "global.imagePullSecrets[0].name=$ImagePullSecretName",
+            # The sample doesn't use the Radius dashboard; not running it removes a Node.js runtime to patch.
+            '--set', 'dashboard.enabled=false',
             # The control plane fetches Recipes itself, with its own trust store.
             '--set-file', "global.rootCA.cert=$registryCaFile"
         )
