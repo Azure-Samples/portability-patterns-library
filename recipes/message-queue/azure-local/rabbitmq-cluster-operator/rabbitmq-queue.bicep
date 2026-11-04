@@ -1,7 +1,7 @@
 // Recipe: Portability.Messaging/messageQueues -> a RabbitMQ cluster run by the RabbitMQ Cluster Operator.
 //
 // Used by the Azure Local environment, where the workload must not depend on Azure Service Bus, when
-// the Recipe Pack's availability is 'high'; with 'standard' it uses ../rabbitmq-statefulset instead.
+// the Recipe Pack's availability is 'high'; with 'standard' it uses ../rabbitmq instead.
 // Publishes provider = 'rabbitmq' so the application can select its RabbitMQ client at startup.
 //
 // The Recipe declares a RabbitmqCluster, plus the queue, its dead-letter queue and the policy

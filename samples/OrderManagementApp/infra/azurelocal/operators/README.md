@@ -3,14 +3,14 @@
 On Azure, the cloud runs the queue and the databases: it keeps replicas, fails over, patches and
 backs up. On Azure Local, operators do that job inside the cluster, when `Common.Availability` is
 `high` (the default). The Recipes only declare what the app needs, and the operator makes it so.
-With `standard`, nothing here is installed and the `*-statefulset` Recipes run one copy of each
-instead.
+With `standard`, nothing here is installed and the `rabbitmq` and `postgres` Recipes run one
+container of each instead.
 
 | Operator | Runs | The Recipe declares |
 | --- | --- | --- |
 | [CloudNativePG](https://cloudnative-pg.io) (Apache 2.0, CNCF) | PostgreSQL: a primary and replicas on separate nodes, automatic failover, rolling updates | a `Cluster` ([postgres-database.bicep](../../../../../recipes/postgresql-database/azure-local/cloudnative-pg/postgres-database.bicep)) |
 | [Barman Cloud plugin](https://cloudnative-pg.io/plugin-barman-cloud/) (Apache 2.0) | PostgreSQL backups: the write-ahead log continuously, a base backup daily | an `ObjectStore` and a `ScheduledBackup` |
-| [RabbitMQ Cluster Operator](https://www.rabbitmq.com/kubernetes/operator/operator-overview) (MPL 2.0) | RabbitMQ: three nodes, rolling upgrades | a `RabbitmqCluster` ([rabbitmq-queue.bicep](../../../../../recipes/message-queue/azure-local/rabbitmq-operator/rabbitmq-queue.bicep)) |
+| [RabbitMQ Cluster Operator](https://www.rabbitmq.com/kubernetes/operator/operator-overview) (MPL 2.0) | RabbitMQ: three nodes, rolling upgrades | a `RabbitmqCluster` ([rabbitmq-queue.bicep](../../../../../recipes/message-queue/azure-local/rabbitmq-cluster-operator/rabbitmq-queue.bicep)) |
 | RabbitMQ Messaging Topology Operator (MPL 2.0) | Queues and policies inside those clusters | the orders queue, its dead-letter queue and the policy between them |
 | [cert-manager CSI driver](https://cert-manager.io/docs/usage/csi-driver/) (Apache 2.0) | A certificate for each RabbitMQ pod, from the site CA, which the nodes present to each other | nothing: the `RabbitmqCluster` asks for it (`tls.interNode`) |
 

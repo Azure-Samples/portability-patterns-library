@@ -2,7 +2,7 @@
 # runs, in the identity namespace. Two instances on separate nodes, so the database fails over rather
 # than taking sign-in down with it; Keycloak connects to the read-write Service, keycloak-db-rw. The
 # write-ahead log and a daily base backup go to the site's object store
-# (infra/azurelocal/object-store), kept 30 days. With 'standard', statefulset.yaml here is used instead.
+# (infra/azurelocal/object-store), kept 30 days. With 'standard', postgres.yaml here is used instead.
 #
 # Expects in the identity namespace:
 #   Secret keycloak-db           username, password (type kubernetes.io/basic-auth)   the database login

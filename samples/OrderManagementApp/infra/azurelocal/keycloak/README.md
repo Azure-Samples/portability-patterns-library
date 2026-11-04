@@ -10,7 +10,7 @@ survives losing a node; with `standard` it's one PostgreSQL server with no backu
 | --- | --- |
 | [keycloak.yaml](./keycloak.yaml) | Keycloak: two replicas, and a disruption budget that keeps one serving |
 | [database/cloudnative-pg.yaml](./database/cloudnative-pg.yaml) | Its database with `high`: a two-instance CloudNativePG cluster, backed up to the site's object store |
-| [database/statefulset.yaml](./database/statefulset.yaml) | Its database with `standard`: one PostgreSQL server in a StatefulSet, TLS from the site CA |
+| [database/postgres.yaml](./database/postgres.yaml) | Its database with `standard`: one PostgreSQL server in a StatefulSet, TLS from the site CA |
 | [service.yaml](./service.yaml) | Its address on the site network, from the Arc load balancer |
 | [realm.json](./realm.json) | The `oms` realm: AD connection, app roles, sign-in and workload clients |
 | [realm-settings.env](./realm-settings.env) | Your site's values for the `${...}` placeholders in `realm.json` |
@@ -86,7 +86,7 @@ Run these from the `samples/OrderManagementApp` folder.
    kubectl -n identity rollout status deployment keycloak --timeout=15m
    ```
 
-   With `standard`, apply `database/statefulset.yaml` instead, and wait with
+   With `standard`, apply `database/postgres.yaml` instead, and wait with
    `kubectl -n identity rollout status statefulset keycloak-db`.
 
 7. Check it. The realm is at `https://<address>/realms/oms`. Sign in to the admin console at

@@ -10,7 +10,7 @@ resources:
   - keycloak.yaml
 
 # Keycloak's database is applied next to this, from database/: cloudnative-pg.yaml when Availability
-# is 'high', statefulset.yaml when it's 'standard'.
+# is 'high', postgres.yaml when it's 'standard'.
 
 # realm.json is imported when Keycloak first starts. Its ${...} placeholders are filled from the
 # keycloak-realm-settings ConfigMap and the oms-ad-bind Secret, which you create per site.

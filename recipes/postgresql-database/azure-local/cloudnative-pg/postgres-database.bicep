@@ -2,7 +2,7 @@
 //
 // Used by the Azure Local environment, where the workload must not depend on Azure Database for
 // PostgreSQL, when the Recipe Pack's availability is 'high'; with 'standard' it uses
-// ../postgres-statefulset instead. The Azure environment binds the same Resource Type to a Flexible
+// ../postgres instead. The Azure environment binds the same Resource Type to a Flexible
 // Server.
 //
 // The Recipe declares a CloudNativePG Cluster; the operator, installed once per cluster by the

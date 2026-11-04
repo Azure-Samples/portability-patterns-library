@@ -22,12 +22,12 @@
 // values, so the application is the same either way:
 //
 //   * 'high'     - operators the platform installs run them (provision-operators.ps1): three
-//     RabbitMQ nodes (rabbitmq-operator), and a PostgreSQL primary with replicas and continuous
-//     backups to the object store (cloudnative-pg). A node can fail without losing a message or a
-//     committed transaction.
-//   * 'standard' - one StatefulSet each, with no operators and no backups (rabbitmq-statefulset,
-//     postgres-statefulset). Fewer resources, for sites that accept downtime while a pod restarts and
-//     data lost with a volume.
+//     RabbitMQ nodes (rabbitmq-cluster-operator), and a PostgreSQL primary with replicas and
+//     continuous backups to the object store (cloudnative-pg). A node can fail without losing a
+//     message or a committed transaction.
+//   * 'standard' - one container each, from the official images, with no operators and no backups
+//     (rabbitmq, postgres). Fewer resources, for sites that accept downtime while a pod restarts
+//     and data lost with a volume.
 //
 // SQL Server, object storage, the containers and routes use the same Recipes in both.
 
@@ -35,7 +35,7 @@ extension radius
 
 @description('''
 How the queue and PostgreSQL run: 'high' (operator-run, replicated, backed up) or 'standard' (one
-StatefulSet each). The platform must match: setup-platform.ps1 with the same Availability.
+container each). The platform must match: setup-platform.ps1 with the same Availability.
 ''')
 @allowed([ 'high', 'standard' ])
 param availability string = 'high'
@@ -71,10 +71,10 @@ param rabbitMqReplicas int = 3
 param sqlServerTag string = '2022-latest'
 
 @description('Tag of the CloudNativePG PostgreSQL image mirrored into the registry, used when availability is \'high\'.')
-param postgresTag string = '17.11-standard-trixie'
+param cloudNativePgTag string = '17.11-standard-trixie'
 
 @description('Tag of the official PostgreSQL image mirrored into the registry, used when availability is \'standard\'.')
-param postgresStatefulSetTag string = '17-alpine'
+param postgresTag string = '17-alpine'
 
 @description('PostgreSQL instances per database when availability is \'high\': one primary, the rest replicas that take over if it fails.')
 param postgresInstances int = 3
@@ -241,7 +241,7 @@ var queueOAuthParameters = empty(oauthIssuer) ? {} : {
 // The queue and PostgreSQL Recipes for the availability, each given only the parameters it declares.
 var highAvailability = availability == 'high'
 
-var queueRecipe = highAvailability ? 'rabbitmq-operator/rabbitmq-queue' : 'rabbitmq-statefulset/rabbitmq-queue'
+var queueRecipe = highAvailability ? 'rabbitmq-cluster-operator/rabbitmq-queue' : 'rabbitmq/rabbitmq-queue'
 var queueParameters = union({
   imageRegistry: registry
   imageRepository: 'rabbitmq'
@@ -250,11 +250,11 @@ var queueParameters = union({
   certificateIssuer: certificateIssuer
 }, highAvailability ? { replicas: rabbitMqReplicas } : {}, queueOAuthParameters)
 
-var postgresRecipe = highAvailability ? 'cloudnative-pg/postgres-database' : 'postgres-statefulset/postgres-database'
+var postgresRecipe = highAvailability ? 'cloudnative-pg/postgres-database' : 'postgres/postgres-database'
 var postgresParameters = highAvailability ? {
   imageRegistry: registry
   imageRepository: 'cloudnative-pg/postgresql'
-  tag: postgresTag
+  tag: cloudNativePgTag
   instances: postgresInstances
   imagePullSecretName: imagePullSecretName
   certificateIssuer: certificateIssuer
@@ -265,7 +265,7 @@ var postgresParameters = highAvailability ? {
 } : {
   imageRegistry: registry
   imageRepository: 'postgres'
-  tag: postgresStatefulSetTag
+  tag: postgresTag
   imagePullSecretName: imagePullSecretName
   certificateIssuer: certificateIssuer
 }

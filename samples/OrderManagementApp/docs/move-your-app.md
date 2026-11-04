@@ -71,10 +71,10 @@ sample uses them as they are.
 
 | Resource | Azure Recipe | Azure Local Recipe |
 |---|---|---|
-| Queue | [servicebus-queue.bicep](../../../recipes/message-queue/azure/service-bus/servicebus-queue.bicep) | [rabbitmq-operator/rabbitmq-queue.bicep](../../../recipes/message-queue/azure-local/rabbitmq-operator/rabbitmq-queue.bicep), or [rabbitmq-statefulset/rabbitmq-queue.bicep](../../../recipes/message-queue/azure-local/rabbitmq-statefulset/rabbitmq-queue.bicep) |
+| Queue | [servicebus-queue.bicep](../../../recipes/message-queue/azure/service-bus/servicebus-queue.bicep) | [rabbitmq-cluster-operator/rabbitmq-queue.bicep](../../../recipes/message-queue/azure-local/rabbitmq-cluster-operator/rabbitmq-queue.bicep), or [rabbitmq/rabbitmq-queue.bicep](../../../recipes/message-queue/azure-local/rabbitmq/rabbitmq-queue.bicep) |
 | Object storage | [blob-objectstorage.bicep](../../../recipes/object-storage/azure/blob-storage/blob-objectstorage.bicep) | [seaweedfs-objectstorage.bicep](../../../recipes/object-storage/azure-local/seaweedfs/seaweedfs-objectstorage.bicep) |
 | SQL | [azuresql-database.bicep](../../../recipes/sql-database/azure/azure-sql/azuresql-database.bicep) | [mssql-database.bicep](../../../recipes/sql-database/azure-local/sql-server/mssql-database.bicep) |
-| PostgreSQL | [postgres-flexible-database.bicep](../../../recipes/postgresql-database/azure/flexible-server/postgres-flexible-database.bicep) | [cloudnative-pg/postgres-database.bicep](../../../recipes/postgresql-database/azure-local/cloudnative-pg/postgres-database.bicep), or [postgres-statefulset/postgres-database.bicep](../../../recipes/postgresql-database/azure-local/postgres-statefulset/postgres-database.bicep) |
+| PostgreSQL | [postgres-flexible-database.bicep](../../../recipes/postgresql-database/azure/flexible-server/postgres-flexible-database.bicep) | [cloudnative-pg/postgres-database.bicep](../../../recipes/postgresql-database/azure-local/cloudnative-pg/postgres-database.bicep), or [postgres/postgres-database.bicep](../../../recipes/postgresql-database/azure-local/postgres/postgres-database.bicep) |
 | Containers | [kubernetes-containers.bicep](../../../recipes/kubernetes/kubernetes-containers.bicep) (shared) | same |
 | Routes (what users reach) | [kubernetes-routes.bicep](../../../recipes/kubernetes/kubernetes-routes.bicep) (shared): an Ingress for the platform's ingress class | same |
 
@@ -87,8 +87,10 @@ up. On Azure Local the queue and PostgreSQL Recipes do the same with an operator
 installed once: they declare a RabbitMQ cluster or a CloudNativePG PostgreSQL cluster, and the
 operator runs it. See [Operators on Azure Local](../infra/azurelocal/operators/README.md). A site
 that doesn't need that sets `Availability` to `standard`, and the Azure Local pack picks the
-`*-statefulset` Recipes instead: one plain StatefulSet each, returning the same values. Two Recipes
-for one resource on one platform is the same idea as one per platform, so the app doesn't change.
+[rabbitmq](../../../recipes/message-queue/azure-local/rabbitmq/) and
+[postgres](../../../recipes/postgresql-database/azure-local/postgres/) Recipes instead: one container
+each, from the official images, returning the same values. Two Recipes for one resource on one
+platform is the same idea as one per platform, so the app doesn't change.
 
 ## 4. Bind them per platform with a Recipe Pack and an Environment
 

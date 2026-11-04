@@ -23,8 +23,8 @@ Describe 'Get-LibraryRecipeRepository' {
     }
 
     It 'names the repository after the implementation folder and the file' {
-        $recipe = Get-LibraryRecipe -Platform azure-local | Where-Object { $_.Directory.Name -eq 'rabbitmq-statefulset' }
-        Get-LibraryRecipeRepository $recipe | Should -Be 'recipes/rabbitmq-statefulset/rabbitmq-queue'
+        $recipe = Get-LibraryRecipe -Platform azure-local | Where-Object { $_.Directory.Name -eq 'rabbitmq' }
+        Get-LibraryRecipeRepository $recipe | Should -Be 'recipes/rabbitmq/rabbitmq-queue'
     }
 }
 

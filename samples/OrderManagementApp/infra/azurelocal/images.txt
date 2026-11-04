@@ -20,7 +20,7 @@ ghcr.io/radius-project/bicep:0.60                              bicep:0.60
 ghcr.io/radius-project/pre-upgrade:0.60                        pre-upgrade:0.60
 
 # Backing services the Recipes deploy. Paths match imageRepository in recipe-packs/azure-local.bicep.
-# postgres is for Availability 'standard' (the postgres-statefulset Recipe and Keycloak's database);
+# postgres is for Availability 'standard' (the postgres Recipe and Keycloak's database);
 # cloudnative-pg/postgresql for 'high'.
 mcr.microsoft.com/mssql/server:2022-latest                     mssql/server:2022-latest
 docker.io/library/rabbitmq:4.3.7-management-alpine             rabbitmq:4.3.7-management-alpine

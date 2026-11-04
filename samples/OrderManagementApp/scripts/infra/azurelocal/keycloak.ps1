@@ -134,7 +134,7 @@ $BackupSecretName = 'backup-object-store'
 $DatabaseTlsSecretName = 'keycloak-db-tls'
 $keycloakDir = Join-Path $repoRoot 'infra/azurelocal/keycloak'
 $highAvailability = $Availability -eq 'high'
-$databaseManifest = Join-Path $keycloakDir "database/$(if ($highAvailability) { 'cloudnative-pg' } else { 'statefulset' }).yaml"
+$databaseManifest = Join-Path $keycloakDir "database/$(if ($highAvailability) { 'cloudnative-pg' } else { 'postgres' }).yaml"
 Push-Location $repoRoot
 
 function Invoke-Checked {

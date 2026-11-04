@@ -103,7 +103,7 @@ spec:
             - name: KC_DB
               value: postgres
             # The read-write Service: CloudNativePG's follows the primary through a failover, and
-            # database/statefulset.yaml's has the same name.
+            # database/postgres.yaml's has the same name.
             - name: KC_DB_URL
               value: jdbc:postgresql://keycloak-db-rw:5432/keycloak
             - name: KC_DB_USERNAME

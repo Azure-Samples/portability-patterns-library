@@ -1,7 +1,7 @@
 // Recipe: Portability.Messaging/messageQueues -> one RabbitMQ broker in a StatefulSet, with no operator.
 //
 // Used on Azure Local when the Recipe Pack's availability is 'standard' (recipe-packs/azure-local.bicep).
-// With 'high' it uses ../rabbitmq-operator/rabbitmq-queue.bicep instead, a three-node cluster the
+// With 'high' it uses ../rabbitmq-cluster-operator/rabbitmq-queue.bicep instead, a three-node cluster the
 // RabbitMQ operators run. Both return the same values, so the application can't tell them apart.
 //
 // One broker, so the queue stops while its pod restarts and a lost volume loses the queued messages.
