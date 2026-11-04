@@ -231,6 +231,15 @@ else {
     else { Add-Result Directory 'LDAPS (636)' WARN "no answer from this machine; Keycloak in the cluster needs it" }
 }
 
+# Keycloak takes the directory's CA from this file the first time, so a wrong path only shows there.
+if ($s.AdCaCertificatePath -and $s.AdCaCertificatePath -notlike '<*') {
+    if ((Test-Path $s.AdCaCertificatePath) -and ((Get-Content $s.AdCaCertificatePath -Raw) -match '-----BEGIN CERTIFICATE-----')) {
+        Add-Result Directory 'Directory CA certificate' PASS $s.AdCaCertificatePath
+    }
+    else { Add-Result Directory 'Directory CA certificate' FAIL "'$($s.AdCaCertificatePath)' is not a PEM certificate file" }
+}
+else { Add-Result Directory 'Directory CA certificate' WARN 'set AdCaCertificatePath in the Keycloak settings, unless Secret identity/oms-ad-ca already exists' }
+
 # --- Cluster ------------------------------------------------------------------------------------
 Write-Host "`nCluster" -ForegroundColor Cyan
 $contexts = @(kubectl config get-contexts --output name 2>$null)
@@ -285,7 +294,8 @@ else {
                 Add-Result Cluster "Secret identity/$secret" PASS
             }
             else {
-                Add-Result Cluster "Secret identity/$secret" WARN 'needed before the Keycloak step; see "Connect your Active Directory" in docs/authentication.md'
+                $how = if ($secret -eq 'oms-ad-bind') { "the Keycloak step asks for the bind account's password" } else { 'the Keycloak step reads AdCaCertificatePath' }
+                Add-Result Cluster "Secret identity/$secret" PASS "not there yet; $how"
             }
         }
 

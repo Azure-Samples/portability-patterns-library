@@ -33,9 +33,9 @@
     the app alike: 'high' (the default) replicates them across nodes and backs the databases up,
     with operators; 'standard' runs one copy of each, with no operators and no backups.
 
-    Azure Local expects a Keycloak bind account for the site's Active Directory in the Secret
-    identity/oms-ad-bind and the directory's CA in identity/oms-ad-ca. Create them by hand (see
-    the sample README) or with infra/azurelocal/ad-setup.ps1.
+    Azure Local needs a read-only bind account in the site's Active Directory for Keycloak: set
+    Keycloak.AdBindUpn and Keycloak.AdCaCertificatePath, and the Keycloak step asks for the
+    account's password the first time. infra/azurelocal/ad-setup.ps1 can create the account.
 
     On Azure Local, run it from a management machine that can sign in to Azure and reach the site
     network: some steps use both.

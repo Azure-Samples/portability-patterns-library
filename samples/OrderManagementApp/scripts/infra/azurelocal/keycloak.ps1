@@ -87,6 +87,12 @@ param(
     [Parameter(Mandatory = $true)][string]$AdServer,
     [string]$AdDomain = 'azurelocal.lab',
     [string]$AdOuName = 'OMS',
+    # The read-only account Keycloak binds to the directory with. Empty: svc-keycloak@<AdDomain>.
+    # Its password is asked for once, when Secret identity/oms-ad-bind doesn't exist yet.
+    [string]$AdBindUpn,
+    # The directory CA's certificate (PEM), for LDAPS. Used when Secret identity/oms-ad-ca doesn't
+    # exist yet.
+    [string]$AdCaCertificatePath,
     [switch]$UseLdaps = $true,
     [string]$SpaOrigin,
     [string]$GrafanaOrigin,
@@ -229,11 +235,22 @@ externally reachable service-account issuer.
     $bindDn = Get-SecretValue -Name $BindSecretName -Key 'bind-upn'
     $bindPassword = Get-SecretValue -Name $BindSecretName -Key 'bind-password'
     if (-not $bindDn -or -not $bindPassword) {
-        throw @"
-No usable '$BindSecretName' Secret in namespace '$Namespace'.
-Create it with the directory bind account (keys bind-upn, bind-password), or run
-scripts/infra/azurelocal/ad-setup.ps1.
+        # The bind account's password exists only in the directory, so it is asked for once and kept
+        # in the cluster. It never goes on a command line or into the settings file.
+        if (-not $AdBindUpn) { $AdBindUpn = "svc-keycloak@$AdDomain" }
+        if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
+            throw @"
+No '$BindSecretName' Secret in namespace '$Namespace', and no console to ask for the password of
+'$AdBindUpn' on. Run this interactively once, or create the Secret (keys bind-upn, bind-password) or
+run scripts/infra/azurelocal/ad-setup.ps1.
 "@
+        }
+        $secure = Read-Host -AsSecureString "Password of the directory bind account '$AdBindUpn'"
+        $plain = [Net.NetworkCredential]::new('', $secure).Password
+        if (-not $plain) { throw "No password given for '$AdBindUpn'." }
+        Set-OmsSecret -KubeContext $KubeContext -Namespace $Namespace -Name $BindSecretName -Data @{ 'bind-upn' = $AdBindUpn; 'bind-password' = $plain }
+        $plain = $null
+        Write-Host "    secret/$BindSecretName for $AdBindUpn" -ForegroundColor DarkGray
     }
 
     $adminPassword = Get-SecretValue -Name 'keycloak-admin' -Key 'password'
@@ -333,7 +350,14 @@ scripts/infra/azurelocal/ad-setup.ps1.
         }
 
         if (-not (Get-SecretValue -Name $CaSecretName -Key 'ca.crt')) {
-            throw "Secret '$CaSecretName' is missing from namespace '$Namespace', so the directory's certificate cannot be trusted. Create it with the directory's CA certificate (key ca.crt; scripts/infra/azurelocal/ad-setup.ps1 does this), or pass -UseLdaps:`$false."
+            # The CA certificate is public, so it comes from a file the settings point at.
+            if (-not $AdCaCertificatePath -or -not (Test-Path $AdCaCertificatePath)) {
+                throw "Secret '$CaSecretName' is missing from namespace '$Namespace', so the directory's certificate cannot be trusted. Set AdCaCertificatePath in the Keycloak settings to the directory CA's certificate (PEM), or pass -UseLdaps:`$false."
+            }
+            $adCa = (Get-Content $AdCaCertificatePath -Raw).Trim()
+            if ($adCa -notmatch '-----BEGIN CERTIFICATE-----') { throw "'$AdCaCertificatePath' is not a PEM certificate." }
+            Set-OmsSecret -KubeContext $KubeContext -Namespace $Namespace -Name $CaSecretName -Data @{ 'ca.crt' = $adCa }
+            Write-Host "    secret/$CaSecretName from $AdCaCertificatePath" -ForegroundColor DarkGray
         }
     }
     else {

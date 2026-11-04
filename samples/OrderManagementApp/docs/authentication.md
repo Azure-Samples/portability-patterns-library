@@ -119,12 +119,17 @@ needs:
 
 [ad-setup.ps1](../scripts/infra/azurelocal/ad-setup.ps1) creates all of this and hands the bind
 account and the CA certificate to the cluster. Run it from the management machine as a
-domain administrator:
+domain administrator, once the cluster exists:
 
 ```powershell
 ./scripts/infra/azurelocal/ad-setup.ps1 -ComputerName <domain controller> -DomainName <domain> `
     -NetbiosName <NETBIOS name> -KubeContext <cluster context>
 ```
+
+If your directory already has these, you don't need it: put the bind account in
+`Keycloak.AdBindUpn` and the CA's certificate file in `Keycloak.AdCaCertificatePath`
+([settings](./azure-local-settings.md#active-directory)). The first `up.ps1` run asks for the bind
+account's password and keeps it, with the certificate, in the cluster.
 
 The listing limits cover the containers and domain controllers that exist when the script runs, so
 run it again after adding either. That resets the bind password: set the new one in the Keycloak
@@ -134,14 +139,7 @@ directly under the domain root (Keycloak has to find the OU there), the sub-cont
 Policy objects, the forest's configuration, schema and DNS partitions, and the domain controllers'
 SYSVOL share.
 
-To create the objects yourself instead, give the bind account the same limits, then give Keycloak
-the bind account and the CA's root certificate as Secrets:
-
-```powershell
-kubectl create namespace identity
-kubectl -n identity create secret generic oms-ad-bind `
-    --from-literal=bind-upn=svc-keycloak@<domain> --from-literal=bind-password=<password>
-kubectl -n identity create secret generic oms-ad-ca --from-file=ca.crt=<path to ca.crt>
-```
+To create the objects yourself instead, give the bind account the same limits, and set
+`Keycloak.AdBindUpn` and `Keycloak.AdCaCertificatePath` as above.
 
 To use an OU other than `OMS`, pass its name to `keycloak.ps1 -AdOuName`.
