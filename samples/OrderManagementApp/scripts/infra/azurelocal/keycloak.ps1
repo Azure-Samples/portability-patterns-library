@@ -220,14 +220,14 @@ externally reachable service-account issuer.
     }
     Write-Host "    issuer $issuer" -ForegroundColor DarkGray
 
-    # Keycloak opens the JWKS endpoint itself, over TLS the API server terminates with its own CA.
-    # That CA is already in the kubeconfig, so there is no need to go back to the node for it.
-    $caData = kubectl --context $KubeContext config view --raw --minify `
-        --output 'jsonpath={.clusters[0].cluster.certificate-authority-data}'
-    if ([string]::IsNullOrWhiteSpace($caData)) {
-        throw 'The kubeconfig carries no cluster CA, so Keycloak could not verify the JWKS endpoint.'
+    # Keycloak opens the JWKS endpoint itself, inside the cluster, over TLS the API server terminates
+    # with the cluster's CA. The cluster publishes that CA in every namespace as kube-root-ca.crt; the
+    # kubeconfig's CA can be another one, such as a proxy's.
+    $clusterCaPem = (kubectl --context $KubeContext get configmap kube-root-ca.crt --namespace default `
+            --output 'jsonpath={.data.ca\.crt}') -join "`n"
+    if ($LASTEXITCODE -ne 0 -or $clusterCaPem -notmatch '-----BEGIN CERTIFICATE-----') {
+        throw 'Could not read the cluster CA from ConfigMap default/kube-root-ca.crt, so Keycloak could not verify the JWKS endpoint.'
     }
-    $clusterCaPem = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($caData))
 
     # ------------------------------------------------------------------------------------------
     # Credentials. Generated once and kept in the cluster, so re-running does not churn them.

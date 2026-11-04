@@ -94,7 +94,8 @@ All commands run from this folder, `samples/OrderManagementApp`.
   Azure, with the same tools as for Azure except azd. Microsoft recommends managing AKS on Azure
   Local from such a
   [client machine](https://learn.microsoft.com/azure/aks-hybrid-edge/local/aks-create-clusters-cli#install-the-azure-cli-extension)
-  rather than from the nodes.
+  rather than from the nodes. It must reach the cluster's API address directly: the Radius CLI
+  doesn't work through Arc cluster connect (`az connectedk8s proxy`).
 - Free addresses on the site network for the AKS cluster: its control plane, a pool for the nodes and a
   small range for the load balancer, of at least two addresses: one for the app, one for Keycloak.
 - The site's Active Directory, with the app's groups and a bind account for Keycloak. See

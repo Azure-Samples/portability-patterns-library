@@ -45,8 +45,7 @@ Run these from the `samples/OrderManagementApp` folder.
 2. Give Keycloak the cluster's CA, so it can check service account tokens:
 
    ```powershell
-   kubectl config view --raw --minify -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' > ca.b64
-   [IO.File]::WriteAllBytes("$PWD/cluster-ca.pem", [Convert]::FromBase64String((Get-Content ca.b64)))
+   kubectl get configmap kube-root-ca.crt -n default -o jsonpath='{.data.ca\.crt}' > cluster-ca.pem
    kubectl -n identity create secret generic cluster-ca --from-file=cluster-ca.pem
    ```
 
