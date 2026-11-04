@@ -22,16 +22,11 @@ public sealed class SqlServerSetup(
     IOptions<DbSetupOptions> setup,
     WorkloadIdentity identity,
     IConfiguration configuration,
-    ILoggerFactory loggerFactory) : IDatabaseSetup
+    ILoggerFactory loggerFactory)
 {
     private readonly ILogger _logger = loggerFactory.CreateLogger<SqlServerSetup>();
 
     private sealed record Principal(string Name, string? ClientId, string? Password, string Permissions);
-
-    // Held for the whole run, so two runs at once take turns.
-    private const string LockResource = "OrderManagement.DbSetup";
-
-    public string Name => "SQL";
 
     public async Task RunAsync(CancellationToken cancellationToken)
     {
@@ -58,7 +53,6 @@ public sealed class SqlServerSetup(
 
         await using var session = await setup.Value.CreateConnectPipeline($"SQL Server {target.Host}", _logger)
             .ExecuteAsync(async token => await connections.OpenAsync(useMaster ? "master" : null, token), cancellationToken);
-        await LockAsync(session, cancellationToken);
 
         if (useMaster)
         {
@@ -80,24 +74,6 @@ public sealed class SqlServerSetup(
             await database.ExecuteAsync(new CommandDefinition(
                 $"GRANT {principal.Permissions} ON dbo.Orders TO [{principal.Name}];", cancellationToken: cancellationToken));
             _logger.LogInformation("Database user {User} has {Permissions} on dbo.Orders", principal.Name, principal.Permissions);
-        }
-    }
-
-    // An application lock owned by the session, released when the connection closes.
-    private async Task LockAsync(SqlConnection session, CancellationToken cancellationToken)
-    {
-        var timeout = setup.Value.LockTimeout;
-        var result = await session.ExecuteScalarAsync<int>(new CommandDefinition(
-            """
-            DECLARE @result INT;
-            EXEC @result = sp_getapplock @Resource = @resource, @LockMode = N'Exclusive', @LockOwner = N'Session', @LockTimeout = @timeout;
-            SELECT @result;
-            """,
-            new { resource = LockResource, timeout = (int)timeout.TotalMilliseconds },
-            commandTimeout: (int)timeout.TotalSeconds + 30, cancellationToken: cancellationToken));
-        if (result < 0)
-        {
-            throw new InvalidOperationException($"Another database setup held the lock for over {timeout} (sp_getapplock returned {result}).");
         }
     }
 

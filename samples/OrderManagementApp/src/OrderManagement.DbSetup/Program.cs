@@ -21,20 +21,21 @@ builder.Services.AddOptions<DbSetupOptions>().BindConfiguration(DbSetupOptions.S
 if (!string.IsNullOrWhiteSpace(builder.Configuration["CONNECTION_SQL_HOST"]))
 {
     SqlOptions.Add(builder.Services);
-    builder.Services.AddSingleton<IDatabaseSetup, SqlServerSetup>();
+    builder.Services.AddSingleton<SqlServerSetup>();
 }
 
 if (!string.IsNullOrWhiteSpace(builder.Configuration["CONNECTION_INVENTORYDB_HOST"]))
 {
     PostgresOptions.Add(builder.Services);
-    builder.Services.AddSingleton<IDatabaseSetup, PostgresSetup>();
+    builder.Services.AddSingleton<PostgresSetup>();
 }
 
 using var host = builder.Build();
 var logger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("OrderManagement.DbSetup");
 
-var setups = host.Services.GetServices<IDatabaseSetup>().ToList();
-if (setups.Count == 0)
+var sql = host.Services.GetService<SqlServerSetup>();
+var postgres = host.Services.GetService<PostgresSetup>();
+if (sql is null && postgres is null)
 {
     logger.LogError("Nothing to set up: neither CONNECTION_SQL_HOST nor CONNECTION_INVENTORYDB_HOST is set");
     return 2;
@@ -47,18 +48,24 @@ Console.CancelKeyPress += (_, args) =>
     cancellation.Cancel();
 };
 
-foreach (var setup in setups)
+try
 {
-    try
+    if (sql is not null)
     {
-        await setup.RunAsync(cancellation.Token);
-        logger.LogInformation("{Database} setup complete", setup.Name);
+        await sql.RunAsync(cancellation.Token);
+        logger.LogInformation("SQL setup complete");
     }
-    catch (Exception ex)
+
+    if (postgres is not null)
     {
-        logger.LogError(ex, "{Database} setup failed: {Reason}", setup.Name, ExceptionSummary.Describe(ex));
-        return 1;
+        await postgres.RunAsync(cancellation.Token);
+        logger.LogInformation("PostgreSQL setup complete");
     }
+}
+catch (Exception ex)
+{
+    logger.LogError(ex, "Database setup failed: {Reason}", ExceptionSummary.Describe(ex));
+    return 1;
 }
 
 return 0;

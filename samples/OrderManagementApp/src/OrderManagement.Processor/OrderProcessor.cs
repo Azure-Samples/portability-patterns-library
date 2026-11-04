@@ -20,7 +20,7 @@ namespace OrderManagement.Processor;
 /// not recorded, its stock is released before the broker dead-letters it.
 /// </summary>
 public sealed class OrderProcessor(
-    IMessageSubscriber subscriber,
+    IMessageQueue queue,
     IArchiveStore archiveStore,
     IOrderStore orderStore,
     IInventoryClient inventory,
@@ -35,7 +35,7 @@ public sealed class OrderProcessor(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await subscriber.RunAsync(HandleMessageAsync, stoppingToken).ConfigureAwait(false);
+        await queue.RunAsync(HandleMessageAsync, stoppingToken).ConfigureAwait(false);
         logger.LogInformation("Processor stopping after processing {Total} orders", Interlocked.Read(ref _processed));
     }
 

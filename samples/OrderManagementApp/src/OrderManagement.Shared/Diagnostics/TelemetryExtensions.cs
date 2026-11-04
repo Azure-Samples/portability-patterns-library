@@ -27,6 +27,9 @@ public static class TelemetryExtensions
     {
         builder.Services.TryAddSingleton<OrderMetrics>();
 
+        // The Service Bus SDK's tracing is still labelled experimental, so it is opted into.
+        AppContext.SetSwitch("Azure.Experimental.EnableActivitySource", true);
+
         var telemetry = builder.Services.AddOpenTelemetry()
             .ConfigureResource(resource =>
             {
@@ -41,6 +44,8 @@ public static class TelemetryExtensions
                 tracer
                     .AddSource(OrderManagementTelemetry.Name)
                     .AddSource("Npgsql")
+                    // The queue clients' own spans, which carry the trace from publisher to consumer.
+                    .AddSource("RabbitMQ.Client.Publisher", "RabbitMQ.Client.Subscriber", "Azure.Messaging.ServiceBus.*")
                     .AddHttpClientInstrumentation()
                     .AddSqlClientInstrumentation();
                 tracing?.Invoke(tracer);

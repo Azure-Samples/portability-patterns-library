@@ -66,16 +66,14 @@ public static class ServiceCollectionExtensions
             services.TryAddSingleton<ICredentialsProvider, KeycloakCredentialsProvider>();
         }
 
-        services.AddSingleton<IMessageBroker>(sp => sp.GetRequiredService<IOptions<QueueOptions>>().Value.Provider switch
+        services.AddSingleton<IMessageQueue>(sp => sp.GetRequiredService<IOptions<QueueOptions>>().Value.Provider switch
         {
             QueueProvider.ServiceBus => ActivatorUtilities.CreateInstance<ServiceBusMessageBroker>(sp),
             _ => ActivatorUtilities.CreateInstance<RabbitMqMessageBroker>(sp)
         });
-        services.AddSingleton<IMessagePublisher>(sp => sp.GetRequiredService<IMessageBroker>());
-        services.AddSingleton<IMessageSubscriber>(sp => sp.GetRequiredService<IMessageBroker>());
 
         services.AddHealthChecks().Add(new HealthCheckRegistration(
-            "queue", sp => sp.GetRequiredService<IMessageBroker>(), failureStatus: null, tags: [HealthTags.Ready], HealthCheckTimeout));
+            "queue", sp => sp.GetRequiredService<IMessageQueue>(), failureStatus: null, tags: [HealthTags.Ready], HealthCheckTimeout));
 
         return services;
     }

@@ -1,4 +1,5 @@
 using System.Diagnostics.Metrics;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using OrderManagement.Processor;
@@ -98,6 +99,24 @@ public sealed class OrderProcessorReleaseTests
     }
 
     [Fact]
+    public async Task Fails_the_delivery_after_the_last_retry()
+    {
+        var store = new FakeOrderStore { TransientFailures = 10 };
+        var inventory = new FakeInventory();
+        var options = new ProcessorOptions
+        {
+            MaxRetryAttempts = 3, RetryDelay = TimeSpan.FromMilliseconds(1), MaxRetryDelay = TimeSpan.FromMilliseconds(5)
+        };
+        var pipeline = new ResiliencePipelineBuilder();
+        options.ConfigurePipeline(pipeline, NullLogger.Instance);
+
+        var failure = await RunOneAsync(store, inventory, lastDelivery: false, pipeline.Build());
+
+        Assert.IsType<TimeoutException>(failure);
+        Assert.Equal(6, store.TransientFailures);
+    }
+
+    [Fact]
     public async Task Fails_the_delivery_at_once_on_an_error_that_retrying_cannot_fix()
     {
         var store = new FakeOrderStore();
@@ -136,7 +155,7 @@ public sealed class OrderProcessorReleaseTests
         return subscriber.HandlerFailure;
     }
 
-    private sealed class OneMessageSubscriber(QueueMessage message) : IMessageSubscriber
+    private sealed class OneMessageSubscriber(QueueMessage message) : IMessageQueue
     {
         public Exception? HandlerFailure { get; private set; }
 
@@ -151,6 +170,11 @@ public sealed class OrderProcessorReleaseTests
                 HandlerFailure = ex;
             }
         }
+
+        public Task PublishAsync(Order order, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default) =>
+            Task.FromResult(HealthCheckResult.Healthy());
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
@@ -19,9 +20,10 @@ namespace OrderManagement.Shared.Messaging;
 ///
 /// One connection per process, recovered by the client after a network failure or a broker restart.
 /// With a workload identity, the access token is renewed on the open connection before it expires
-/// (<see cref="CredentialsRefresher"/>), so the broker never closes it for an expired token.
+/// (<see cref="CredentialsRefresher"/>), so the broker never closes it for an expired token. The
+/// client traces publishing and delivery itself and carries the trace context in the message headers.
 /// </summary>
-public sealed class RabbitMqMessageBroker : IMessageBroker
+public sealed class RabbitMqMessageBroker : IMessageQueue
 {
     private readonly QueueOptions _options;
     private readonly ILogger<RabbitMqMessageBroker> _logger;
@@ -49,37 +51,23 @@ public sealed class RabbitMqMessageBroker : IMessageBroker
 
     public async Task PublishAsync(Order order, CancellationToken cancellationToken)
     {
-        var messageId = order.OrderId.ToString();
-        var headers = new Dictionary<string, object?>();
-        using var activity = MessagingTelemetry.StartPublish(
-            "rabbitmq", _options.QueueName!, messageId, (key, value) => headers[key] = value);
+        var channel = await GetPublishChannelAsync(cancellationToken).ConfigureAwait(false);
 
-        try
-        {
-            var channel = await GetPublishChannelAsync(cancellationToken).ConfigureAwait(false);
-
-            // With publisher confirmations this returns once the broker has the message: it throws
-            // when the broker refuses it, and (mandatory) when no queue takes it.
-            await channel.BasicPublishAsync(
-                exchange: string.Empty,
-                routingKey: _options.QueueName!,
-                mandatory: true,
-                basicProperties: new BasicProperties
-                {
-                    Persistent = true,
-                    ContentType = "application/json",
-                    MessageId = messageId,
-                    Type = Order.OrderPlacedType,
-                    Headers = headers
-                },
-                body: Encoding.UTF8.GetBytes(order.ToJson()),
-                cancellationToken: cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            MessagingTelemetry.RecordFailure(activity, ex);
-            throw;
-        }
+        // With publisher confirmations this returns once the broker has the message: it throws
+        // when the broker refuses it, and (mandatory) when no queue takes it.
+        await channel.BasicPublishAsync(
+            exchange: string.Empty,
+            routingKey: _options.QueueName!,
+            mandatory: true,
+            basicProperties: new BasicProperties
+            {
+                Persistent = true,
+                ContentType = "application/json",
+                MessageId = order.OrderId.ToString(),
+                Type = Order.OrderPlacedType
+            },
+            body: Encoding.UTF8.GetBytes(order.ToJson()),
+            cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     public async Task RunAsync(Func<QueueMessage, CancellationToken, Task> handler, CancellationToken cancellationToken)
@@ -126,8 +114,6 @@ public sealed class RabbitMqMessageBroker : IMessageBroker
         IChannel channel, BasicDeliverEventArgs args, Func<QueueMessage, CancellationToken, Task> handler, CancellationToken stopping)
     {
         var messageId = args.BasicProperties.MessageId ?? args.DeliveryTag.ToString(CultureInfo.InvariantCulture);
-        using var activity = MessagingTelemetry.StartProcess(
-            "rabbitmq", _options.QueueName!, messageId, key => HeaderValue(args.BasicProperties, key));
         using var delivery = CancellationTokenSource.CreateLinkedTokenSource(stopping, _channelOpen.Token);
 
         var attempt = DeliveryAttempt(args.BasicProperties);
@@ -146,7 +132,8 @@ public sealed class RabbitMqMessageBroker : IMessageBroker
         }
         catch (Exception ex)
         {
-            MessagingTelemetry.RecordFailure(activity, ex);
+            // Marks the client's delivery span as failed.
+            Activity.Current?.AddException(ex).SetStatus(ActivityStatusCode.Error);
 
             // A requeued message doesn't count towards the quorum queue's delivery limit, so on the
             // last attempt the message is rejected instead, and the queue's dead-letter policy moves
@@ -300,17 +287,6 @@ public sealed class RabbitMqMessageBroker : IMessageBroker
         properties.Headers?.TryGetValue("x-acquired-count", out var acquired) == true && acquired is not null
             ? Convert.ToInt64(acquired, CultureInfo.InvariantCulture) + 1
             : 1;
-
-    // AMQP carries string header values as bytes.
-    private static string? HeaderValue(IReadOnlyBasicProperties properties, string key) =>
-        properties.Headers?.TryGetValue(key, out var value) == true
-            ? value switch
-            {
-                byte[] bytes => Encoding.UTF8.GetString(bytes),
-                null => null,
-                _ => value.ToString()
-            }
-            : null;
 
     public async ValueTask DisposeAsync()
     {

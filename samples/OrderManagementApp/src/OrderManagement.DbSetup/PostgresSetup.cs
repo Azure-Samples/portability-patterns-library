@@ -21,7 +21,7 @@ public sealed class PostgresSetup(
     IOptions<DbSetupOptions> setup,
     WorkloadIdentity identity,
     IConfiguration configuration,
-    ILoggerFactory loggerFactory) : IDatabaseSetup
+    ILoggerFactory loggerFactory)
 {
     public const string Role = "inventory";
 
@@ -34,12 +34,7 @@ public sealed class PostgresSetup(
         ("inventory.reservation_lines", "SELECT, INSERT, DELETE")
     ];
 
-    // Held for the whole run, so two runs at once take turns. Any fixed number works; this one is the job's own.
-    private const long LockKey = 0x4F4D_5344_4253_4554;
-
     private readonly ILogger _logger = loggerFactory.CreateLogger<PostgresSetup>();
-
-    public string Name => "PostgreSQL";
 
     public async Task RunAsync(CancellationToken cancellationToken)
     {
@@ -51,11 +46,9 @@ public sealed class PostgresSetup(
             target.Host, target.Database, admin);
 
         // Databases and roles are server-wide; Entra principals can only be created from 'postgres'.
-        // That connection holds the lock until the end.
         await using var server = PostgresDataSourceFactory.Create(target, admin, loggerFactory, database: "postgres");
         await using var session = await setup.Value.CreateConnectPipeline($"PostgreSQL {target.Host}", _logger)
             .ExecuteAsync(async token => await server.OpenConnectionAsync(token), cancellationToken);
-        await LockAsync(session, cancellationToken);
         await EnsureDatabaseAsync(session, target.Database!, cancellationToken);
         await EnsureRoleAsync(session, cancellationToken);
 
@@ -73,17 +66,6 @@ public sealed class PostgresSetup(
             await ExecuteAsync(db, $"GRANT {privileges} ON {table} TO {Identifier(Role)}", cancellationToken);
             _logger.LogInformation("Role {Role} has {Privileges} on {Table}", Role, privileges, table);
         }
-    }
-
-    // A session-level advisory lock, released when the connection closes.
-    private async Task LockAsync(NpgsqlConnection session, CancellationToken cancellationToken)
-    {
-        await using var command = new NpgsqlCommand("SELECT pg_advisory_lock(@key)", session)
-        {
-            CommandTimeout = (int)setup.Value.LockTimeout.TotalSeconds
-        };
-        command.Parameters.AddWithValue("key", LockKey);
-        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private async Task EnsureDatabaseAsync(NpgsqlConnection connection, string databaseName, CancellationToken cancellationToken)

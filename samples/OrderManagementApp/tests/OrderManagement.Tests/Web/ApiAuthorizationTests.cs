@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using OrderManagement.Api;
 using OrderManagement.Shared.Inventory;
 using OrderManagement.Shared.Messaging;
@@ -68,28 +69,14 @@ public sealed class ApiAuthorizationTests : IClassFixture<ApiAuthorizationTests.
     }
 
     [Fact]
-    public async Task Answers_503_when_the_inventory_service_is_down_and_nothing_is_cached()
+    public async Task Answers_503_when_the_inventory_service_is_down()
     {
-        using var factory = new ApiFactory();
-        factory.Inventory.Failure = new InventoryUnavailableException("down");
+        _factory.Inventory.Failure = new InventoryUnavailableException("down");
 
-        var response = await SendAsync(factory, "GET", "/api/products", TestAuthenticationHandler.Header(roles: Reader));
+        var response = await SendAsync("GET", "/api/products", TestAuthenticationHandler.Header(roles: Reader));
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
         Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
-    }
-
-    [Fact]
-    public async Task Serves_the_last_products_while_the_inventory_service_is_down()
-    {
-        using var factory = new ApiFactory();
-        Assert.Equal(HttpStatusCode.OK, (await SendAsync(factory, "GET", "/api/products", TestAuthenticationHandler.Header(roles: Reader))).StatusCode);
-        factory.Inventory.Failure = new InventoryUnavailableException("down");
-
-        var response = await SendAsync(factory, "GET", "/api/products", TestAuthenticationHandler.Header(roles: Reader));
-
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.True(response.Headers.Contains("X-Products-As-Of"));
     }
 
     [Fact]
@@ -112,9 +99,7 @@ public sealed class ApiAuthorizationTests : IClassFixture<ApiAuthorizationTests.
     public async Task Answers_the_liveness_probe_without_a_token() =>
         Assert.Equal(HttpStatusCode.OK, (await SendAsync("GET", "/healthz", user: null)).StatusCode);
 
-    private Task<HttpResponseMessage> SendAsync(string method, string path, string? user) => SendAsync(_factory, method, path, user);
-
-    private static async Task<HttpResponseMessage> SendAsync(ApiFactory factory, string method, string path, string? user)
+    private async Task<HttpResponseMessage> SendAsync(string method, string path, string? user)
     {
         using var request = new HttpRequestMessage(new HttpMethod(method), path);
         if (user is not null)
@@ -129,7 +114,7 @@ public sealed class ApiAuthorizationTests : IClassFixture<ApiAuthorizationTests.
                 : JsonContent.Create(new OrderRequest { Items = [new OrderRequestItem { Sku = "GEN-500", Quantity = 2 }] });
         }
 
-        return await factory.CreateClient().SendAsync(request);
+        return await _factory.CreateClient().SendAsync(request);
     }
 
     public sealed class ApiFactory : WebApplicationFactory<ApiExceptionHandler>
@@ -171,7 +156,7 @@ public sealed class ApiAuthorizationTests : IClassFixture<ApiAuthorizationTests.
                     options.DefaultChallengeScheme = TestAuthenticationHandler.SchemeName;
                 });
                 services.RemoveAll<IInventoryClient>().AddSingleton<IInventoryClient>(Inventory);
-                services.RemoveAll<IMessagePublisher>().AddSingleton<IMessagePublisher>(Publisher);
+                services.RemoveAll<IMessageQueue>().AddSingleton<IMessageQueue>(Publisher);
                 services.RemoveAll<IOrderStore>().AddSingleton<IOrderStore, EmptyOrderStore>();
             });
         }
@@ -200,7 +185,7 @@ public sealed class ApiAuthorizationTests : IClassFixture<ApiAuthorizationTests.
         public Task ReleaseAsync(Guid orderId, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 
-    public sealed class FakePublisher : IMessagePublisher
+    public sealed class FakePublisher : IMessageQueue
     {
         public List<Order> Published { get; } = [];
 
@@ -212,6 +197,12 @@ public sealed class ApiAuthorizationTests : IClassFixture<ApiAuthorizationTests.
             }
             return Task.CompletedTask;
         }
+
+        public Task RunAsync(Func<QueueMessage, CancellationToken, Task> handler, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default) =>
+            Task.FromResult(HealthCheckResult.Healthy());
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }

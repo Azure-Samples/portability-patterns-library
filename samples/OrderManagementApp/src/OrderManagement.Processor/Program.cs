@@ -15,8 +15,6 @@ builder.Services.AddInventoryClient(builder.Configuration);
 
 builder.Services.AddOptions<ProcessorOptions>()
     .BindConfiguration(ProcessorOptions.SectionName)
-    .Validate(options => options.RetryBudget > options.MaxRetryDelay,
-        "Processor:RetryBudget must be longer than Processor:MaxRetryDelay.")
     .ValidateOnStart();
 
 // One delivery's work, retried as a whole while its failures are transient: every step is idempotent.

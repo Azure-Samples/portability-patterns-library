@@ -55,7 +55,7 @@ return options.Provider switch
 };
 ```
 
-Everything else in the app sees only `IMessagePublisher` / `IMessageSubscriber`. Storage and SQL work
+Everything else in the app sees only `IMessageQueue`. Storage and SQL work
 the same way; [How authentication works](./authentication.md#workloads) shows how each picks its
 credential. [compose.yaml](../compose.yaml) sets the same variables to run the app locally.
 

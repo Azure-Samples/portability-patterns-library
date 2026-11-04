@@ -1,6 +1,5 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Identity.Web;
 using Microsoft.Identity.Web.Resource;
 using OpenTelemetry.Metrics;
@@ -23,13 +22,6 @@ builder.AddOrderManagementTelemetry(
 builder.Services.AddOrderQueue(builder.Configuration);
 builder.Services.AddOrderStore(builder.Configuration);
 builder.Services.AddInventoryClient(builder.Configuration);
-builder.Services.AddMemoryCache();
-builder.Services.AddOptions<ProductCatalogOptions>()
-    .BindConfiguration("Inventory")
-    .Validate(options => options.PriceCacheMaxAge > TimeSpan.Zero, "Inventory__PriceCacheMaxAge must be positive.")
-    .ValidateOnStart();
-builder.Services.TryAddSingleton(TimeProvider.System);
-builder.Services.AddScoped<ProductCatalog>();
 
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<ApiExceptionHandler>();
@@ -85,7 +77,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 // Live while the process answers; ready while the queue and the orders database are reachable.
-// The inventory service is left out: while it is down, the API serves the last product list.
+// The inventory service is left out: while it is down, only the product list and new orders fail.
 app.MapHealthChecks("/healthz", new() { Predicate = check => check.Tags.Contains(HealthTags.Live) });
 app.MapHealthChecks("/healthz/ready", new() { Predicate = check => check.Tags.Contains(HealthTags.Ready) });
 
@@ -106,18 +98,8 @@ api.MapGet("/me", (ClaimsPrincipal user) => Results.Ok(new
 }))
     .RequireAuthorization();
 
-// While the inventory service is down, the last product list fetched, marked with when it was
-// fetched so the page can say the stock may be out of date.
-api.MapGet("/products", async (HttpContext context, ProductCatalog catalog, CancellationToken cancellationToken) =>
-{
-    var snapshot = await catalog.GetAsync(cancellationToken);
-    if (snapshot.IsCached)
-    {
-        context.Response.Headers["X-Products-As-Of"] = snapshot.FetchedAt.ToString("O");
-    }
-
-    return Results.Ok(snapshot.Products);
-})
+api.MapGet("/products", async (IInventoryClient inventory, CancellationToken cancellationToken) =>
+    Results.Ok(await inventory.GetProductsAsync(cancellationToken)))
     .RequireAuthorization();
 
 // The user's role is checked here; the inventory service then trusts the API's own identity.
@@ -162,15 +144,14 @@ api.MapGet("/orders/{orderId:guid}", async (Guid orderId, ClaimsPrincipal user, 
 api.MapPost("/orders", async (
     OrderRequest request,
     ClaimsPrincipal user,
-    IMessagePublisher publisher,
-    ProductCatalog catalog,
+    IMessageQueue queue,
+    IInventoryClient inventory,
     OrderMetrics metrics,
     ILogger<OrderRequest> logger,
     CancellationToken cancellationToken) =>
 {
-    // Priced from the inventory service's current prices, or the last ones fetched while it is
-    // down; stock is reserved later by the processor.
-    var products = (await catalog.GetAsync(cancellationToken)).Products;
+    // Priced from the inventory service's current prices; stock is reserved later by the processor.
+    var products = await inventory.GetProductsAsync(cancellationToken);
     var (lines, currency, errors) = OrderPricing.Price(request, products);
     if (errors is not null)
     {
@@ -189,7 +170,7 @@ api.MapPost("/orders", async (
 
     try
     {
-        await publisher.PublishAsync(order, cancellationToken);
+        await queue.PublishAsync(order, cancellationToken);
     }
     catch (Exception ex) when (ex is not OperationCanceledException)
     {

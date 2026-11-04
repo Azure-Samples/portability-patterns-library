@@ -1,9 +1,9 @@
+using System.Diagnostics;
 using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OrderManagement.Shared.Configuration;
-using OrderManagement.Shared.Diagnostics;
 using OrderManagement.Shared.Identity;
 using OrderManagement.Shared.Models;
 
@@ -14,8 +14,9 @@ namespace OrderManagement.Shared.Messaging;
 /// the pod's Entra workload identity, never a connection string; the identity needs the
 /// <c>Azure Service Bus Data Sender</c> and/or <c>Azure Service Bus Data Receiver</c> role on the queue.
 /// <see cref="ServiceBusSender.SendMessageAsync"/> returns once Service Bus has accepted the message.
+/// The SDK traces sending and processing itself and carries the trace context in the message.
 /// </summary>
-public sealed class ServiceBusMessageBroker : IMessageBroker
+public sealed class ServiceBusMessageBroker : IMessageQueue
 {
     private readonly QueueOptions _options;
     private readonly ILogger<ServiceBusMessageBroker> _logger;
@@ -39,29 +40,13 @@ public sealed class ServiceBusMessageBroker : IMessageBroker
         _logger.LogInformation("Using Azure Service Bus namespace {Namespace}, queue {Queue}", _options.Endpoint, _options.QueueName);
     }
 
-    public async Task PublishAsync(Order order, CancellationToken cancellationToken)
-    {
-        var message = new ServiceBusMessage(order.ToJson())
+    public Task PublishAsync(Order order, CancellationToken cancellationToken) =>
+        _sender.SendMessageAsync(new ServiceBusMessage(order.ToJson())
         {
             MessageId = order.OrderId.ToString(),
             ContentType = "application/json",
             Subject = Order.OrderPlacedType
-        };
-
-        using var activity = MessagingTelemetry.StartPublish(
-            "servicebus", _options.QueueName!, message.MessageId,
-            (key, value) => message.ApplicationProperties[key] = value);
-
-        try
-        {
-            await _sender.SendMessageAsync(message, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            MessagingTelemetry.RecordFailure(activity, ex);
-            throw;
-        }
-    }
+        }, cancellationToken);
 
     public async Task RunAsync(Func<QueueMessage, CancellationToken, Task> handler, CancellationToken cancellationToken)
     {
@@ -78,10 +63,6 @@ public sealed class ServiceBusMessageBroker : IMessageBroker
         _processor.ProcessMessageAsync += async args =>
         {
             var messageId = args.Message.MessageId;
-            var properties = args.Message.ApplicationProperties;
-            using var activity = MessagingTelemetry.StartProcess(
-                "servicebus", _options.QueueName!, messageId,
-                key => properties.TryGetValue(key, out var value) ? value?.ToString() : null);
             try
             {
                 // Service Bus dead-letters the message once a delivery fails at MaxDeliveryCount.
@@ -98,7 +79,8 @@ public sealed class ServiceBusMessageBroker : IMessageBroker
             }
             catch (Exception ex)
             {
-                MessagingTelemetry.RecordFailure(activity, ex);
+                // Marks the SDK's processing span as failed.
+                Activity.Current?.AddException(ex).SetStatus(ActivityStatusCode.Error);
                 _logger.LogError(ex, "Failed to process Service Bus message {MessageId} on delivery {DeliveryCount} of {MaxDeliveryCount}; abandoning",
                     messageId, args.Message.DeliveryCount, _options.MaxDeliveryCount);
                 await args.AbandonMessageAsync(args.Message, cancellationToken: args.CancellationToken).ConfigureAwait(false);
