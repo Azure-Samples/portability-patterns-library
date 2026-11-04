@@ -23,14 +23,13 @@ The sample uses this container when its `Availability` setting is `standard`. Th
 
 | Step | In the sample |
 |---|---|
-| The server | [postgres-database.bicep](../../../recipes/postgresql-database/azure-local/postgres/postgres-database.bicep): a StatefulSet, a persistent volume, `hostssl` with password authentication, a certificate from the site CA and a sidecar that reloads it |
+| The server | [postgres-database.bicep](../../../recipes/postgresql-database/azure-local/postgres/postgres-database.bicep): a StatefulSet, a persistent volume, `hostssl` with password authentication, a certificate from the site CA, and a sidecar that reloads renewed certificates and changed passwords |
 | Choosing it | The [Azure Local Recipe Pack](../../../recipe-packs/azure-local.bicep) with availability `standard` |
 
 ## Not covered by the sample
 
 - backups and a tested restore, kept off the cluster;
-- a replica and failover: use CloudNativePG;
-- a pinned image tag, the same major version as on Azure.
+- a replica and failover: use CloudNativePG.
 
 ## References
 

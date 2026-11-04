@@ -20,8 +20,8 @@ Both keep each node's data on a persistent volume and can accept TLS only.
 | Namespace | Broker or cluster (virtual host) | You deploy and operate it. |
 | Queue | Durable [quorum queue](https://www.rabbitmq.com/docs/quorum-queues) | Publish messages as persistent, and keep the broker's data on a persistent volume. |
 | Premium zone redundancy | A three-node cluster with quorum queues | Azure Local has no availability zones; spread the nodes over cluster nodes. |
-| Send | Publish to the default exchange with the queue name as routing key | |
-| Receive in peek-lock mode | Consume with manual acknowledgement | Prefetch only as many messages as the handler works on at once. |
+| Send | Publish to the default exchange with the queue name as routing key | Turn on publisher confirms and publish as mandatory, so a message the broker refuses or can't route is an error, as a failed Service Bus send is. |
+| Receive in peek-lock mode | Consume with manual acknowledgement | Prefetch no more messages than the handler works on at once. |
 | Complete | Acknowledge (`ack`) | |
 | Abandon | Negative-acknowledge with requeue (`nack`) | Add your own delay; RabbitMQ redelivers immediately. |
 | Lock duration | None | A message is redelivered when its channel closes or after the [consumer timeout](https://www.rabbitmq.com/docs/consumers#acknowledgement-timeout) (30 minutes by default). |
@@ -31,7 +31,7 @@ Both keep each node's data on a persistent volume and can accept TLS only.
 | TLS 1.2, always on | TLS listeners only (AMQPS on 5671), with a certificate the client verifies | Turn the plain listeners off. Nodes can replicate to each other over mutual TLS. |
 | Sessions, scheduled messages, duplicate detection | No built-in equivalent | Handle them in the application, or use a plugin. |
 | Shared access key (connection string) | Username and password | Stored in a Kubernetes Secret. |
-| Entra ID with workload identity federation | [OAuth 2.0 plugin](https://www.rabbitmq.com/docs/oauth2) with your own identity provider | The pod's service account token is exchanged for an access token, which is sent as the password. The broker closes the connection when the token expires, so the client reconnects with a new one. |
+| Entra ID with workload identity federation | [OAuth 2.0 plugin](https://www.rabbitmq.com/docs/oauth2) with your own identity provider | The pod's service account token is exchanged for an access token, which is sent as the password. Refresh the token on the open connection before it expires (RabbitMQ.Client's `CredentialsRefresher`), or the broker closes the connection. |
 | Azure role assignments (Data Sender, Data Receiver) | Permissions in the token's scopes claim | |
 
 RabbitMQ 4.0 and later also speak [AMQP 1.0](https://www.rabbitmq.com/docs/amqp), the protocol Service Bus uses. That doesn't make the Service Bus SDK a drop-in client: addresses, authentication and management operations differ. This project didn't evaluate it.
@@ -51,14 +51,15 @@ API and processor  ──►  IMessagePublisher / IMessageSubscriber
 | Step | In the sample |
 |---|---|
 | Interfaces the application codes against | [Messaging](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Messaging/): `IMessagePublisher`, `IMessageSubscriber` |
-| One adapter per broker | [ServiceBusMessageBroker.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Messaging/ServiceBusMessageBroker.cs), [RabbitMqMessageBroker.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Messaging/RabbitMqMessageBroker.cs): acknowledge, requeue after 5 seconds, reconnect, one message at a time |
+| One adapter per broker | [ServiceBusMessageBroker.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Messaging/ServiceBusMessageBroker.cs), [RabbitMqMessageBroker.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Messaging/RabbitMqMessageBroker.cs): publisher confirms, acknowledge, requeue, one recovering connection, no more prefetched than handled at once. The queues are the platform's: the Recipes declare them, the application doesn't. |
+| Riding out a dependency outage | [ProcessorOptions.cs](../../../samples/OrderManagementApp/src/OrderManagement.Processor/ProcessorOptions.cs): the processor retries transient failures in place, with backoff, for up to 5 minutes, so a restart or failover doesn't use up the message's deliveries |
 | Choosing the adapter at startup | [QueueOptions.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Configuration/QueueOptions.cs) and [ServiceCollectionExtensions.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/DependencyInjection/ServiceCollectionExtensions.cs) read `provider` (`servicebus` or `rabbitmq`) and `tls` |
 | Same deployment definition on both targets | The app declares a portable queue type, [`Portability.Messaging/messageQueues`](../../../recipes/message-queue/messageQueues.yaml). Each target's Radius Recipe creates the broker and returns `provider`, `endpoint` and `tls`: [Service Bus](../../../recipes/message-queue/azure/service-bus/servicebus-queue.bicep), and on Azure Local the [RabbitMQ operator Recipe](../../../recipes/message-queue/azure-local/rabbitmq-cluster-operator/rabbitmq-queue.bicep) (availability `high`, the default) or the [single broker Recipe](../../../recipes/message-queue/azure-local/rabbitmq/rabbitmq-queue.bicep) (`standard`), chosen by the [Recipe Pack](../../../recipe-packs/azure-local.bicep). |
 | The operators | Installed once per cluster by [provision-operators.ps1](../../../samples/OrderManagementApp/scripts/infra/azurelocal/provision-operators.ps1). See the [operators README](../../../samples/OrderManagementApp/infra/azurelocal/operators/README.md). |
 | Dead-lettering after `maxDeliveryCount` (10) attempts, as on Service Bus | Both Recipes create `orders` and `orders.dead-letter` as quorum queues with a dead-letter policy. The adapter marks the last attempt, and [OrderProcessor.cs](../../../samples/OrderManagementApp/src/OrderManagement.Processor/OrderProcessor.cs) releases the order's stock before it's dead-lettered, unless the order was recorded. |
 | Idempotent handling | [SqlOrderStore.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Persistence/SqlOrderStore.cs) writes with `MERGE`, and the inventory service keys reservations by order ID, so a redelivered order isn't stored or reserved twice |
 | Encryption | AMQPS only, with a certificate from the site CA that the client verifies; the nodes replicate over mutual TLS with certificates from the cert-manager CSI driver |
-| Token instead of a password | [WorkloadTokenProvider.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Identity/WorkloadTokenProvider.cs) exchanges each service's own token at Keycloak; see the [workload identity guide](../../workload-identity/README.md) |
+| Token instead of a password | Required on Azure Local: each service exchanges its own service account token at Keycloak ([WorkloadIdentity.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Identity/WorkloadIdentity.cs), with Duende.AccessTokenManagement), and [KeycloakCredentialsProvider.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Messaging/KeycloakCredentialsProvider.cs) gives the token to RabbitMQ and refreshes it on the open connection. See the [workload identity guide](../../workload-identity/README.md). |
 | One trace per order | [MessagingTelemetry.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Diagnostics/MessagingTelemetry.cs) carries the trace context in RabbitMQ headers and Service Bus application properties |
 | Monitoring | Alerts on dead-lettered messages and a stalled processor, on both targets |
 
@@ -69,7 +70,7 @@ The sample doesn't use Radius's [`Radius.Messaging/rabbitMQ`](https://github.com
 The Recipes are sample code. Before production, add:
 
 - a copy of the broker's definitions, and a plan for messages if the whole cluster is lost: replication protects against losing a node, not the cluster;
-- separate credentials for the management interface and the operators, which still use a password;
+- rotation of the administrator's password, which the operators and the management interface use (it can't open messaging connections);
 - capacity planning for the nodes' volumes, which the sample keeps small;
 - with a single broker, a second node: use the operator.
 
