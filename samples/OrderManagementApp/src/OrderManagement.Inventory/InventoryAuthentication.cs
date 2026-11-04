@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.IdentityModel.Tokens;
 
 namespace OrderManagement.Inventory;
@@ -18,35 +19,32 @@ public static class InventoryRoles
 public static class InventoryAuthentication
 {
     /// <summary>
-    /// Validates service tokens from the <c>InventoryAuth</c> section: <c>Authority</c> (the
-    /// issuer), optional <c>MetadataAddress</c>, and <c>Audience</c>. Without an authority, as in
-    /// local compose, every caller is trusted.
+    /// Validates service tokens from the <c>InventoryAuth</c> section: <c>Authority</c> (the issuer),
+    /// optional <c>MetadataAddress</c>, and <c>Audience</c>. Every endpoint needs a valid token with
+    /// the role its policy names. Only in the Development environment may the authority be left out,
+    /// as in local compose: then the API is open, and says so at startup.
     /// </summary>
-    /// <returns>Whether tokens are required.</returns>
+    /// <returns>Whether callers must present a token.</returns>
     public static bool AddInventoryAuthentication(this WebApplicationBuilder builder)
     {
-        var section = builder.Configuration.GetSection("InventoryAuth");
-        var authority = section["Authority"];
-        var enabled = !string.IsNullOrWhiteSpace(authority);
-
-        var authorization = builder.Services.AddAuthorizationBuilder();
+        var authorization = builder.Services.AddAuthorizationBuilder()
+            .SetFallbackPolicy(new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build());
         foreach (var role in new[] { InventoryRoles.Read, InventoryRoles.Reserve, InventoryRoles.Restock })
         {
-            authorization.AddPolicy(role, policy =>
-            {
-                if (enabled)
-                {
-                    policy.RequireAuthenticatedUser().RequireRole(role);
-                }
-                else
-                {
-                    policy.RequireAssertion(_ => true);
-                }
-            });
+            authorization.AddPolicy(role, policy => policy.RequireAuthenticatedUser().RequireRole(role));
         }
 
-        if (!enabled)
+        var section = builder.Configuration.GetSection("InventoryAuth");
+        var authority = section["Authority"];
+        if (string.IsNullOrWhiteSpace(authority))
         {
+            if (!builder.Environment.IsDevelopment())
+            {
+                throw new InvalidOperationException(
+                    "InventoryAuth__Authority is required: the inventory API accepts calls only with a service token. " +
+                    "Only the Development environment may run without one.");
+            }
+
             builder.Services.AddAuthentication();
             return false;
         }
@@ -58,7 +56,7 @@ public static class InventoryAuthentication
         }
 
         var metadataAddress = section["MetadataAddress"];
-        var issuer = authority!.TrimEnd('/');
+        var issuer = authority.TrimEnd('/');
 
         builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             .AddJwtBearer(options =>

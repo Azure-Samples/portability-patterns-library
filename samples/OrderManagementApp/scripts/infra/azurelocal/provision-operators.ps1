@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+#Requires -Version 7.3
 <#
 .SYNOPSIS
     Installs the operators that run the Azure Local backing services: CloudNativePG (with its Barman
@@ -32,11 +32,11 @@
     the operators' images in the connected registry, and provision-ingress.ps1 (the site CA).
 
 .EXAMPLE
-    ./scripts/infra/azurelocal/provision-operators.ps1 -KubeContext bcd-aksarc
+    ./scripts/infra/azurelocal/provision-operators.ps1 -KubeContext <context>
 #>
 [CmdletBinding()]
 param(
-    [string]$KubeContext = 'bcd-aksarc',
+    [Parameter(Mandatory = $true)][string]$KubeContext,
     # The connected registry's address. Empty reads it from the pull secret connected-registry.ps1 wrote.
     [string]$PullRegistry,
     [string]$PullSecretName = 'azurelocal-registry',
@@ -66,13 +66,26 @@ function Invoke-Checked([string]$What, [scriptblock]$Command) {
     if ($LASTEXITCODE -ne 0) { throw "$What failed with exit code $LASTEXITCODE." }
 }
 
-# The release manifests name the public images; the site pulls the same images from its own registry.
-# Server-side apply, because the operators' resource definitions are too large for the annotation a
-# client-side apply records.
-function Install-Kustomization([string]$Folder) {
-    $rendered = kubectl kustomize (Join-Path $operatorsDir $Folder)
-    if ($LASTEXITCODE -ne 0) { throw "Could not render infra/azurelocal/operators/$Folder." }
-    $rendered = $rendered -replace 'image: ghcr\.io/', "image: $PullRegistry/"
+# The release manifests name the public image; the site pulls the same image from its own registry,
+# under the same path. A temporary overlay points kustomize's images transformer there, as
+# 'kustomize edit set image' would. Server-side apply, because the operators' resource definitions
+# are too large for the annotation a client-side apply records.
+function Install-Kustomization([string]$Folder, [string]$Image) {
+    $overlay = Join-Path ([IO.Path]::GetTempPath()) "oms-operators-$([guid]::NewGuid())"
+    try {
+        # Kustomize only loads bases by relative path, so the base is copied next to the overlay.
+        New-Item -ItemType Directory -Path (Join-Path $overlay 'overlay') | Out-Null
+        Copy-Item -Path (Join-Path $operatorsDir $Folder) -Destination (Join-Path $overlay 'base') -Recurse
+        @{
+            apiVersion = 'kustomize.config.k8s.io/v1beta1'
+            kind       = 'Kustomization'
+            resources  = @('../base')
+            images     = @(@{ name = $Image; newName = "$PullRegistry/$($Image -replace '^[^/]+/', '')" })
+        } | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $overlay 'overlay/kustomization.yaml')
+        $rendered = kubectl kustomize (Join-Path $overlay 'overlay')
+        if ($LASTEXITCODE -ne 0) { throw "Could not render infra/azurelocal/operators/$Folder." }
+    }
+    finally { Remove-Item $overlay -Recurse -Force -ErrorAction SilentlyContinue }
     $rendered | kubectl apply --context $KubeContext --server-side --force-conflicts -f - | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Could not apply infra/azurelocal/operators/$Folder." }
 }
@@ -112,10 +125,10 @@ Invoke-Checked 'helm upgrade --install cert-manager-csi-driver' {
 
 # The topology operator manages objects inside clusters the cluster operator runs, so it goes second.
 foreach ($operator in @(
-        @{ Folder = 'cluster-operator'; Deployment = 'rabbitmq-cluster-operator' },
-        @{ Folder = 'messaging-topology-operator'; Deployment = 'messaging-topology-operator' })) {
+        @{ Folder = 'cluster-operator'; Deployment = 'rabbitmq-cluster-operator'; Image = 'ghcr.io/rabbitmq/cluster-operator' },
+        @{ Folder = 'messaging-topology-operator'; Deployment = 'messaging-topology-operator'; Image = 'ghcr.io/rabbitmq/messaging-topology-operator' })) {
     Write-Host "==> Installing the RabbitMQ $($operator.Folder)" -ForegroundColor Cyan
-    Install-Kustomization "rabbitmq/$($operator.Folder)"
+    Install-Kustomization "rabbitmq/$($operator.Folder)" $operator.Image
     Invoke-Checked "waiting for the RabbitMQ $($operator.Folder)" {
         kubectl rollout status deployment $operator.Deployment --namespace $RabbitMqNamespace --context $KubeContext --timeout=10m | Out-Null
     }

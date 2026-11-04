@@ -1,16 +1,17 @@
 using System.Security.Claims;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Identity.Web;
+using Microsoft.Identity.Web.Resource;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Trace;
 using OrderManagement.Api;
 using OrderManagement.Shared.DependencyInjection;
 using OrderManagement.Shared.Diagnostics;
-using OpenTelemetry.Metrics;
-using OpenTelemetry.Trace;
 using OrderManagement.Shared.Inventory;
 using OrderManagement.Shared.Messaging;
 using OrderManagement.Shared.Models;
 using OrderManagement.Shared.Persistence;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.Identity.Web;
-using Microsoft.Identity.Web.Resource;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -19,14 +20,19 @@ builder.AddOrderManagementTelemetry(
         options.Filter = context => !context.Request.Path.StartsWithSegments("/healthz")),
     metrics => metrics.AddAspNetCoreInstrumentation());
 
-builder.Services.AddOrderQueue();
-builder.Services.AddOrderStore();
-builder.Services.AddInventoryClient();
-builder.Services.AddSingleton(services => new ProductCatalog(
-    services.GetRequiredService<IInventoryClient>(),
-    TimeProvider.System,
-    builder.Configuration.GetValue("Inventory:PriceCacheMaxAge", TimeSpan.FromHours(1)),
-    services.GetRequiredService<ILogger<ProductCatalog>>()));
+builder.Services.AddOrderQueue(builder.Configuration);
+builder.Services.AddOrderStore(builder.Configuration);
+builder.Services.AddInventoryClient(builder.Configuration);
+builder.Services.AddMemoryCache();
+builder.Services.AddOptions<ProductCatalogOptions>()
+    .BindConfiguration("Inventory")
+    .Validate(options => options.PriceCacheMaxAge > TimeSpan.Zero, "Inventory__PriceCacheMaxAge must be positive.")
+    .ValidateOnStart();
+builder.Services.TryAddSingleton(TimeProvider.System);
+builder.Services.AddScoped<ProductCatalog>();
+
+builder.Services.AddProblemDetails();
+builder.Services.AddExceptionHandler<ApiExceptionHandler>();
 
 // Written exactly as for an Entra-only API. Which identity provider issues the tokens (Entra ID in
 // Azure, Keycloak on Azure Local) is decided purely by the "AzureAd" configuration section.
@@ -43,6 +49,8 @@ builder.Services.AddAuthorizationBuilder()
     .AddPolicy(OrderPolicies.ManageInventory, policy => policy.RequireRole(OrderRoles.ManageInventory));
 
 var app = builder.Build();
+
+app.UseExceptionHandler();
 
 var spa = SpaSettings.FromConfiguration(app.Configuration);
 app.Use(async (context, next) =>
@@ -71,27 +79,15 @@ if (!signInConfigured)
     });
 }
 
-// The inventory service is a dependency like the queue: when it is down, say so rather than fail.
-app.Use(async (context, next) =>
-{
-    try
-    {
-        await next(context);
-    }
-    catch (InventoryUnavailableException ex) when (!context.Response.HasStarted)
-    {
-        app.Logger.LogWarning("Inventory service unavailable for {Path}: {Reason}", context.Request.Path, ex.Message);
-        await Results.Problem("Product information is unavailable. Try again shortly.",
-            statusCode: StatusCodes.Status503ServiceUnavailable).ExecuteAsync(context);
-    }
-});
-
 app.UseDefaultFiles();
 app.UseStaticFiles();
 app.UseAuthentication();
 app.UseAuthorization();
 
-app.MapGet("/healthz", () => Results.Ok(new { status = "ok" }));
+// Live while the process answers; ready while the queue and the orders database are reachable.
+// The inventory service is left out: while it is down, the API serves the last product list.
+app.MapHealthChecks("/healthz", new() { Predicate = check => check.Tags.Contains(HealthTags.Live) });
+app.MapHealthChecks("/healthz/ready", new() { Predicate = check => check.Tags.Contains(HealthTags.Ready) });
 
 // Runtime configuration for the SPA, so one image serves every environment.
 app.MapGet("/config.json", () => Results.Json(spa.ClientConfiguration));
@@ -147,8 +143,8 @@ api.MapPost("/inventory/{sku}/restock", async (
         return Results.NotFound();
     }
 
-    logger.LogInformation("{User} restocked {Sku} by {Quantity}; {Available} available",
-        UserIdentity.DisplayName(user), product.Sku, request.Quantity, product.Available);
+    logger.LogInformation("User {UserId} restocked {Sku} by {Quantity}; {Available} available",
+        UserIdentity.CustomerId(user), product.Sku, request.Quantity, product.Available);
     return Results.Ok(product);
 })
     .RequireAuthorization(OrderPolicies.ManageInventory);
@@ -202,8 +198,8 @@ api.MapPost("/orders", async (
     }
 
     metrics.OrderPlaced();
-    logger.LogInformation("Queued order {OrderId} for {Customer}: {LineCount} lines, {Total} {Currency}",
-        order.OrderId, order.CustomerName, order.Lines.Count, order.Total, order.Currency);
+    logger.LogInformation("Queued order {OrderId} for customer {CustomerId}: {LineCount} lines, {Total} {Currency}",
+        order.OrderId, order.CustomerId, order.Lines.Count, order.Total, order.Currency);
 
     return Results.Accepted($"/api/orders/{order.OrderId}", new
     {

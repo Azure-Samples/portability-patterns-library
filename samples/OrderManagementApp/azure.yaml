@@ -52,8 +52,8 @@ hooks:
 
       ./scripts/infra/azure/provision-infra.ps1 -SkipTemplate `
         -SubscriptionId $env:AZURE_SUBSCRIPTION_ID -Location $env:AZURE_LOCATION `
-        -ResourceGroup $env:resourceGroupName -ClusterName $env:clusterName -RegistryName $env:registryName `
-        -WorkspaceName $env:AZURE_ENV_NAME
+        -ResourceGroup $env:resourceGroupName -ClusterName $env:clusterName -KubeContext $env:clusterName `
+        -RegistryName $env:registryName -WorkspaceName $env:AZURE_ENV_NAME
 
       $ingressArgs = @{ KubeContext = $env:clusterName; DnsLabel = $label }
       if ($env:PRIVATE_CA -eq 'true') { $ingressArgs.PrivateCa = $true }
@@ -79,9 +79,8 @@ hooks:
         SubscriptionId              = $env:AZURE_SUBSCRIPTION_ID
         Location                    = $env:AZURE_LOCATION
         Registry                    = $env:registryLoginServer
-        AppInfraResourceGroup       = $env:resourceGroupName
-        ClusterName                 = $env:clusterName
-        KubeContext                 = "$env:clusterName-radius"
+        ResourceGroup               = $env:resourceGroupName
+        KubeContext                 = $env:clusterName
         WorkspaceName               = $env:AZURE_ENV_NAME
         OrdersApiAppName            = "oms-api-$env:AZURE_ENV_NAME"
         OrdersSpaAppName            = "oms-spa-$env:AZURE_ENV_NAME"

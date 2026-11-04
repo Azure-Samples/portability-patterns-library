@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+#Requires -Version 7.3
 <#
 .SYNOPSIS
     Runs S3-compatible object storage (SeaweedFS) inside the Azure Local cluster, for the
@@ -11,9 +11,11 @@
 
     Installs SeaweedFS from its Helm chart into namespace 'object-store', replicated and encrypted as
     infra/azurelocal/object-store/values.yaml describes. With -Availability standard it runs one of
-    each component and keeps one copy of every object instead, and no database backs up to it. Clients reach it over HTTPS, with a
-    certificate from the site CA (-CertificateIssuer). It creates S3 identities, each limited to its
-    own buckets, with their keys generated once and kept:
+    each component and keeps one copy of every object instead, and no database backs up to it.
+    Clients reach it over HTTPS, with a certificate from the site CA (-CertificateIssuer). The key
+    the store signs its write tokens with is generated once and kept, in Secret
+    seaweedfs-jwt-signing-key. It creates S3 identities, each limited to its own buckets, with their
+    keys generated once and kept:
 
       - for each namespace in -ObjectStorageNamespaces, an identity for the applications there, which
         may create and use buckets named '<namespace>.*' (the object storage Recipe's names). Its
@@ -23,7 +25,9 @@
         the databases there, its keys and the CA to verify the store against in Secret
         backup-object-store.
 
-    A network policy lets in only those clients. Idempotent.
+    A network policy, infra/azurelocal/object-store/network-policy.yaml, lets in only those clients:
+    it admits the namespaces this script labels object-store/objects and object-store/backups.
+    Idempotent.
 
     The store is in the same cluster as what it holds: it covers a failed node or pod, a bad change
     or a deleted table, not losing the cluster. infra/azurelocal/object-store/README.md says how to
@@ -33,11 +37,11 @@
     and the site CA) and provision-operators.ps1.
 
 .EXAMPLE
-    ./scripts/infra/azurelocal/provision-object-store.ps1 -KubeContext bcd-aksarc
+    ./scripts/infra/azurelocal/provision-object-store.ps1 -KubeContext <context>
 #>
 [CmdletBinding()]
 param(
-    [string]$KubeContext = 'bcd-aksarc',
+    [Parameter(Mandatory = $true)][string]$KubeContext,
     # The connected registry's address. Empty reads it from the pull secret connected-registry.ps1 wrote.
     [string]$PullRegistry,
     [string]$PullSecretName = 'azurelocal-registry',
@@ -79,6 +83,7 @@ $Namespace = 'object-store'
 $ConfigSecretName = 'object-store-s3-config'
 $ObjectStorageSecretName = 'object-store-credentials'
 $TlsSecretName = 'seaweedfs-s3-tls'
+$JwtSigningSecretName = 'seaweedfs-jwt-signing-key'
 $S3Service = 'seaweedfs-s3'
 $S3Port = 8443
 $BackupSecretName = 'backup-object-store'
@@ -91,11 +96,10 @@ function New-RandomKey([int]$Bytes) {
     -join ($buffer | ForEach-Object { 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'[$_ % 62] })
 }
 
-# Reads a namespace's keys from its Secret, or generates them the first time.
-function Get-Keys([string]$TargetNamespace, [string]$SecretName, [string]$IdKey, [string]$SecretKey) {
-    kubectl create namespace $TargetNamespace --context $KubeContext --dry-run=client -o yaml |
-        kubectl apply --context $KubeContext -f - | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Creating namespace '$TargetNamespace' failed." }
+# Reads a namespace's keys from its Secret, or generates them the first time. Labels the namespace
+# so the network policy lets its clients in.
+function Get-Keys([string]$TargetNamespace, [string]$SecretName, [string]$IdKey, [string]$SecretKey, [string]$ClientLabel) {
+    Set-OmsNamespace $KubeContext $TargetNamespace @{ $ClientLabel = 'true' }
     $keys = Get-OmsSecretData $KubeContext $TargetNamespace $SecretName
     if (-not $keys[$IdKey] -or -not $keys[$SecretKey]) {
         Write-Host "    generated keys for $TargetNamespace/$SecretName" -ForegroundColor DarkGray
@@ -117,7 +121,7 @@ Copy-OmsPullSecret -KubeContext $KubeContext -Namespace $Namespace -SourceNamesp
 # renews it; the gateways read the renewed files without a restart.
 # ------------------------------------------------------------------------------------------------
 Write-Host "==> HTTPS certificate for the object store from ClusterIssuer '$CertificateIssuer'" -ForegroundColor Cyan
-if (-not (kubectl get clusterissuer $CertificateIssuer --context $KubeContext --ignore-not-found -o name)) {
+if (-not (Test-OmsResource $KubeContext '' 'clusterissuer' $CertificateIssuer)) {
     throw "No ClusterIssuer '$CertificateIssuer'. Run scripts/infra/azurelocal/provision-ingress.ps1 first."
 }
 @{
@@ -146,7 +150,7 @@ if (-not $caPem) { throw "Certificate $Namespace/$TlsSecretName has no ca.crt." 
 Write-Host "==> Object storage identities for $($ObjectStorageNamespaces -join ', ')" -ForegroundColor Cyan
 $identities = [Collections.Generic.List[object]]::new()
 foreach ($appNamespace in $ObjectStorageNamespaces) {
-    $keys = Get-Keys $appNamespace $ObjectStorageSecretName 'ACCESSKEYID' 'SECRETACCESSKEY'
+    $keys = Get-Keys $appNamespace $ObjectStorageSecretName 'ACCESSKEYID' 'SECRETACCESSKEY' 'object-store/objects'
     Set-OmsSecret $KubeContext $appNamespace $ObjectStorageSecretName @{
         ACCESSKEYID     = $keys['ACCESSKEYID']
         SECRETACCESSKEY = $keys['SECRETACCESSKEY']
@@ -162,7 +166,7 @@ foreach ($appNamespace in $ObjectStorageNamespaces) {
 if ($BackupNamespaces) { Write-Host "==> Backup identities for $($BackupNamespaces -join ', ')" -ForegroundColor Cyan }
 foreach ($backupNamespace in $BackupNamespaces) {
     $bucket = "postgres-$backupNamespace"
-    $keys = Get-Keys $backupNamespace $BackupSecretName 'ACCESS_KEY_ID' 'ACCESS_SECRET_KEY'
+    $keys = Get-Keys $backupNamespace $BackupSecretName 'ACCESS_KEY_ID' 'ACCESS_SECRET_KEY' 'object-store/backups'
     # ca.crt is what the databases verify the store's certificate against.
     Set-OmsSecret $KubeContext $backupNamespace $BackupSecretName @{
         ACCESS_KEY_ID     = $keys['ACCESS_KEY_ID']
@@ -182,6 +186,16 @@ Set-OmsSecret $KubeContext $Namespace $ConfigSecretName @{
     seaweedfs_s3_config = (@{ identities = @($identities) } | ConvertTo-Json -Depth 10 -Compress)
 }
 $identities = $null
+
+# The key the masters sign volume write tokens with: 32 random bytes, generated once and kept, since
+# a new one invalidates the tokens in use. values.yaml gives it to the store from this Secret.
+if (-not (Get-OmsSecretValue $KubeContext $Namespace $JwtSigningSecretName 'signing-key')) {
+    $signingKey = [byte[]]::new(32)
+    [Security.Cryptography.RandomNumberGenerator]::Fill($signingKey)
+    Set-OmsSecret $KubeContext $Namespace $JwtSigningSecretName @{ 'signing-key' = [Convert]::ToBase64String($signingKey) }
+    $signingKey = $null
+    Write-Host "    generated the write token signing key in Secret '$Namespace/$JwtSigningSecretName'" -ForegroundColor DarkGray
+}
 
 # ------------------------------------------------------------------------------------------------
 # SeaweedFS. The site values go in as a values document on stdin.
@@ -211,11 +225,11 @@ $siteValues | helm upgrade --install seaweedfs seaweedfs --repo https://seaweedf
     --values (Join-Path $assetsDir 'values.yaml') --values -
 if ($LASTEXITCODE -ne 0) { throw 'helm upgrade --install seaweedfs failed.' }
 
-$policy = (Get-Content (Join-Path $assetsDir 'network-policy.yaml') -Raw).
-    Replace('${OBJECT_STORAGE_NAMESPACES}', ($ObjectStorageNamespaces -join ', ')).
-    Replace('${BACKUP_NAMESPACES}', ($BackupNamespaces -join ', '))
-$policy | kubectl apply --context $KubeContext -f - | Out-Null
+kubectl apply --context $KubeContext -f (Join-Path $assetsDir 'network-policy.yaml') | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Applying the object store network policy failed.' }
+# A node drain or upgrade takes at most one pod of each component at a time.
+kubectl apply --context $KubeContext -f (Join-Path $assetsDir 'pod-disruption-budgets.yaml') | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Applying the object store disruption budgets failed.' }
 
 $endpoint = "https://$S3Service.$Namespace.svc.cluster.local:$S3Port"
 Write-Host "`nObject store ready: $endpoint" -ForegroundColor Green

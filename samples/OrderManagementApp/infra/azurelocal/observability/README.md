@@ -10,9 +10,15 @@ in the cluster. On Azure, Azure Monitor does this job.
 | [kube-prometheus-stack](./kube-prometheus-stack/values.yaml) | Prometheus, Alertmanager, Grafana, kube-state-metrics, node-exporter and the Prometheus operator |
 | [loki](./loki/values.yaml) | Log store, one process, chunks and index on its volume |
 | [tempo](./tempo/values.yaml) | Trace store, one process, blocks on its volume |
-| [monitoring](./monitoring) | RabbitMQ, PostgreSQL and cert-manager scraping, the app's alerts, the Order Management dashboard |
+| [monitoring](./monitoring) | RabbitMQ, PostgreSQL and cert-manager scraping, the app's alerts, the Order Management dashboard, and the namespace's network policies |
 
 The app's pods get `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector.observability.svc.cluster.local:4317`.
+
+Loki, Tempo, Prometheus and Alertmanager have no authentication of their own, so
+[network policies](./monitoring/network-policies.yaml) decide who reaches them: any pod may send
+OTLP to the collector; only the collector and Grafana reach Loki and Tempo; only Grafana and the
+ingress controller (namespace `ingress-nginx`) reach Prometheus and Alertmanager, and only the
+ingress controller reaches Grafana. Prometheus scrapes every pod in the namespace.
 
 ## Install
 
@@ -34,9 +40,11 @@ host name works on a site with only an IP address, and leaves the app's own rule
 ingress serves it with the app's certificate, which cert-manager issues from the `site-ca`
 ClusterIssuer and renews.
 
-Sign-in goes through Keycloak only; the login form and basic auth are off. Users with the realm
-role `Inventory.Manage` (group `oms-inventory-admins`) get Editor, everyone else in the realm gets
-Viewer. The admin password is in Secret `observability/grafana-admin` and isn't used to sign in.
+Sign-in goes through Keycloak only; the login form and basic auth are off. Only operators get in:
+users with the realm role `Operations.Monitor` (directory group `oms-operators`) get Editor, which
+Explore, where the logs and traces are, needs. Everyone else in the realm is refused, since the logs
+carry customers' order details. The role is checked at every sign-in. The admin password is in
+Secret `observability/grafana-admin` and isn't used to sign in.
 
 Data sources: Prometheus, Alertmanager, Loki and Tempo. A trace links to its logs and a log line
 with a `trace_id` links to its trace. The **Order Management** dashboard shows orders per minute,
@@ -57,15 +65,13 @@ To serve Grafana at another address, pass `-GrafanaOrigin` to `keycloak.ps1` and
 | CertManagerMetricsMissing | Prometheus gets nothing from cert-manager, so the alert above can't fire |
 | PostgresInstanceDown | A PostgreSQL instance (the app's or Keycloak's database) has reported PostgreSQL down for 5 minutes (`cnpg_collector_up`) |
 | PostgresReplicationLagging | A replica is more than 5 minutes behind its primary (`cnpg_pg_replication_lag`) |
-| PostgresWalArchivingStalled | A database hasn't archived its write-ahead log for 30 minutes, so its backups have stopped (`cnpg_pg_stat_archiver_seconds_since_last_archival`) |
+| PostgresWalArchivingFailing | A database's write-ahead log archiving has been failing for 10 minutes (its last failure is newer than its last success, `cnpg_pg_stat_archiver_last_failed_time`), so its backups have stopped. A quiet database that has nothing to archive doesn't alert |
+| PostgresWalArchiveBacklog | More than 10 write-ahead log segments have waited to be archived for 30 minutes (`cnpg_collector_pg_wal_archive_status`): archiving is stuck or far behind without reporting a failure |
 
 The chart adds the usual Kubernetes alerts. With `SmtpHost`, `SmtpFrom` and `AlertEmailTo` set,
-Alertmanager emails warning and critical alerts. For a server that needs a password, create the
-Secret first and set `SmtpUsername` and `SmtpPasswordSecret`:
-
-```powershell
-kubectl -n observability create secret generic smtp-auth --from-literal=password=<password>
-```
+Alertmanager emails warning and critical alerts. For a server that needs a password, set
+`SmtpUsername` and `SmtpPasswordSecret` (the Secret's name); the Observability step asks for the
+password once and keeps it in that Secret.
 
 Without an SMTP server, alerts show in Grafana under **Alerting** only.
 

@@ -6,6 +6,8 @@
 #
 # Expects in the identity namespace:
 #   Secret keycloak-db           username, password (type kubernetes.io/basic-auth)   the database login
+#   Secret keycloak-db-tls       tls.crt, tls.key, ca.crt   the server's certificate from the site CA, for
+#                                keycloak-db-rw; labelled cnpg.io/reload so a renewed one is picked up
 #   Secret backup-object-store   ACCESS_KEY_ID, ACCESS_SECRET_KEY, ca.crt   from provision-object-store.ps1
 #   Secret azurelocal-registry   image pull secret, when pulling from a private registry
 apiVersion: postgresql.cnpg.io/v1
@@ -14,9 +16,14 @@ metadata:
   name: keycloak-db
 spec:
   instances: 2
-  imageName: ghcr.io/cloudnative-pg/postgresql:17.11-standard-trixie
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.11-202611020810-standard-trixie
   imagePullSecrets:
     - name: azurelocal-registry
+  # The server certificate comes from the site CA, as with postgres.yaml, so Keycloak checks either
+  # database against the same CA. CloudNativePG still issues the replication certificates itself.
+  certificates:
+    serverTLSSecret: keycloak-db-tls
+    serverCASecret: keycloak-db-tls
   storage:
     size: 8Gi
   affinity:
@@ -46,6 +53,10 @@ spec:
       method: any
       number: 1
       dataDurability: preferred
+    # Refuses unencrypted connections over the network. CloudNativePG's own rules come first and
+    # its default 'host' rule after these, so without this a client could skip TLS.
+    pg_hba:
+      - hostnossl all all all reject
   plugins:
     - name: barman-cloud.cloudnative-pg.io
       isWALArchiver: true

@@ -39,7 +39,7 @@ param kubernetesVersion string
 @description('ACR SKU.')
 param registrySku string
 
-@description('Entra ID object IDs granted cluster administrator access.')
+@description('Entra ID object IDs granted cluster administrator access: users, groups or service principals. Prefer a group.')
 param clusterAdminObjectIds array
 
 @description('Disable local accounts and authenticate with Entra ID plus Azure RBAC.')
@@ -341,7 +341,8 @@ resource radiusOwnerAssignment 'Microsoft.Authorization/roleAssignments@2022-04-
 
 // Cluster access for administrators. Both roles are needed: Cluster User to fetch a kubeconfig at
 // all, RBAC Cluster Admin to be authorised inside the cluster. Without these, disabling local
-// accounts locks everyone out of the API server.
+// accounts locks everyone out of the API server. No principalType: an ID may be a user, a group
+// (preferred) or a service principal (azd's AZURE_PRINCIPAL_ID in CI), and Azure looks it up.
 @batchSize(1)
 resource clusterUserAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
   for adminObjectId in (useEntraAuthentication ? clusterAdminObjectIds : []): {
@@ -350,7 +351,6 @@ resource clusterUserAssignments 'Microsoft.Authorization/roleAssignments@2022-04
     properties: {
       roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', aksClusterUserRoleId)
       principalId: adminObjectId
-      principalType: 'User'
     }
   }
 ]
@@ -363,7 +363,6 @@ resource clusterAdminAssignments 'Microsoft.Authorization/roleAssignments@2022-0
     properties: {
       roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', aksRbacClusterAdminRoleId)
       principalId: adminObjectId
-      principalType: 'User'
     }
   }
 ]

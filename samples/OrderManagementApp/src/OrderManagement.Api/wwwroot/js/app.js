@@ -6,7 +6,14 @@ const $ = (id) => document.getElementById(id);
 const showView = (name) => ["loading-view", "signin-view", "orders-view"].forEach((view) => { $(view).hidden = view !== name; });
 
 const cfg = await (await fetch("/config.json")).json();
-const money = new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" });
+// Each product and order carries its currency.
+const moneyFormats = new Map();
+const money = (amount, currency) => {
+  if (!moneyFormats.has(currency)) {
+    moneyFormats.set(currency, new Intl.NumberFormat(undefined, { style: "currency", currency }));
+  }
+  return moneyFormats.get(currency).format(amount);
+};
 const dateTime = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
 
 $("platform").textContent = [cfg.environment, cfg.identityProvider].filter(Boolean).join(" \u00b7 ");
@@ -17,6 +24,9 @@ const msalApp = cfg.clientId ? new PublicClientApplication({
     authority: cfg.authority,
     knownAuthorities: cfg.knownAuthorities,
     protocolMode: cfg.protocolMode,
+    // Keycloak issues offline tokens only to clients allowed them, which this one isn't; MSAL asks
+    // for one by default.
+    ...(cfg.protocolMode === "OIDC" ? { OIDCOptions: { defaultScopes: ["openid", "profile"] } } : {}),
     redirectUri: `${window.location.origin}/`,
     postLogoutRedirectUri: `${window.location.origin}/`
   },
@@ -144,7 +154,7 @@ function renderCatalog() {
     input.disabled = !canCreate || max === 0;
     input.addEventListener("input", updateSummary);
 
-    const tr = row([product.name, product.sku, money.format(product.unitPrice), stockText(product), input]);
+    const tr = row([product.name, product.sku, money(product.unitPrice, product.currency), stockText(product), input]);
     tr.dataset.sku = product.sku;
     body.append(tr);
   }
@@ -159,9 +169,12 @@ function selectedItems() {
 }
 
 function updateSummary() {
-  const total = selectedItems().reduce((sum, item) =>
+  const items = selectedItems();
+  const total = items.reduce((sum, item) =>
     sum + item.quantity * (products.find((product) => product.sku === item.sku)?.unitPrice ?? 0), 0);
-  $("order-total").textContent = money.format(total);
+  // An order is in one currency; the API refuses a mix.
+  const currency = products.find((product) => product.sku === items[0]?.sku)?.currency ?? products[0]?.currency;
+  $("order-total").textContent = currency ? money(total, currency) : "";
   $("place-order").disabled = !canCreate || total === 0;
 }
 
@@ -188,7 +201,7 @@ async function placeOrder() {
     pending.set(accepted.orderId, { ...accepted, status: "Submitted" });
     document.querySelectorAll("#catalog input").forEach((input) => { input.value = "0"; });
     updateSummary();
-    setMessage(`Order ${accepted.orderId.slice(0, 8)} submitted for ${money.format(accepted.total)}.`, "ok");
+    setMessage(`Order ${accepted.orderId.slice(0, 8)} submitted for ${money(accepted.total, accepted.currency)}.`, "ok");
     renderOrders();
     trackOrder(accepted.orderId);
   } catch (error) {
@@ -259,7 +272,7 @@ function renderOrders() {
   for (const order of orders) {
     const items = order.lines.map((line) => `${line.quantity} \u00d7 ${line.productName}`).join(", ");
     const status = order.status === "Rejected" && order.statusReason ? `Rejected: ${order.statusReason}` : order.status;
-    const tr = row([order.orderId.slice(0, 8), items, money.format(order.total), status, dateTime.format(new Date(order.placedAt))]);
+    const tr = row([order.orderId.slice(0, 8), items, money(order.total, order.currency), status, dateTime.format(new Date(order.placedAt))]);
     tr.dataset.orderId = order.orderId;
     body.append(tr);
   }

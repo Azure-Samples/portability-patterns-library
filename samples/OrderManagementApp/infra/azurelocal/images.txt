@@ -5,11 +5,15 @@
 # 'artifact' marks an OCI artifact that isn't an image. Copy it with `az acr import` or `oras copy`,
 # not `docker`.
 #
+# Every tag is an exact version, never 'latest' or a major/minor tag that moves with new releases:
+# re-importing must not silently change what the connected registry syncs to every site.
+#
 # With az CLI, each line is one command:
 #   az acr import --name <acr> --source <source> --image <target>
 
 # Radius control plane. `rad install kubernetes --set global.imageRegistry=<registry>` pulls these
-# from the registry root, with no radius-project prefix. The tag must match your rad CLI version.
+# from the registry root, with no radius-project prefix. The tag must match your rad CLI version;
+# Radius 0.60 published only the 0.60 tag for its release.
 ghcr.io/radius-project/ucpd:0.60                               ucpd:0.60
 ghcr.io/radius-project/controller:0.60                         controller:0.60
 ghcr.io/radius-project/applications-rp:0.60                    applications-rp:0.60
@@ -22,10 +26,10 @@ ghcr.io/radius-project/pre-upgrade:0.60                        pre-upgrade:0.60
 # Backing services the Recipes deploy. Paths match imageRepository in recipe-packs/azure-local.bicep.
 # postgres is for Availability 'standard' (the postgres Recipe and Keycloak's database);
 # cloudnative-pg/postgresql for 'high'.
-mcr.microsoft.com/mssql/server:2022-latest                     mssql/server:2022-latest
+mcr.microsoft.com/mssql/server:2022-CU27-GDR1-ubuntu-22.04     mssql/server:2022-CU27-GDR1-ubuntu-22.04
 docker.io/library/rabbitmq:4.3.7-management-alpine             rabbitmq:4.3.7-management-alpine
-docker.io/library/postgres:17-alpine                           postgres:17-alpine
-ghcr.io/cloudnative-pg/postgresql:17.11-standard-trixie        cloudnative-pg/postgresql:17.11-standard-trixie
+docker.io/library/postgres:17.11-alpine3.24                    postgres:17.11-alpine3.24
+ghcr.io/cloudnative-pg/postgresql:17.11-202611020810-standard-trixie  cloudnative-pg/postgresql:17.11-202611020810-standard-trixie
 
 # Operators that run the backing services when Availability is 'high', see infra/azurelocal/operators.
 # The tags match the chart and manifest versions provision-operators.ps1 pins.
@@ -41,11 +45,18 @@ quay.io/jetstack/livenessprobe:v2.20.0                         jetstack/liveness
 # Object storage for the applications and the database backups, see infra/azurelocal/object-store.
 docker.io/chrislusf/seaweedfs:4.51                             chrislusf/seaweedfs:4.51
 
-# Radius's stock secrets Recipe. The tag must match radiusRecipeTag in recipe-packs/azure-local.bicep.
-ghcr.io/radius-project/kube-recipes/secrets:latest             radius-project/kube-recipes/secrets:latest  artifact
+# The registry client deploy/azurelocal.ps1 checks the connected registry's sync with.
+ghcr.io/oras-project/oras:v1.3.6                               oras-project/oras:v1.3.6
 
-# Keycloak, see infra/azurelocal/keycloak. Its database runs on one of the PostgreSQL images above.
-quay.io/keycloak/keycloak:26.8                                 keycloak/keycloak:26.8
+# Radius's stock secrets Recipe. The tag must match radiusRecipeTag in recipe-packs/azure-local.bicep.
+# Radius 0.60 published no tag of its own for it; 0.61.0 is the same template as 0.59.0, compiled
+# by a newer Bicep.
+ghcr.io/radius-project/kube-recipes/secrets:0.61.0             radius-project/kube-recipes/secrets:0.61.0  artifact
+
+# Keycloak, see infra/azurelocal/keycloak, and the job that applies its realm. Its database runs on
+# one of the PostgreSQL images above.
+quay.io/keycloak/keycloak:26.8.1                               keycloak/keycloak:26.8.1
+docker.io/adorsys/keycloak-config-cli:6.5.1-26.5.5             adorsys/keycloak-config-cli:6.5.1-26.5.5
 
 # Ingress, see infra/azurelocal/ingress-nginx.
 registry.k8s.io/ingress-nginx/controller:v1.15.1               ingress-nginx/controller:v1.15.1
@@ -69,7 +80,7 @@ docker.io/grafana/loki:3.7.9                                                  gr
 docker.io/grafana/tempo:3.1.1                                                 grafana/tempo:3.1.1
 
 # Base images for building the app's images (BASE_REGISTRY in docker/Dockerfile.*). Only needed where
-# the build runs; the connected registry doesn't sync them.
-mcr.microsoft.com/dotnet/sdk:9.0                               dotnet/sdk:9.0
-mcr.microsoft.com/dotnet/runtime:9.0                           dotnet/runtime:9.0
-mcr.microsoft.com/dotnet/aspnet:9.0                            dotnet/aspnet:9.0
+# the build runs; the connected registry doesn't sync them. The SDK 9.0.320 builds for runtime 9.0.22.
+mcr.microsoft.com/dotnet/sdk:9.0.320                           dotnet/sdk:9.0.320
+mcr.microsoft.com/dotnet/runtime:9.0.22                        dotnet/runtime:9.0.22
+mcr.microsoft.com/dotnet/aspnet:9.0.22                         dotnet/aspnet:9.0.22

@@ -8,21 +8,25 @@ namespace: identity
 resources:
   - service.yaml
   - keycloak.yaml
+  - realm-config.yaml
 
 # Keycloak's database is applied next to this, from database/: cloudnative-pg.yaml when Availability
 # is 'high', postgres.yaml when it's 'standard'.
 
-# realm.json is imported when Keycloak first starts. Its ${...} placeholders are filled from the
-# keycloak-realm-settings ConfigMap and the oms-ad-bind Secret, which you create per site.
+# realm-config.yaml applies realm.json to Keycloak on every deployment. Its ${...} placeholders are
+# filled from the keycloak-realm-settings ConfigMap and the Secrets you create per site. A changed
+# realm.json gets a new ConfigMap name, so the Job has to be deleted before applying (see the Job).
 configMapGenerator:
   - name: keycloak-realm
     files:
       - realm.json
 
-# Pulls from the public registries by default. On a site that pulls from its own registry, such as
-# an ACR connected registry, point Keycloak at it:
-#   kustomize edit set image quay.io/keycloak/keycloak=<registry>/keycloak/keycloak:26.8
-# and change the database's image in database/ to the same registry.
+# Exact versions. keycloak-config-cli's tag names the Keycloak version it was built against; it
+# works with the same major version. On a site that pulls from its own registry, such as an ACR
+# connected registry, keycloak.ps1 points these, and the database's image, at it with an overlay;
+# by hand, add `newName: <registry>/<path>` entries the same way.
 images:
   - name: quay.io/keycloak/keycloak
-    newTag: "26.8"
+    newTag: "26.8.1"
+  - name: docker.io/adorsys/keycloak-config-cli
+    newTag: "6.5.1-26.5.5"

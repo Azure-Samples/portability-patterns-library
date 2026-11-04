@@ -12,25 +12,26 @@ builder.AddOrderManagementTelemetry(
         options.Filter = context => !context.Request.Path.StartsWithSegments("/healthz")),
     metrics => metrics.AddAspNetCoreInstrumentation());
 
-builder.Services.AddInventoryStore();
+builder.Services.AddInventoryStore(builder.Configuration);
 builder.Services.AddProblemDetails();
 
-var authenticationEnabled = builder.AddInventoryAuthentication();
+var authenticationRequired = builder.AddInventoryAuthentication();
 
 var app = builder.Build();
-
-if (!authenticationEnabled)
-{
-    app.Logger.LogWarning(
-        "InventoryAuth__Authority is not set: the inventory API accepts calls without a token. Only for local runs.");
-}
 
 app.UseAuthentication();
 app.UseAuthorization();
 
-app.MapGet("/healthz", () => Results.Ok(new { status = "ok" }));
+// Live while the process answers; ready while the inventory database is reachable.
+app.MapHealthChecks("/healthz", new() { Predicate = check => check.Tags.Contains(HealthTags.Live) }).AllowAnonymous();
+app.MapHealthChecks("/healthz/ready", new() { Predicate = check => check.Tags.Contains(HealthTags.Ready) }).AllowAnonymous();
 
 var api = app.MapGroup("/api");
+if (!authenticationRequired)
+{
+    app.Logger.LogWarning("InventoryAuth__Authority is not set: in Development the inventory API accepts calls without a token");
+    api.AllowAnonymous();
+}
 
 api.MapGet("/products", async (IProductRepository products, CancellationToken cancellationToken) =>
     Results.Ok(await products.ListAsync(cancellationToken)))

@@ -1,19 +1,19 @@
 using Azure.Messaging.ServiceBus;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using OrderManagement.Shared.Configuration;
 using OrderManagement.Shared.Diagnostics;
 using OrderManagement.Shared.Identity;
 using OrderManagement.Shared.Models;
-using Microsoft.Extensions.Logging;
 
 namespace OrderManagement.Shared.Messaging;
 
 /// <summary>
-/// Azure Service Bus implementation used by the Azure environments.
-///
-/// The client is constructed from the namespace host name plus a <c>TokenCredential</c>, never a
-/// connection string, so the application authenticates with its federated managed identity. The identity
-/// needs the <c>Azure Service Bus Data Sender</c> and/or <c>Azure Service Bus Data Receiver</c>
-/// role on the namespace or queue.
+/// Azure Service Bus implementation used by the Azure environments. The client authenticates with
+/// the pod's Entra workload identity, never a connection string; the identity needs the
+/// <c>Azure Service Bus Data Sender</c> and/or <c>Azure Service Bus Data Receiver</c> role on the queue.
+/// <see cref="ServiceBusSender.SendMessageAsync"/> returns once Service Bus has accepted the message.
 /// </summary>
 public sealed class ServiceBusMessageBroker : IMessageBroker
 {
@@ -24,20 +24,19 @@ public sealed class ServiceBusMessageBroker : IMessageBroker
 
     private ServiceBusProcessor? _processor;
 
-    public ServiceBusMessageBroker(QueueOptions options, ILogger<ServiceBusMessageBroker> logger)
+    public ServiceBusMessageBroker(IOptions<QueueOptions> options, WorkloadIdentity identity, ILogger<ServiceBusMessageBroker> logger)
     {
-        _options = options;
+        _options = options.Value;
         _logger = logger;
 
-        var clientOptions = new ServiceBusClientOptions
+        var credential = identity.Entra?.Credential
+            ?? throw new InvalidOperationException("Service Bus needs the pod's Entra workload identity.");
+        _client = new ServiceBusClient(_options.Endpoint, credential, new ServiceBusClientOptions
         {
-            TransportType = ServiceBusTransportType.AmqpWebSockets
-        };
-
-        _logger.LogInformation("Connecting to Azure Service Bus namespace {Namespace} using workload identity", options.Endpoint);
-        _client = new ServiceBusClient(options.Endpoint, AzureCredentialFactory.Create(), clientOptions);
-
-        _sender = _client.CreateSender(options.QueueName);
+            TransportType = _options.ServiceBusTransport
+        });
+        _sender = _client.CreateSender(_options.QueueName);
+        _logger.LogInformation("Using Azure Service Bus namespace {Namespace}, queue {Queue}", _options.Endpoint, _options.QueueName);
     }
 
     public async Task PublishAsync(Order order, CancellationToken cancellationToken)
@@ -50,7 +49,7 @@ public sealed class ServiceBusMessageBroker : IMessageBroker
         };
 
         using var activity = MessagingTelemetry.StartPublish(
-            "servicebus", _options.QueueName, message.MessageId,
+            "servicebus", _options.QueueName!, message.MessageId,
             (key, value) => message.ApplicationProperties[key] = value);
 
         try
@@ -69,14 +68,11 @@ public sealed class ServiceBusMessageBroker : IMessageBroker
         _processor = _client.CreateProcessor(_options.QueueName, new ServiceBusProcessorOptions
         {
             AutoCompleteMessages = false,
-            MaxConcurrentCalls = 4,
+            MaxConcurrentCalls = _options.MaxConcurrentMessages,
             // No prefetch: a prefetched message is locked while it waits, and its lock isn't renewed
-            // until a handler takes it. With handlers waiting minutes for the inventory service, the
-            // waiting messages' locks would expire and use up their deliveries.
+            // until a handler takes it, so waiting messages would use up their deliveries.
             PrefetchCount = 0,
-            // Longer than the processor's wait for the inventory service, so the lock is still
-            // held when it finishes.
-            MaxAutoLockRenewalDuration = TimeSpan.FromMinutes(10)
+            MaxAutoLockRenewalDuration = _options.MaxAutoLockRenewalDuration
         });
 
         _processor.ProcessMessageAsync += async args =>
@@ -84,34 +80,34 @@ public sealed class ServiceBusMessageBroker : IMessageBroker
             var messageId = args.Message.MessageId;
             var properties = args.Message.ApplicationProperties;
             using var activity = MessagingTelemetry.StartProcess(
-                "servicebus", _options.QueueName, messageId,
+                "servicebus", _options.QueueName!, messageId,
                 key => properties.TryGetValue(key, out var value) ? value?.ToString() : null);
             try
             {
-                var body = args.Message.Body.ToString();
                 // Service Bus dead-letters the message once a delivery fails at MaxDeliveryCount.
-                var message = new QueueMessage(messageId, body)
+                var message = new QueueMessage(messageId, args.Message.Body.ToString())
                 {
                     IsLastDelivery = args.Message.DeliveryCount >= _options.MaxDeliveryCount
                 };
                 await handler(message, args.CancellationToken).ConfigureAwait(false);
                 await args.CompleteMessageAsync(args.Message, args.CancellationToken).ConfigureAwait(false);
             }
+            catch (OperationCanceledException) when (args.CancellationToken.IsCancellationRequested)
+            {
+                // Stopping: the lock expires and Service Bus redelivers the message.
+            }
             catch (Exception ex)
             {
                 MessagingTelemetry.RecordFailure(activity, ex);
-                _logger.LogError(ex, "Failed to process Service Bus message {MessageId}; abandoning", messageId);
-                await args.AbandonMessageAsync(args.Message, cancellationToken: args.CancellationToken)
-                    .ConfigureAwait(false);
+                _logger.LogError(ex, "Failed to process Service Bus message {MessageId} on delivery {DeliveryCount} of {MaxDeliveryCount}; abandoning",
+                    messageId, args.Message.DeliveryCount, _options.MaxDeliveryCount);
+                await args.AbandonMessageAsync(args.Message, cancellationToken: args.CancellationToken).ConfigureAwait(false);
             }
         };
 
         _processor.ProcessErrorAsync += args =>
         {
-            _logger.LogError(
-                args.Exception,
-                "Service Bus processor error in {Operation} on {Entity}",
-                args.ErrorSource, args.EntityPath);
+            _logger.LogError(args.Exception, "Service Bus processor error in {Operation} on {Entity}", args.ErrorSource, args.EntityPath);
             return Task.CompletedTask;
         };
 
@@ -131,6 +127,11 @@ public sealed class ServiceBusMessageBroker : IMessageBroker
             await _processor.StopProcessingAsync(CancellationToken.None).ConfigureAwait(false);
         }
     }
+
+    public Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default) =>
+        Task.FromResult(_client.IsClosed || _processor is { IsProcessing: false }
+            ? HealthCheckResult.Unhealthy("The Service Bus client is not running.")
+            : HealthCheckResult.Healthy());
 
     public async ValueTask DisposeAsync()
     {

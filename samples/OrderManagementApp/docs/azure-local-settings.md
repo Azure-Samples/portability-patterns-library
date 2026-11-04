@@ -9,6 +9,9 @@ every `<...>` placeholder. Leave the other values as they are. Git ignores `sett
 | Setting | What to put |
 |---|---|
 | `Common.SubscriptionId` | The subscription your Azure Local instance is registered in: `az account show --query id -o tsv` |
+| `Common.ResourceGroup` | A new resource group for the cluster, its registry and the Key Vault, for example `bcd-azurelocal` |
+| `Common.ClusterName` | A name for the AKS cluster, for example `bcd-aksarc` |
+| `Common.KubeContext` | The kubectl context the scripts create for it; usually the cluster's name |
 | `Common.RegistryName` | A new, globally unique name for the container registry the scripts create: 5–50 lowercase letters and digits |
 | `Common.ApplicationNamespace` | The Kubernetes namespace the app runs in. Every step uses this one value: leave `oms-azurelocal` or choose your own. |
 | `Common.Availability` | `high` (the default): RabbitMQ, PostgreSQL, Keycloak's database and the object store are replicated across three workers, and the databases are backed up, with operators. `standard`: one copy of each, no operators, no backups; it needs fewer resources, but a service is down while its pod restarts and a lost volume loses its data. Pick it before the first deployment: changing it later doesn't move the data. |
@@ -23,7 +26,8 @@ Your Azure Local administrator can give you these. To look them up yourself:
 |---|---|
 | `Cluster.AzureLocalResourceGroup` | The resource group of your Azure Local instance, on its Overview page in the Azure portal |
 | `Cluster.CustomLocationName` | `az customlocation list -g <that resource group> --query [].name -o tsv` |
-| `Cluster.VmSwitchName` | `az stack-hci-vm network lnet list -g <that resource group> --query [].properties.vmSwitchName -o tsv` |
+| `Cluster.VmSwitchName` | `az stack-hci-vm network lnet list -g <that resource group> --query [].properties.vmSwitchName -o tsv`. Instead, you can set `Cluster.SwitchSourceLogicalNetworkName` to an existing logical network that uses the switch; one of the two is required. |
+| `Registry.StorageClassName` | The storage class for the in-cluster registry's volume: `default` on AKS enabled by Arc (`kubectl get storageclass`) |
 
 The cluster gets three workers of `Standard_D4s_v3` (4 vCPUs, 16 GB), so the replicas of RabbitMQ and
 the databases each run on their own. If your instance offers other sizes
@@ -43,6 +47,7 @@ free, and the three ranges must not overlap.
 | `Cluster.IpPoolStart`, `Cluster.IpPoolEnd` | A range for the cluster's VMs: at least one address per node, plus one spare for upgrades |
 | `Cluster.ControlPlaneIp` | One address outside that range, for the cluster's API |
 | `Cluster.LoadBalancerAddresses` | A small range, for example five addresses, as `<first>-<last>`. The app gets the first one, Keycloak the next. To choose them, set `Ingress.IngressIp` and `Keycloak.KeycloakIp`. |
+| `Ingress.HostNames` | Optional: DNS names users reach the app by, such as `orders.contoso.local`. The app's certificate names the ingress address and these. |
 | `Registry.ServiceClusterIp` | An address inside the cluster for its registry, not on your network. `10.96.0.50` works unless your cluster uses a different service range. |
 
 ## Active Directory

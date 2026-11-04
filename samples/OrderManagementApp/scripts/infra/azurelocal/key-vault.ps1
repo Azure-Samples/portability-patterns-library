@@ -24,13 +24,14 @@
     service. No service reads oms-db-passwords itself.
 
 .EXAMPLE
-    ./scripts/infra/azurelocal/key-vault.ps1 -ClusterName bcd-aksarc -KubeContext bcd-aksarc
+    # Usually run by setup-platform.ps1 with the Common and KeyVault sections of scripts/settings.json. On its own:
+    ./scripts/infra/azurelocal/key-vault.ps1 -ResourceGroup <resource-group> -ClusterName <cluster> -KubeContext <context>
 #>
 [CmdletBinding()]
 param(
-    [string]$ResourceGroup = 'bcd-azurelocal',
-    [string]$ClusterName = 'bcd-aksarc',
-    [string]$KubeContext = 'bcd-aksarc',
+    [Parameter(Mandatory = $true)][string]$ResourceGroup,
+    [Parameter(Mandatory = $true)][string]$ClusterName,
+    [Parameter(Mandatory = $true)][string]$KubeContext,
 
     # Globally unique; empty derives one from the subscription and resource group.
     [string]$KeyVaultName,
@@ -49,7 +50,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
-. (Join-Path $repoRoot 'scripts/lib/secrets.ps1')
+. (Join-Path $repoRoot 'scripts/lib/cluster.ps1')
+. (Join-Path $repoRoot 'scripts/lib/azure.ps1')
 
 # The passwords this sample keeps in Key Vault.
 $secretNames = @('sql-admin-password', 'postgres-admin-password', 'sql-api-password', 'sql-processor-password', 'postgres-inventory-password')
@@ -74,20 +76,22 @@ function New-DatabasePassword {
     'Oms1-' + [Convert]::ToBase64String($bytes).Replace('+', 'A').Replace('/', 'b').TrimEnd('=')
 }
 
+$account = Invoke-Checked 'az account show' { az account show --output json } | ConvertFrom-Json
 if (-not $KeyVaultName) {
-    $subscriptionId = az account show --query id --output tsv
     $KeyVaultName = 'kv-oms-' + ([BitConverter]::ToString([Security.Cryptography.SHA256]::HashData(
-                [Text.Encoding]::UTF8.GetBytes("$subscriptionId/$ResourceGroup"))).Replace('-', '').Substring(0, 12).ToLowerInvariant())
+                [Text.Encoding]::UTF8.GetBytes("$($account.id)/$ResourceGroup"))).Replace('-', '').Substring(0, 12).ToLowerInvariant())
 }
-if (-not $Location) { $Location = az group show --name $ResourceGroup --query location --output tsv }
+if (-not $Location) { $Location = Invoke-Checked "az group show $ResourceGroup" { az group show --name $ResourceGroup --query location --output tsv } }
 
-$oidcIssuer = az resource show --resource-group $ResourceGroup --resource-type Microsoft.Kubernetes/connectedClusters `
-    --name $ClusterName --query properties.oidcIssuerProfile.issuerUrl --output tsv 2>$null
-if (-not $oidcIssuer) {
-    throw "Cluster '$ClusterName' has no OIDC issuer, so it can't read Key Vault. Workload identity can only be turned on when the cluster is created (EnableWorkloadIdentity in the Cluster settings)."
+$cluster = Invoke-OmsAzShow @('resource', 'show', '--resource-group', $ResourceGroup, '--resource-type', 'Microsoft.Kubernetes/connectedClusters',
+    '--name', $ClusterName, '--output', 'json')
+if (-not $cluster) { throw "Arc connected cluster '$ClusterName' not found in '$ResourceGroup'. Run scripts/infra/azurelocal/provision-infra.ps1 first." }
+if (-not ($cluster | ConvertFrom-Json).properties.oidcIssuerProfile.issuerUrl) {
+    throw "Cluster '$ClusterName' has no OIDC issuer, so it can't read Key Vault. Workload identity can only be turned on when the cluster is created; infra/azurelocal/platform.bicep turns it on (enableWorkloadIdentity), so recreate the cluster with it."
 }
 
-$me = az ad signed-in-user show --query id --output tsv 2>$null
+# Whoever runs this may set the secrets too; a service principal is named in SecretsOfficerObjectIds.
+$me = if ($account.user.type -eq 'user') { Invoke-Checked 'az ad signed-in-user show' { az ad signed-in-user show --query id --output tsv } }
 $officers = @($SecretsOfficerObjectIds) + @($me | Where-Object { $_ }) | Select-Object -Unique
 
 $document = [ordered]@{
@@ -110,7 +114,7 @@ try {
     $outputs = az deployment group create --resource-group $ResourceGroup --name 'oms-key-vault' `
         --template-file (Join-Path $repoRoot 'infra/azurelocal/key-vault.bicep') --parameters "@$parametersFile" `
         --query properties.outputs --output json | ConvertFrom-Json
-    if ($LASTEXITCODE -ne 0 -or -not $outputs) { throw 'Deploying infra/azurelocal/key-vault.bicep failed.' }
+    if ($LASTEXITCODE -ne 0) { throw 'Deploying infra/azurelocal/key-vault.bicep failed.' }
 }
 finally { Remove-Item $parametersFile -ErrorAction SilentlyContinue }
 
@@ -124,7 +128,7 @@ foreach ($name in $secretNames) {
     for ($attempt = 1; $attempt -le 20; $attempt++) {
         $errorText = az keyvault secret show --vault-name $KeyVaultName --name $name --query id --output tsv 2>&1 | Out-String
         if ($LASTEXITCODE -eq 0) { $state = 'exists'; break }
-        if ($errorText -match 'SecretNotFound|was not found') { $state = 'missing'; break }
+        if ($LASTEXITCODE -eq 3 -or $errorText -match 'SecretNotFound') { $state = 'missing'; break }
         Start-Sleep -Seconds 15
     }
     if ($state -eq 'unknown') { throw "Could not read Key Vault secret '$name', so it was left as it is: $($errorText.Trim())" }
@@ -143,8 +147,7 @@ foreach ($name in $secretNames) {
 }
 
 Write-Host "==> Syncing passwords from Key Vault '$($outputs.keyVaultName.value)' into '$ApplicationNamespace'" -ForegroundColor Cyan
-kubectl create namespace $ApplicationNamespace --context $KubeContext --dry-run=client -o yaml |
-    kubectl apply --context $KubeContext -f - | Out-Null
+Set-OmsNamespace $KubeContext $ApplicationNamespace
 $manifest = (Get-Content (Join-Path $repoRoot 'infra/azurelocal/key-vault-sync.yaml') -Raw).
     Replace('${NAMESPACE}', $ApplicationNamespace).
     Replace('${SERVICE_ACCOUNT}', $ServiceAccountName).
@@ -154,14 +157,14 @@ $manifest = (Get-Content (Join-Path $repoRoot 'infra/azurelocal/key-vault-sync.y
 $manifest | kubectl apply --context $KubeContext -f - | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Applying infra/azurelocal/key-vault-sync.yaml failed. Is the Secret Store extension running?' }
 
-$deadline = (Get-Date).AddMinutes($SyncTimeoutMinutes)
-while (-not (kubectl get secret $SyncedSecretName --namespace $ApplicationNamespace --context $KubeContext --ignore-not-found -o name)) {
-    if ((Get-Date) -gt $deadline) {
-        $status = kubectl get secretsync --namespace $ApplicationNamespace --context $KubeContext -o json | ConvertFrom-Json
-        $reasons = $status.items | ForEach-Object { "$($_.metadata.name): $(($_.status.conditions | Select-Object -Last 1).message)" }
-        throw "Secret '$SyncedSecretName' not synced within $SyncTimeoutMinutes minutes.`n$($reasons -join "`n")"
-    }
-    Start-Sleep -Seconds 10
+kubectl wait "secret/$SyncedSecretName" --for=create --namespace $ApplicationNamespace --context $KubeContext `
+    --timeout="$($SyncTimeoutMinutes)m" | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    $status = Invoke-Checked 'kubectl get secretsync' {
+        kubectl get secretsync --namespace $ApplicationNamespace --context $KubeContext -o json
+    } | ConvertFrom-Json
+    $reasons = $status.items | ForEach-Object { "$($_.metadata.name): $(($_.status.conditions | Select-Object -Last 1).message)" }
+    throw "Secret '$SyncedSecretName' not synced within $SyncTimeoutMinutes minutes.`n$($reasons -join "`n")"
 }
 Write-Host "    synced into Secret '$SyncedSecretName'" -ForegroundColor DarkGray
 Write-Host "`nKey Vault ready: $($outputs.keyVaultUri.value)" -ForegroundColor Green

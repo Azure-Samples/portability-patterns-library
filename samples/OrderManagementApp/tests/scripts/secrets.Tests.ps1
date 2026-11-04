@@ -64,3 +64,29 @@ Describe 'Get-OmsSecretValue' {
         { Get-OmsSecretValue -KubeContext 'ctx' -Namespace 'ns' -Name 'ca' -Key 'ca.crt' } | Should -Throw
     }
 }
+
+Describe 'Set-OmsSecret' {
+    It 'sends the Secret, of the given type, to kubectl on stdin and never as an argument' {
+        function kubectl {
+            $script:KubectlArguments = $args
+            $script:KubectlInput = @($input) -join "`n"
+            $global:LASTEXITCODE = 0
+        }
+
+        Set-OmsSecret -KubeContext 'ctx' -Namespace 'ns' -Name 'pull' -Type 'kubernetes.io/dockerconfigjson' `
+            -Data @{ '.dockerconfigjson' = '{"auths":{"10.0.0.1":{"password":"p@ss"}}}' }
+
+        ($script:KubectlArguments -join ' ') | Should -Not -Match 'p@ss'
+        $secret = $script:KubectlInput | ConvertFrom-Json
+        $secret.type | Should -Be 'kubernetes.io/dockerconfigjson'
+        [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($secret.data.'.dockerconfigjson')) |
+            Should -Be '{"auths":{"10.0.0.1":{"password":"p@ss"}}}'
+    }
+
+    It 'throws when kubectl fails' {
+        function kubectl { $global:LASTEXITCODE = 1 }
+
+        { Set-OmsSecret -KubeContext 'ctx' -Namespace 'ns' -Name 'creds' -Data @{ password = 'x' } } |
+            Should -Throw "*Writing Secret 'ns/creds' failed*"
+    }
+}

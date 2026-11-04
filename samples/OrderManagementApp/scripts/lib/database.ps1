@@ -24,6 +24,7 @@ function Invoke-OmsDatabaseSetup {
 
     $name = 'dbsetup'
     kubectl delete job $name --namespace $Namespace --context $KubeContext --ignore-not-found --wait=true | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Deleting the previous database setup job failed." }
 
     $env = @($Environment.GetEnumerator() | Sort-Object Name | ForEach-Object {
             @{ name = $_.Name; value = [string]$_.Value }
@@ -34,16 +35,25 @@ function Invoke-OmsDatabaseSetup {
         name            = $name
         image           = $Image
         env             = $env
-        securityContext = @{ allowPrivilegeEscalation = $false; runAsNonRoot = $true }
+        securityContext = @{
+            allowPrivilegeEscalation = $false
+            runAsNonRoot             = $true
+            readOnlyRootFilesystem   = $true
+            capabilities             = @{ drop = @('ALL') }
+            seccompProfile           = @{ type = 'RuntimeDefault' }
+        }
+        # The only writable path, for the .NET runtime's temporary files.
+        volumeMounts    = @(@{ name = 'tmp'; mountPath = '/tmp' })
     }
     $podSpec = [ordered]@{
         restartPolicy = 'Never'
         containers    = @($container)
+        volumes       = @(@{ name = 'tmp'; emptyDir = @{} })
     }
     if ($CaSecretName) {
         $container.env += @{ name = 'PGSSLROOTCERT'; value = '/etc/database-ca/ca.crt' }
-        $container.volumeMounts = @(@{ name = 'database-ca'; mountPath = '/etc/database-ca'; readOnly = $true })
-        $podSpec.volumes = @(@{ name = 'database-ca'; secret = @{ secretName = $CaSecretName } })
+        $container.volumeMounts += @{ name = 'database-ca'; mountPath = '/etc/database-ca'; readOnly = $true }
+        $podSpec.volumes += @{ name = 'database-ca'; secret = @{ secretName = $CaSecretName } }
     }
     if ($ServiceAccountName) { $podSpec.serviceAccountName = $ServiceAccountName }
     if ($ImagePullSecretName) { $podSpec.imagePullSecrets = @(@{ name = $ImagePullSecretName }) }
@@ -68,6 +78,7 @@ function Invoke-OmsDatabaseSetup {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ($true) {
         $status = kubectl get job $name --namespace $Namespace --context $KubeContext -o json | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0) { throw "Reading the database setup job failed." }
         if ($status.status.succeeded -ge 1) { break }
         $failed = $status.status.conditions | Where-Object { $_.type -eq 'Failed' -and $_.status -eq 'True' }
         if ($failed -or (Get-Date) -gt $deadline) {
@@ -100,16 +111,23 @@ function Set-OmsNetworkPolicy {
     if ($LASTEXITCODE -ne 0) { throw 'Applying the network policies failed.' }
 }
 
-# Reads a Radius resource's properties, for example the host a database Recipe reported.
-function Get-OmsRadiusResourceProperties {
+# Reads a Radius resource: its ID, and properties such as the host a database Recipe reported. With
+# -AllowMissing, returns $null when Radius reports that the resource doesn't exist; any other
+# failure throws.
+function Get-OmsRadiusResource {
     param(
         [Parameter(Mandatory = $true)][string]$Type,
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][string]$Workspace,
-        [Parameter(Mandatory = $true)][string]$Group
+        [Parameter(Mandatory = $true)][string]$Group,
+        [switch]$AllowMissing
     )
 
-    $resource = rad resource show $Type $Name --workspace $Workspace --group $Group --output json 2>$null | ConvertFrom-Json
-    if (-not $resource) { throw "Radius resource $Type/$Name not found." }
-    return $resource.properties
+    $output = rad resource show $Type $Name --workspace $Workspace --group $Group --output json 2>&1
+    $text = @($output | ForEach-Object { "$_" }) -join ' '
+    if ($LASTEXITCODE -ne 0) {
+        if ($AllowMissing -and $text -match '\bNotFound\b|was not found') { return $null }
+        throw "Reading Radius resource $Type/$Name failed: $text"
+    }
+    @($output | Where-Object { $_ -isnot [Management.Automation.ErrorRecord] }) -join "`n" | ConvertFrom-Json
 }

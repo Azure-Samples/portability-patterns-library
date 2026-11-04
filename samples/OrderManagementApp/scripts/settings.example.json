@@ -3,16 +3,16 @@
     "Common": {
       "SubscriptionId": "<subscription-id>",
       "Location": "eastus2",
+      "ResourceGroup": "bcd-infra",
       "ClusterName": "bcd-aks",
+      "KubeContext": "bcd-aks",
       "WorkspaceName": "oms-azure"
     },
     "Cluster": {
-      "ResourceGroup": "bcd-infra",
       "RegistryName": "<globally-unique-acr-name>",
       "AlertEmail": "<on-call-email>"
     },
     "Ingress": {
-      "KubeContext": "bcd-aks",
       "DnsLabel": "<dns-label>",
       "PrivateCa": false
     },
@@ -21,18 +21,18 @@
     },
     "Deploy": {
       "Registry": "<globally-unique-acr-name>.azurecr.io",
-      "AppInfraResourceGroup": "bcd-infra",
-      "ResourceGroup": "oms",
       "IngressCertIssuer": "letsencrypt"
     }
   },
   "AzureLocal": {
     "Common": {
-      "KubeContext": "bcd-aksarc",
-      "ApplicationNamespace": "oms-azurelocal",
-      "Availability": "high",
       "SubscriptionId": "<subscription-id>",
-      "RegistryName": "<acr-name>"
+      "ResourceGroup": "bcd-azurelocal",
+      "ClusterName": "bcd-aksarc",
+      "KubeContext": "bcd-aksarc",
+      "RegistryName": "<acr-name>",
+      "ApplicationNamespace": "oms-azurelocal",
+      "Availability": "high"
     },
     "Cluster": {
       "Location": "<azure-local-instance-region>",
@@ -52,7 +52,8 @@
       "Registry": "<acr-name>.azurecr.io"
     },
     "Registry": {
-      "ServiceClusterIp": "<unused-address-in-the-cluster-service-range>"
+      "ServiceClusterIp": "<unused-address-in-the-cluster-service-range>",
+      "StorageClassName": "default"
     },
     "KeyVault": {
       "SecretsOfficerObjectIds": [ "<operations-group-object-id>" ]
@@ -79,7 +80,9 @@
       "SmtpUsername": "",
       "SmtpPasswordSecret": ""
     },
-    "Ingress": {},
+    "Ingress": {
+      "HostNames": []
+    },
     "Deploy": {}
   }
 }

@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+#Requires -Version 7.3
 <#
 .SYNOPSIS
     Monitoring, logs and traces for the Azure Local site, kept in the cluster: an OpenTelemetry
@@ -41,9 +41,9 @@
     Grafana (Alerting) and in Alertmanager.
 
 .PARAMETER SmtpPasswordSecret
-    Secret in namespace 'observability' holding the SMTP password under key -SmtpPasswordKey,
-    created beforehand: kubectl -n observability create secret generic <name> --from-literal=password=<password>
-    Empty sends without authentication.
+    Secret in namespace 'observability' holding the SMTP password under key -SmtpPasswordKey. When
+    it doesn't exist yet, the script asks for the password once and creates it, so the password
+    never goes on a command line. Empty sends without authentication.
 
 .EXAMPLE
     ./scripts/infra/azurelocal/provision-observability.ps1
@@ -53,7 +53,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$KubeContext = 'bcd-aksarc',
+    [Parameter(Mandatory = $true)][string]$KubeContext,
     # The connected registry's address. Empty reads it from the pull secret connected-registry.ps1 wrote.
     [string]$PullRegistry,
     [string]$PullSecretName = 'azurelocal-registry',
@@ -120,24 +120,6 @@ function Get-SecretData([string]$SecretNamespace, [string]$Name, [string]$Key) {
     Get-OmsSecretValue -KubeContext $KubeContext -Namespace $SecretNamespace -Name $Name -Key $Key
 }
 
-# Writes a Secret from string values without them passing through the command line.
-function Set-OpaqueSecret([string]$Name, [hashtable]$Data) {
-    $lines = $Data.GetEnumerator() | ForEach-Object {
-        "  $($_.Key): $([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($_.Value)))"
-    }
-    @"
-apiVersion: v1
-kind: Secret
-type: Opaque
-metadata:
-  name: $Name
-  namespace: $Namespace
-data:
-$($lines -join "`n")
-"@ | kubectl apply --context $KubeContext -f - | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Writing Secret '$Namespace/$Name' failed." }
-}
-
 function New-RandomSecret {
     $bytes = [byte[]]::new(24)
     [Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
@@ -170,8 +152,10 @@ try {
     # 1. Site values: where Grafana is served, and where it finds Keycloak
     # ------------------------------------------------------------------------------------------
     if (-not $GrafanaUrl) {
-        $GrafanaUrl = kubectl get configmap keycloak-realm-settings -n $IdentityNamespace --context $KubeContext `
-            --ignore-not-found -o 'jsonpath={.data.GRAFANA_ORIGIN}'
+        $GrafanaUrl = Invoke-Checked "reading $IdentityNamespace/keycloak-realm-settings" {
+            kubectl get configmap keycloak-realm-settings -n $IdentityNamespace --context $KubeContext `
+                --ignore-not-found -o 'jsonpath={.data.GRAFANA_ORIGIN}'
+        }
         if (-not $GrafanaUrl) {
             throw "No -GrafanaUrl, and no GRAFANA_ORIGIN in $IdentityNamespace/keycloak-realm-settings to take it from. Run scripts/infra/azurelocal/keycloak.ps1 first: it registers Grafana's address with Keycloak."
         }
@@ -195,7 +179,7 @@ try {
     # Grafana's admin account exists but can't sign in (login form and basic auth are off). Its
     # password is still random rather than the chart's default.
     if (-not (Get-SecretData $Namespace 'grafana-admin' 'admin-password')) {
-        Set-OpaqueSecret 'grafana-admin' @{ 'admin-user' = 'admin'; 'admin-password' = (New-RandomSecret) }
+        Set-OmsSecret $KubeContext $Namespace 'grafana-admin' @{ 'admin-user' = 'admin'; 'admin-password' = (New-RandomSecret) }
         Write-Host "    generated $Namespace/grafana-admin" -ForegroundColor DarkGray
     }
 
@@ -204,7 +188,7 @@ try {
     if (-not $clientSecret) {
         throw "No Secret $IdentityNamespace/grafana-oauth with Keycloak's client secret for Grafana. Run scripts/infra/azurelocal/keycloak.ps1 first."
     }
-    Set-OpaqueSecret 'grafana-oauth' @{ 'client-id' = 'grafana'; 'client-secret' = $clientSecret }
+    Set-OmsSecret $KubeContext $Namespace 'grafana-oauth' @{ 'client-id' = 'grafana'; 'client-secret' = $clientSecret }
     $clientSecret = $null
 
     # The CA behind Keycloak's certificate (the site CA), so Grafana can verify Keycloak.
@@ -213,15 +197,25 @@ try {
     if (-not $keycloakCa) {
         throw "Found no CA for Keycloak's certificate in $IdentityNamespace/keycloak-tls or $ApplicationNamespace/oms-identity-ca. Run scripts/infra/azurelocal/keycloak.ps1 first."
     }
-    Set-OpaqueSecret 'keycloak-ca' @{ 'ca.crt' = $keycloakCa }
+    Set-OmsSecret $KubeContext $Namespace 'keycloak-ca' @{ 'ca.crt' = $keycloakCa }
 
+    # The SMTP password exists only at the mail provider, so it is asked for once and kept in the
+    # cluster. It never goes on a command line or into the settings file.
     if ($SmtpPasswordSecret -and -not (Get-SecretData $Namespace $SmtpPasswordSecret $SmtpPasswordKey)) {
-        throw "No Secret $Namespace/$SmtpPasswordSecret with key '$SmtpPasswordKey'. Create it: kubectl -n $Namespace create secret generic $SmtpPasswordSecret --from-literal=$SmtpPasswordKey=<password>"
+        if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
+            throw "No Secret $Namespace/$SmtpPasswordSecret with key '$SmtpPasswordKey', and no console to ask for the SMTP password on. Run this interactively once, or create the Secret from a file only you can read."
+        }
+        $secure = Read-Host -AsSecureString "Password of SMTP account '$SmtpUsername' on $SmtpHost"
+        $plain = [Net.NetworkCredential]::new('', $secure).Password
+        if (-not $plain) { throw 'No SMTP password given.' }
+        Set-OmsSecret $KubeContext $Namespace $SmtpPasswordSecret @{ $SmtpPasswordKey = $plain }
+        $plain = $null
+        Write-Host "    created $Namespace/$SmtpPasswordSecret" -ForegroundColor DarkGray
     }
 
     # The collector's queue volume. Created here rather than by the chart, which has no volume
     # claim of its own in deployment mode; left alone once it exists.
-    if (-not (kubectl get pvc otel-collector-queue -n $Namespace --context $KubeContext --ignore-not-found -o name)) {
+    if (-not (Test-OmsResource $KubeContext $Namespace 'pvc' 'otel-collector-queue')) {
         $queueClaim = @{
             apiVersion = 'v1'; kind = 'PersistentVolumeClaim'
             metadata   = @{ name = 'otel-collector-queue'; namespace = $Namespace }
@@ -355,8 +349,10 @@ try {
     Write-Host '==> Applying infra/azurelocal/observability/monitoring' -ForegroundColor Cyan
     # The PodMonitor selects cert-manager's controller by the labels its chart sets. The Arc
     # extension packages cert-manager itself, so check rather than assume.
-    $labelsJson = kubectl get deployment $CertManagerDeployment -n $CertManagerNamespace --context $KubeContext `
-        --ignore-not-found -o 'jsonpath={.spec.template.metadata.labels}'
+    $labelsJson = Invoke-Checked "reading Deployment $CertManagerNamespace/$CertManagerDeployment" {
+        kubectl get deployment $CertManagerDeployment -n $CertManagerNamespace --context $KubeContext `
+            --ignore-not-found -o 'jsonpath={.spec.template.metadata.labels}'
+    }
     $labels = if ($labelsJson) { $labelsJson | ConvertFrom-Json -AsHashtable } else { @{} }
     if (-not $labelsJson) {
         Write-Warning "No Deployment $CertManagerNamespace/$CertManagerDeployment; certificate expiry won't be monitored until cert-manager's metrics are scraped."
@@ -377,7 +373,7 @@ try {
 
     $alertsTo = if ($SmtpHost) { "email to $AlertEmailTo through $SmtpHost" } else { 'Grafana and Alertmanager only (no SMTP server set)' }
     Write-Host "`nObservability ready in namespace '$Namespace'" -ForegroundColor Green
-    Write-Host "Grafana          : $GrafanaUrl/  (Keycloak sign-in; Inventory.Manage edits, everyone else views)"
+    Write-Host "Grafana          : $GrafanaUrl/  (Keycloak sign-in; members of oms-operators only)"
     Write-Host "OTLP endpoint    : http://otel-collector.$Namespace.svc.cluster.local:4317 (gRPC), :4318 (HTTP)"
     Write-Host "Retention        : metrics $PrometheusRetention, logs $LokiRetention, traces $TempoRetention"
     Write-Host "Alerts           : $alertsTo"

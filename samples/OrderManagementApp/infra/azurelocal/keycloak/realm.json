@@ -3,6 +3,14 @@
   "enabled": true,
   "accessTokenLifespan": 900,
   "ssoSessionIdleTimeout": 1800,
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "failureFactor": 3,
+  "waitIncrementSeconds": 900,
+  "maxFailureWaitSeconds": 900,
+  "maxDeltaTimeSeconds": 43200,
+  "quickLoginCheckMilliSeconds": 1000,
+  "minimumQuickLoginWaitSeconds": 60,
   "roles": {
     "realm": [
       {
@@ -16,6 +24,10 @@
       {
         "name": "Inventory.Manage",
         "description": "Restock products"
+      },
+      {
+        "name": "Operations.Monitor",
+        "description": "Use the site's Grafana: dashboards, logs and traces"
       }
     ],
     "client": {
@@ -57,6 +69,22 @@
         "Inventory.Manage",
         "Orders.Read"
       ]
+    },
+    {
+      "name": "oms-operators",
+      "path": "/oms-operators",
+      "realmRoles": [
+        "Operations.Monitor"
+      ]
+    },
+    {
+      "name": "oms-identity-admins",
+      "path": "/oms-identity-admins",
+      "clientRoles": {
+        "realm-management": [
+          "realm-admin"
+        ]
+      }
     }
   ],
   "clients": [
@@ -70,14 +98,14 @@
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "redirectUris": [
-        "${SPA_ORIGIN}/*"
+        "${SPA_ORIGIN}/"
       ],
       "webOrigins": [
         "+"
       ],
       "attributes": {
         "pkce.code.challenge.method": "S256",
-        "post.logout.redirect.uris": "${SPA_ORIGIN}/*"
+        "post.logout.redirect.uris": "${SPA_ORIGIN}/"
       },
       "defaultClientScopes": [
         "web-origins",
@@ -88,11 +116,6 @@
         "email"
       ],
       "optionalClientScopes": [
-        "address",
-        "phone",
-        "organization",
-        "offline_access",
-        "microprofile-jwt",
         "api://oms-api/access_as_user"
       ]
     },
@@ -115,13 +138,7 @@
         "basic",
         "email"
       ],
-      "optionalClientScopes": [
-        "address",
-        "phone",
-        "organization",
-        "offline_access",
-        "microprofile-jwt"
-      ]
+      "optionalClientScopes": []
     },
     {
       "clientId": "oms-inventory",
@@ -167,7 +184,7 @@
           "protocolMapper": "oidc-hardcoded-claim-mapper",
           "config": {
             "claim.name": "rabbitmq_scopes",
-            "claim.value": "rabbitmq.configure:*/orders rabbitmq.write:*/amq.default",
+            "claim.value": "rabbitmq.write:*/amq.default",
             "jsonType.label": "String",
             "access.token.claim": "true"
           }
@@ -231,7 +248,7 @@
           "protocolMapper": "oidc-hardcoded-claim-mapper",
           "config": {
             "claim.name": "rabbitmq_scopes",
-            "claim.value": "rabbitmq.configure:*/orders rabbitmq.read:*/orders",
+            "claim.value": "rabbitmq.read:*/orders",
             "jsonType.label": "String",
             "access.token.claim": "true"
           }
@@ -1286,11 +1303,5 @@
     "acr",
     "basic"
   ],
-  "defaultOptionalClientScopes": [
-    "offline_access",
-    "address",
-    "phone",
-    "microprofile-jwt",
-    "organization"
-  ]
+  "defaultOptionalClientScopes": []
 }

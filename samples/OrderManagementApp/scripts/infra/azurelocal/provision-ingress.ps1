@@ -16,33 +16,36 @@
          later runs keep that address; pass -IngressIp to choose one. The Helm values are in
          infra/azurelocal/ingress-nginx/values.yaml; this script sets only the site values.
       3. Creates a cert-manager ClusterIssuer, -IssuerName, that signs with a site CA kept in the
-         cluster. cert-manager is the Certificate Management for Azure Arc extension, installed
-         with the cluster; the connected registry gets its certificates from it too. keycloak.ps1
-         gets Keycloak's certificate from it too.
-      4. Requests a TLS certificate for the ingress address and -HostNames from that issuer, into
+         cluster: cert-manager issues the CA itself, self-signed, the first time. cert-manager is
+         the Certificate Management for Azure Arc extension, installed with the cluster; the
+         connected registry gets its certificates from it too. keycloak.ps1 gets Keycloak's
+         certificate from it too.
+      4. Requests a TLS certificate for the ingress address and any -HostNames from that issuer, into
          Secret -TlsSecretName in the application namespace. cert-manager renews it 30 days before
          it expires, with no link to Azure, and the ingress serves the new one without a restart.
          Browsers need HTTPS: MSAL.js only runs in a secure context.
 
     The site CA stands in for the organisation's PKI. To use yours, put an intermediate CA it
-    issued (certificate and key) in Secret -CaSecretName in -CertManagerNamespace before the first
-    run; domain-joined machines then already trust what it signs. Otherwise machines trust
-    the site CA once with the command printed at the end. Back up that Secret: a new CA has to be
-    trusted again everywhere. Idempotent.
+    issued (certificate and key, as a kubernetes.io/tls Secret) in Secret -CaSecretName in
+    -CertManagerNamespace before the first run; this script then uses it as it is, and
+    domain-joined machines already trust what it signs. Otherwise machines trust the site CA once
+    with the command printed at the end. Back up that Secret: a new CA has to be trusted again
+    everywhere. Idempotent.
 
     Prerequisites: scripts/infra/azurelocal/provision-infra.ps1 (load balancer),
     scripts/infra/azurelocal/import-images.ps1 (ingress-nginx images in the cloud registry) and
     scripts/infra/azurelocal/connected-registry.ps1 (which syncs them into the cluster).
 
 .EXAMPLE
-    ./scripts/infra/azurelocal/provision-ingress.ps1
+    ./scripts/infra/azurelocal/provision-ingress.ps1 -KubeContext <context> -HostNames orders.contoso.local
 #>
 [CmdletBinding()]
 param(
-    [string]$KubeContext = 'bcd-aksarc',
+    [Parameter(Mandatory = $true)][string]$KubeContext,
     # An address from the load balancer's range. Empty keeps the current one, or takes the first free.
     [string]$IngressIp,
-    [string[]]$HostNames = @('orders.azurelocal.lab'),
+    # DNS names the site gives the ingress address, if any. The certificate always covers the address.
+    [string[]]$HostNames = @(),
     [string]$IngressNamespace = 'ingress-nginx',
     [string]$IngressClassName = 'nginx',
     [string]$ChartVersion = '4.15.1',
@@ -64,33 +67,17 @@ param(
     [int]$CertificateDays = 90
 )
 
+
+
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
 . (Join-Path $repoRoot 'scripts/lib/cluster.ps1')
 Push-Location $repoRoot
 
+# Returns what the command printed.
 function Invoke-Checked([string]$What, [scriptblock]$Command) {
     & $Command
     if ($LASTEXITCODE -ne 0) { throw "$What failed with exit code $LASTEXITCODE." }
-}
-
-function Get-SecretData([string]$Namespace, [string]$Name, [string]$Key) {
-    Get-OmsSecretValue -KubeContext $KubeContext -Namespace $Namespace -Name $Name -Key $Key
-}
-
-function Set-TlsSecret([string]$Namespace, [string]$Name, [string]$CertPem, [string]$KeyPem) {
-    @"
-apiVersion: v1
-kind: Secret
-type: kubernetes.io/tls
-metadata:
-  name: $Name
-  namespace: $Namespace
-data:
-  tls.crt: $([Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($CertPem)))
-  tls.key: $([Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($KeyPem)))
-"@ | kubectl apply --context $KubeContext -f - | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Writing Secret '$Namespace/$Name' failed." }
 }
 
 try {
@@ -123,17 +110,14 @@ try {
     # MetalLB refuses a Service that also sets spec.loadBalancerIP, so a chosen address goes in its annotation.
     if ($IngressIp) { $siteValues += '--set', "controller.service.annotations.metallb\.io/loadBalancerIPs=$IngressIp" }
     # Kubelet retries the pull until the connected registry has the images, hence the long wait.
+    # helm --wait also waits for the LoadBalancer Service to get its address.
     Invoke-Checked 'helm upgrade --install ingress-nginx' {
         helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx --version $ChartVersion `
             --namespace $IngressNamespace --create-namespace --kube-context $KubeContext `
             --values $values @siteValues --wait --timeout 20m
     }
 
-    $assigned = $null
-    for ($attempt = 0; $attempt -lt 24 -and -not $assigned; $attempt++) {
-        $assigned = Get-OmsIngressAddress $KubeContext $IngressNamespace
-        if (-not $assigned) { Start-Sleep -Seconds 5 }
-    }
+    $assigned = Get-OmsIngressAddress $KubeContext $IngressNamespace
     if (-not $assigned) { throw 'The ingress controller got no address. Check that the cluster has a load balancer with free addresses.' }
     if ($IngressIp -and $assigned -ne $IngressIp) { throw "The ingress controller got address '$assigned', expected $IngressIp." }
     $IngressIp = $assigned
@@ -143,25 +127,48 @@ try {
     #    Management extension) serves the whole cluster and keeps renewing while the site is cut
     #    off from Azure. A ClusterIssuer reads its CA from cert-manager's namespace.
     # ------------------------------------------------------------------------------------------
-    Write-Host "==> ClusterIssuer '$IssuerName' (site CA '$CaCommonName')" -ForegroundColor Cyan
-    if (-not (kubectl get crd clusterissuers.cert-manager.io --context $KubeContext --ignore-not-found -o name)) {
+    Write-Host "==> ClusterIssuer '$IssuerName' (site CA)" -ForegroundColor Cyan
+    if (-not (Test-OmsResource $KubeContext '' 'crd' 'clusterissuers.cert-manager.io')) {
         throw 'cert-manager is not installed. The cluster gets it, as the Certificate Management extension, from scripts/infra/azurelocal/provision-infra.ps1.'
     }
-    $caCertPem = Get-SecretData $CertManagerNamespace $CaSecretName 'tls.crt'
-    if (-not $caCertPem) {
-        $caKey = [Security.Cryptography.RSA]::Create(3072)
-        $caRequest = [Security.Cryptography.X509Certificates.CertificateRequest]::new(
-            "CN=$CaCommonName", $caKey, [Security.Cryptography.HashAlgorithmName]::SHA256,
-            [Security.Cryptography.RSASignaturePadding]::Pkcs1)
-        $caRequest.CertificateExtensions.Add([Security.Cryptography.X509Certificates.X509BasicConstraintsExtension]::new($true, $true, 0, $true))
-        $caRequest.CertificateExtensions.Add([Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new(
-                [Security.Cryptography.X509Certificates.X509KeyUsageFlags]'KeyCertSign, CrlSign', $true))
-        $caRequest.CertificateExtensions.Add([Security.Cryptography.X509Certificates.X509SubjectKeyIdentifierExtension]::new($caRequest.PublicKey, $false))
-        $ca = $caRequest.CreateSelfSigned([DateTimeOffset]::UtcNow.AddDays(-1), [DateTimeOffset]::UtcNow.AddYears(10))
-        $caCertPem = $ca.ExportCertificatePem()
-        Set-TlsSecret $CertManagerNamespace $CaSecretName $caCertPem $caKey.ExportPkcs8PrivateKeyPem()
-        $caKey.Dispose()
-        Write-Host "    created site CA '$CaCommonName'" -ForegroundColor DarkGray
+    # A CA Secret that cert-manager didn't issue is one you brought, and is used as it is.
+    $issuedBy = Invoke-Checked "reading Secret '$CertManagerNamespace/$CaSecretName'" {
+        kubectl get secret $CaSecretName --namespace $CertManagerNamespace --context $KubeContext --ignore-not-found `
+            --output 'jsonpath={.metadata.annotations.cert-manager\.io/certificate-name}'
+    }
+    if ((Test-OmsResource $KubeContext $CertManagerNamespace 'secret' $CaSecretName) -and -not $issuedBy) {
+        Write-Host "    using your CA in Secret '$CertManagerNamespace/$CaSecretName'" -ForegroundColor DarkGray
+    }
+    else {
+        # Self-signed, for ten years. Renewal keeps the key, so what already trusts the CA still does.
+        @"
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: $IssuerName-selfsigned
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: $CaSecretName
+  namespace: $CertManagerNamespace
+spec:
+  isCA: true
+  commonName: $CaCommonName
+  secretName: $CaSecretName
+  duration: 87600h
+  privateKey:
+    algorithm: RSA
+    size: 3072
+    rotationPolicy: Never
+  issuerRef:
+    kind: ClusterIssuer
+    name: $IssuerName-selfsigned
+"@ | kubectl apply --context $KubeContext -f - | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Requesting the site CA '$CertManagerNamespace/$CaSecretName' failed." }
+        Wait-OmsCertificate $KubeContext $CertManagerNamespace $CaSecretName
     }
     @"
 apiVersion: cert-manager.io/v1
@@ -176,58 +183,43 @@ spec:
     Invoke-Checked "ClusterIssuer '$IssuerName'" {
         kubectl wait clusterissuer/$IssuerName --for=condition=Ready --timeout=120s --context $KubeContext | Out-Null
     }
+    $caCertPem = Get-OmsSecretValue -KubeContext $KubeContext -Namespace $CertManagerNamespace -Name $CaSecretName -Key 'tls.crt'
 
     # ------------------------------------------------------------------------------------------
     # 3. The application's TLS certificate, renewed by cert-manager 30 days before it expires.
     #    The ingress controller picks up a renewed certificate without a restart.
     # ------------------------------------------------------------------------------------------
-    Write-Host "==> TLS certificate for https://$IngressIp ($($HostNames -join ', '))" -ForegroundColor Cyan
-    kubectl create namespace $ApplicationNamespace --context $KubeContext --dry-run=client -o yaml |
-        kubectl apply --context $KubeContext -f - | Out-Null
-    $dnsNames = ($HostNames | ForEach-Object { "    - $_" }) -join "`n"
-    @"
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: $TlsSecretName
-  namespace: $ApplicationNamespace
-spec:
-  secretName: $TlsSecretName
-  commonName: $($HostNames[0])
-  dnsNames:
-$dnsNames
-  ipAddresses:
-    - $IngressIp
-  duration: $($CertificateDays * 24)h
-  renewBefore: 720h
-  privateKey:
-    algorithm: RSA
-    size: 2048
-    rotationPolicy: Always
-  issuerRef:
-    kind: ClusterIssuer
-    name: $IssuerName
-"@ | kubectl apply --context $KubeContext -f - | Out-Null
+    Write-Host "==> TLS certificate for https://$IngressIp $(if ($HostNames) { "($($HostNames -join ', '))" })" -ForegroundColor Cyan
+    Set-OmsNamespace $KubeContext $ApplicationNamespace
+    $certificate = @{
+        apiVersion = 'cert-manager.io/v1'
+        kind       = 'Certificate'
+        metadata   = @{ name = $TlsSecretName; namespace = $ApplicationNamespace }
+        spec       = @{
+            secretName  = $TlsSecretName
+            ipAddresses = @($IngressIp)
+            duration    = "$($CertificateDays * 24)h"
+            renewBefore = '720h'
+            privateKey  = @{ algorithm = 'RSA'; size = 2048; rotationPolicy = 'Always' }
+            issuerRef   = @{ kind = 'ClusterIssuer'; name = $IssuerName }
+        }
+    }
+    if ($HostNames) {
+        $certificate.spec.commonName = $HostNames[0]
+        $certificate.spec.dnsNames = @($HostNames)
+    }
+    $certificate | ConvertTo-Json -Depth 5 | kubectl apply --context $KubeContext -f - | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Creating the Certificate '$ApplicationNamespace/$TlsSecretName' failed." }
     Wait-OmsCertificate $KubeContext $ApplicationNamespace $TlsSecretName
 
     # The site CA's certificate (public), for the app's pods and jobs to verify the servers it
     # signs, such as PostgreSQL.
-    @"
-apiVersion: v1
-kind: Secret
-type: Opaque
-metadata:
-  name: $SiteCaSecretName
-  namespace: $ApplicationNamespace
-data:
-  ca.crt: $([Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($caCertPem)))
-"@ | kubectl apply --context $KubeContext -f - | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Writing Secret '$ApplicationNamespace/$SiteCaSecretName' failed." }
+    Set-OmsSecret -KubeContext $KubeContext -Namespace $ApplicationNamespace -Name $SiteCaSecretName -Data @{ 'ca.crt' = $caCertPem }
 
-    $leafPem = Get-SecretData $ApplicationNamespace $TlsSecretName 'tls.crt'
-    $leaf = [Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPem($leafPem)
-    Write-Host "    valid until $($leaf.NotAfter.ToString('yyyy-MM-dd')); renewed automatically" -ForegroundColor DarkGray
+    $notAfter = Invoke-Checked "reading Certificate '$ApplicationNamespace/$TlsSecretName'" {
+        kubectl get certificate $TlsSecretName --namespace $ApplicationNamespace --context $KubeContext --output 'jsonpath={.status.notAfter}'
+    }
+    Write-Host "    valid until $notAfter; renewed automatically" -ForegroundColor DarkGray
 
     $caFile = Join-Path $repoRoot 'bcd-site-ca.crt'
     [IO.File]::WriteAllText($caFile, $caCertPem)

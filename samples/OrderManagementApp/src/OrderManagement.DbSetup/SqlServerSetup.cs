@@ -3,6 +3,7 @@ using DbUp;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using OrderManagement.Shared.Configuration;
 using OrderManagement.Shared.Identity;
 using OrderManagement.Shared.Persistence;
@@ -11,67 +12,65 @@ namespace OrderManagement.DbSetup;
 
 /// <summary>
 /// The orders database (the <c>sql</c> connection): its migrations (<c>dbo.Orders</c>), and a
-/// database user per service with only the rights it needs. On Azure the users are the services'
-/// Entra identities (<c>SQL_API_CLIENT_ID</c>, <c>SQL_PROCESSOR_CLIENT_ID</c>: their managed
+/// database user per service with only the rights its statements need. On Azure the users are the
+/// services' Entra identities (<c>SQL_API_CLIENT_ID</c>, <c>SQL_PROCESSOR_CLIENT_ID</c>: their managed
 /// identities' client IDs); elsewhere they are SQL logins (<c>SQL_API_PASSWORD</c>,
 /// <c>SQL_PROCESSOR_PASSWORD</c>).
 /// </summary>
-public sealed class SqlServerSetup(IConfiguration configuration, ILoggerFactory loggerFactory) : IDatabaseSetup
+public sealed class SqlServerSetup(
+    IOptions<SqlOptions> options,
+    IOptions<DbSetupOptions> setup,
+    WorkloadIdentity identity,
+    IConfiguration configuration,
+    ILoggerFactory loggerFactory) : IDatabaseSetup
 {
     private readonly ILogger _logger = loggerFactory.CreateLogger<SqlServerSetup>();
 
     private sealed record Principal(string Name, string? ClientId, string? Password, string Permissions);
 
-    // Held for the whole run, so two runs at once (two deployments, say) take turns.
+    // Held for the whole run, so two runs at once take turns.
     private const string LockResource = "OrderManagement.DbSetup";
-    private static readonly TimeSpan LockTimeout = TimeSpan.FromMinutes(10);
 
     public string Name => "SQL";
 
     public async Task RunAsync(CancellationToken cancellationToken)
     {
-        var options = SqlOptions.FromConfiguration(configuration);
-        var admin = DatabaseCredentialProviders.Create(configuration, "SQL_ADMIN_USERNAME", "SQL_ADMIN_PASSWORD",
-            DatabaseCredentialProviders.SqlScope, defaultUserName: null, tokenNeedsUserName: false);
-        var connections = new SqlConnectionFactory(options, admin, loggerFactory.CreateLogger<SqlConnectionFactory>());
+        var admin = DatabaseLogin.Create(configuration, identity, "SQL_ADMIN_USERNAME", "SQL_ADMIN_PASSWORD",
+            DatabaseLogin.SqlScope, tokenNeedsUserName: false);
+        var connections = new SqlConnectionFactory(options, admin);
+        var target = connections.Options;
 
+        // What each service's statements need (Shared/Persistence/SqlOrderStore.cs): the api reads a
+        // customer's orders; the processor inserts an order once (MERGE ... WHEN NOT MATCHED) and reads
+        // it back before releasing a dead-lettered order's stock.
         Principal[] principals =
         [
             ReadPrincipal("api", "SQL_API", "SELECT"),
-            ReadPrincipal("processor", "SQL_PROCESSOR", "SELECT, INSERT, UPDATE")
+            ReadPrincipal("processor", "SQL_PROCESSOR", "SELECT, INSERT")
         ];
+
+        _logger.LogInformation("Setting up SQL host {Host}, database {Database}, as {Login}", target.Host, target.Database, admin);
 
         // SQL logins live in master, and a SQL Server container starts without the application
         // database. With Entra users only (Azure SQL) the database exists and master is not needed.
         var loginPrincipals = principals.Where(principal => principal.ClientId is null).ToList();
-        var useMaster = admin is PasswordCredentialProvider || loginPrincipals.Count > 0;
+        var useMaster = !admin.UsesToken || loginPrincipals.Count > 0;
 
-        await using var session = await ConnectionRetry.OpenAsync(
-            token => connections.OpenAsync(useMaster ? "master" : null, token), $"SQL Server {options.Host}", _logger, cancellationToken);
+        await using var session = await setup.Value.CreateConnectPipeline($"SQL Server {target.Host}", _logger)
+            .ExecuteAsync(async token => await connections.OpenAsync(useMaster ? "master" : null, token), cancellationToken);
         await LockAsync(session, cancellationToken);
 
         if (useMaster)
         {
-            await EnsureDatabaseAsync(session, options.Database, cancellationToken);
+            await EnsureDatabaseAsync(session, target.Database!, cancellationToken);
             foreach (var principal in loginPrincipals)
             {
                 await EnsureLoginAsync(session, principal, cancellationToken);
             }
         }
 
-        // DbUp opens its own connections; the credential is read once, and a token lasts far longer
-        // than the migrations take. The journal is dbo.SchemaVersions.
-        var credential = await admin.GetCredentialAsync(cancellationToken);
-        Migrations.Apply(DeployChanges.To.SqlDatabase(() =>
-        {
-            var connection = new SqlConnection(options.BuildConnectionString(credential));
-            if (credential.IsAccessToken)
-            {
-                connection.AccessToken = credential.Secret;
-            }
-
-            return connection;
-        }), "SqlServer", loggerFactory);
+        // The journal is dbo.SchemaVersions.
+        Migrations.Apply(DeployChanges.To.SqlDatabase(() => connections.CreateConnection()), "SqlServer", loggerFactory);
 
         await using var applicationDatabase = useMaster ? await connections.OpenAsync(cancellationToken) : null;
         var database = applicationDatabase ?? session;
@@ -85,19 +84,20 @@ public sealed class SqlServerSetup(IConfiguration configuration, ILoggerFactory 
     }
 
     // An application lock owned by the session, released when the connection closes.
-    private static async Task LockAsync(SqlConnection session, CancellationToken cancellationToken)
+    private async Task LockAsync(SqlConnection session, CancellationToken cancellationToken)
     {
+        var timeout = setup.Value.LockTimeout;
         var result = await session.ExecuteScalarAsync<int>(new CommandDefinition(
             """
             DECLARE @result INT;
             EXEC @result = sp_getapplock @Resource = @resource, @LockMode = N'Exclusive', @LockOwner = N'Session', @LockTimeout = @timeout;
             SELECT @result;
             """,
-            new { resource = LockResource, timeout = (int)LockTimeout.TotalMilliseconds },
-            commandTimeout: (int)LockTimeout.TotalSeconds + 30, cancellationToken: cancellationToken));
+            new { resource = LockResource, timeout = (int)timeout.TotalMilliseconds },
+            commandTimeout: (int)timeout.TotalSeconds + 30, cancellationToken: cancellationToken));
         if (result < 0)
         {
-            throw new InvalidOperationException($"Another database setup held the lock for over {LockTimeout.TotalMinutes} minutes (sp_getapplock returned {result}).");
+            throw new InvalidOperationException($"Another database setup held the lock for over {timeout} (sp_getapplock returned {result}).");
         }
     }
 
@@ -137,7 +137,7 @@ public sealed class SqlServerSetup(IConfiguration configuration, ILoggerFactory 
     {
         // ALTER when it exists, so a changed (rotated) password takes effect. CREATE/ALTER LOGIN
         // take no parameters, so the statement is built on the server from a parameter: the
-        // password never appears in the command text.
+        // password never appears in the command text. SQL Server stores only its hash.
         await master.ExecuteAsync(new CommandDefinition(
             $"""
             DECLARE @password_literal NVARCHAR(400) = N'''' + REPLACE(@password, N'''', N'''''') + N'''';

@@ -1,10 +1,12 @@
-# What Prometheus scrapes beyond the chart defaults, the app's alerts and its Grafana dashboard.
-# provision-observability.ps1 applies this after the charts (they bring the CRDs it uses). By hand:
+# What Prometheus scrapes beyond the chart defaults, the app's alerts, its Grafana dashboard and the
+# namespace's network policies. provision-observability.ps1 applies this after the charts (they bring
+# the CRDs it uses). By hand:
 #
 #   kubectl apply -k infra/azurelocal/observability/monitoring
 #
 # The app's namespace (oms-azurelocal), Keycloak's (identity) and cert-manager's (cert-manager) are
 # written in the ServiceMonitor and PodMonitors; the script replaces them when your site uses others.
+# network-policies.yaml names the ingress controller's namespace, ingress-nginx.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
@@ -16,6 +18,7 @@ resources:
   - cert-manager-podmonitor.yaml
   - cert-manager-metrics-ca.yaml
   - alerts.yaml
+  - network-policies.yaml
 
 # Grafana's dashboard sidecar loads every ConfigMap with this label.
 configMapGenerator:

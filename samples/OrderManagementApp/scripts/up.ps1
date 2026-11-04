@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+#Requires -Version 7.3
 <#
 .SYNOPSIS
     Brings the Order Management sample up in one command: checks the site, sets up the platform

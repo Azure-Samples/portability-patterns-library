@@ -14,7 +14,14 @@ S3-compatible object store, and keeps working when the link to Azure is down. It
 | File | What it is |
 | --- | --- |
 | [values.yaml](./values.yaml) | SeaweedFS replicated (3 masters, 3 volume servers keeping 2 copies of every object, 2 filers, 2 S3 gateways, each on its own node) and encrypted. With `standard`, [provision-object-store.ps1](../../../scripts/infra/azurelocal/provision-object-store.ps1) runs one of each, keeping one copy |
-| [network-policy.yaml](./network-policy.yaml) | Only the store's clients may reach it, and only over HTTPS |
+| [network-policy.yaml](./network-policy.yaml) | Only the store's clients may reach it, and only over HTTPS: pods labelled `object-store/client` in namespaces labelled `object-store/objects`, and PostgreSQL instances in namespaces labelled `object-store/backups`. provision-object-store.ps1 labels the namespaces it creates keys for |
+| [pod-disruption-budgets.yaml](./pod-disruption-budgets.yaml) | A node drain takes down one pod of each component at a time, so the masters keep their quorum and every object a copy |
+
+Every component runs as the image's unprivileged `seaweed` user (uid 1000), with no capabilities, a
+read-only root filesystem and the default seccomp profile. The volume servers accept a write only
+with a token signed by the masters; the signing key is 32 random bytes in Secret
+`object-store/seaweedfs-jwt-signing-key`, key `signing-key`, which provision-object-store.ps1
+generates once.
 
 Nothing reaches or leaves the store in the clear:
 

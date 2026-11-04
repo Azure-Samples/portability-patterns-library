@@ -1,154 +1,162 @@
+using Duende.AccessTokenManagement;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Http.Resilience;
+using Microsoft.Extensions.Options;
 using OrderManagement.Shared.Configuration;
+using OrderManagement.Shared.Diagnostics;
 using OrderManagement.Shared.Identity;
 using OrderManagement.Shared.Inventory;
 using OrderManagement.Shared.Messaging;
 using OrderManagement.Shared.Persistence;
 using OrderManagement.Shared.Storage;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
-using Microsoft.Extensions.Logging;
+using RabbitMQ.Client;
 
 namespace OrderManagement.Shared.DependencyInjection;
 
 /// <summary>
-/// Wires up the provider implementations chosen at runtime from the Radius-injected connection
-/// values. This is the single place where "which environment am I in" is decided; nothing else in
-/// the application needs to know.
+/// Wires up the provider implementations chosen from the Radius-injected connection values and the
+/// pod's workload identity. This is the single place where "which environment am I in" is decided;
+/// nothing else in the application needs to know.
 /// </summary>
 public static class ServiceCollectionExtensions
 {
-    public static IServiceCollection AddOrderQueue(this IServiceCollection services)
+    private static readonly TimeSpan HealthCheckTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// The workload identity the platform gave the pod (<see cref="WorkloadIdentity"/>). With a
+    /// Keycloak identity, Duende.AccessTokenManagement requests, caches and renews its token, with the
+    /// ServiceAccount token as the client assertion.
+    /// </summary>
+    public static WorkloadIdentity AddWorkloadIdentity(this IServiceCollection services, IConfiguration configuration)
     {
-        services.AddServiceIdentity();
-        services.AddSingleton(sp => QueueOptions.FromConfiguration(sp.GetRequiredService<IConfiguration>()));
-
-        services.AddSingleton<IMessageBroker>(sp =>
+        if (services.FirstOrDefault(service => service.ServiceType == typeof(WorkloadIdentity))?.ImplementationInstance
+            is WorkloadIdentity registered)
         {
-            var options = sp.GetRequiredService<QueueOptions>();
-            var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+            return registered;
+        }
 
-            return options.Provider switch
-            {
-                QueueProvider.ServiceBus => new ServiceBusMessageBroker(
-                    options, loggerFactory.CreateLogger<ServiceBusMessageBroker>()),
-                QueueProvider.RabbitMq => new RabbitMqMessageBroker(
-                    options, loggerFactory.CreateLogger<RabbitMqMessageBroker>(),
-                    BrokerTokenProvider(sp, options, loggerFactory)),
-                _ => throw new InvalidOperationException($"Unhandled queue provider '{options.Provider}'.")
-            };
+        var identity = WorkloadIdentity.FromConfiguration(configuration);
+        services.AddSingleton(identity);
+
+        if (identity.Keycloak is { } keycloak)
+        {
+            services.AddSingleton(keycloak);
+            services.AddTransient<IClientAssertionService, ServiceAccountTokenAssertion>();
+            services.AddClientCredentialsTokenManagement()
+                .AddClient(KeycloakWorkloadIdentity.ClientName, client =>
+                {
+                    client.TokenEndpoint = keycloak.TokenEndpoint;
+                    client.ClientId = ClientId.Parse(keycloak.ClientId);
+                });
+        }
+
+        return identity;
+    }
+
+    public static IServiceCollection AddOrderQueue(this IServiceCollection services, IConfiguration configuration)
+    {
+        var identity = services.AddWorkloadIdentity(configuration);
+        QueueOptions.Add(services);
+
+        if (identity.Keycloak is not null)
+        {
+            services.TryAddSingleton<ICredentialsProvider, KeycloakCredentialsProvider>();
+        }
+
+        services.AddSingleton<IMessageBroker>(sp => sp.GetRequiredService<IOptions<QueueOptions>>().Value.Provider switch
+        {
+            QueueProvider.ServiceBus => ActivatorUtilities.CreateInstance<ServiceBusMessageBroker>(sp),
+            _ => ActivatorUtilities.CreateInstance<RabbitMqMessageBroker>(sp)
         });
-
         services.AddSingleton<IMessagePublisher>(sp => sp.GetRequiredService<IMessageBroker>());
         services.AddSingleton<IMessageSubscriber>(sp => sp.GetRequiredService<IMessageBroker>());
 
+        services.AddHealthChecks().Add(new HealthCheckRegistration(
+            "queue", sp => sp.GetRequiredService<IMessageBroker>(), failureStatus: null, tags: [HealthTags.Ready], HealthCheckTimeout));
+
         return services;
-    }
-
-    // Credentials issued by the queue Recipe win: the broker expects them. Without any, the broker
-    // accepts tokens, so the pod's own identity is used, as Service Bus does with Entra on Azure.
-    // With neither, the broker's default login applies, as for a local broker under `dotnet run`.
-    private static WorkloadTokenProvider? BrokerTokenProvider(
-        IServiceProvider services, QueueOptions options, ILoggerFactory loggerFactory)
-    {
-        if (options.HasCredentials) { return null; }
-
-        var provider = services.GetService<WorkloadTokenProvider>();
-        if (provider is null)
-        {
-            loggerFactory.CreateLogger(typeof(ServiceCollectionExtensions)).LogWarning(
-                "The queue has no credentials and the pod has no workload identity " +
-                "(IDENTITY_TOKEN_FILE, IDENTITY_CLIENT_ID, IDENTITY_TOKEN_ENDPOINT); " +
-                "using the broker's default login.");
-        }
-
-        return provider;
     }
 
     /// <summary>
-    /// The workload's own identity for calls to other services, from what the platform gave the pod:
-    /// an Entra workload identity (<c>AZURE_CLIENT_ID</c>, <c>AZURE_FEDERATED_TOKEN_FILE</c>), a
-    /// Keycloak client (<c>IDENTITY_TOKEN_FILE</c>, <c>IDENTITY_CLIENT_ID</c>,
-    /// <c>IDENTITY_TOKEN_ENDPOINT</c>), or none (local compose).
+    /// The inventory service client, called with the workload's own token. Retries, timeouts and the
+    /// circuit breaker come from the standard resilience handler, tuned in <c>Inventory:Resilience</c>.
     /// </summary>
-    public static IServiceCollection AddServiceIdentity(this IServiceCollection services)
+    public static IServiceCollection AddInventoryClient(this IServiceCollection services, IConfiguration configuration)
     {
-        if (services.Any(descriptor => descriptor.ServiceType == typeof(IServiceTokenProvider)))
+        var identity = services.AddWorkloadIdentity(configuration);
+        InventoryOptions.Add(services);
+
+        var client = services.AddHttpClient<IInventoryClient, HttpInventoryClient>((sp, http) =>
         {
-            return services;
+            http.BaseAddress = sp.GetRequiredService<IOptions<InventoryOptions>>().Value.BaseUrl;
+            // The resilience handler's timeouts apply instead.
+            http.Timeout = Timeout.InfiniteTimeSpan;
+        });
+
+        // Outermost, so each attempt gets a current token. Restocking adds stock each time it is
+        // sent, so a POST is never repeated; reserving is repeated by the processor, which can.
+        client.AddStandardResilienceHandler(options =>
+        {
+            configuration.GetSection($"{InventoryOptions.SectionName}:Resilience").Bind(options);
+            options.Retry.DisableFor(HttpMethod.Post);
+        });
+
+        if (identity.Entra is { } entra)
+        {
+            client.AddHttpMessageHandler(sp =>
+                new EntraTokenHandler(entra.Credential, sp.GetRequiredService<IOptions<InventoryOptions>>().Value.Scope!));
+        }
+        else if (identity.Keycloak is not null)
+        {
+            client.AddHttpMessageHandler(sp => new KeycloakTokenHandler(sp.GetRequiredService<IClientCredentialsTokenManager>()));
         }
 
-        // The Keycloak provider is registered whenever the pod has that identity: RabbitMQ uses it
-        // too, and one token carries both audiences.
-        var workload = WorkloadTokenOptions.FromEnvironment();
-        if (workload is not null)
-        {
-            services.AddSingleton(sp => new WorkloadTokenProvider(
-                workload, sp.GetRequiredService<ILogger<WorkloadTokenProvider>>()));
-        }
+        return services;
+    }
 
-        if (AzureCredentialFactory.HasWorkloadIdentity)
+    /// <summary>
+    /// Object storage: a blob container with the workload identity, or an S3 bucket with the keys the
+    /// platform issued. The S3 bucket is created once at startup when it doesn't exist.
+    /// </summary>
+    public static IServiceCollection AddOrderArchive(this IServiceCollection services, IConfiguration configuration)
+    {
+        services.AddWorkloadIdentity(configuration);
+        ArchiveOptions.Add(services);
+
+        if (new ConnectionValues(configuration, ArchiveOptions.ConnectionName).Get("accessKeyId") is not null)
         {
-            services.AddSingleton<IServiceTokenProvider>(sp => new EntraServiceTokenProvider(
-                AzureCredentialFactory.Create(), sp.GetRequiredService<IConfiguration>()["Inventory:Scope"]));
-        }
-        else if (workload is not null)
-        {
-            services.AddSingleton<IServiceTokenProvider>(sp => sp.GetRequiredService<WorkloadTokenProvider>());
+            services.AddSingleton<S3ArchiveStore>();
+            services.AddSingleton<IArchiveStore>(sp => sp.GetRequiredService<S3ArchiveStore>());
+            services.AddHostedService<S3BucketInitializer>();
         }
         else
         {
-            services.AddSingleton<IServiceTokenProvider, NoServiceTokenProvider>();
+            services.AddSingleton<IArchiveStore, BlobArchiveStore>();
         }
 
         return services;
     }
 
-    /// <summary>The inventory service client: <c>Inventory__BaseUrl</c>, called with the workload's own token.</summary>
-    public static IServiceCollection AddInventoryClient(this IServiceCollection services)
+    /// <summary>
+    /// The orders database, signed in as the service's own principal: <c>SQL_USERNAME</c> with
+    /// <c>SQL_PASSWORD</c>, or the pod's Entra workload identity.
+    /// </summary>
+    public static IServiceCollection AddOrderStore(this IServiceCollection services, IConfiguration configuration)
     {
-        services.AddServiceIdentity();
-        services.TryAddSingleton(sp => InventoryOptions.FromConfiguration(sp.GetRequiredService<IConfiguration>()));
-        services.TryAddTransient<ServiceTokenHandler>();
+        var identity = services.AddWorkloadIdentity(configuration);
+        SqlOptions.Add(services);
 
-        services.AddHttpClient<IInventoryClient, HttpInventoryClient>((sp, client) =>
-            {
-                client.BaseAddress = sp.GetRequiredService<InventoryOptions>().BaseUrl;
-                client.Timeout = TimeSpan.FromSeconds(15);
-            })
-            .AddHttpMessageHandler<ServiceTokenHandler>();
-
-        return services;
-    }
-
-    public static IServiceCollection AddOrderArchive(this IServiceCollection services)
-    {
-        services.AddSingleton(sp => ArchiveOptions.FromConfiguration(sp.GetRequiredService<IConfiguration>()));
-        services.AddSingleton<IArchiveStore>(sp =>
-        {
-            var options = sp.GetRequiredService<ArchiveOptions>();
-            var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
-            return options.Provider switch
-            {
-                ArchiveProvider.S3 => new S3ArchiveStore(options, loggerFactory.CreateLogger<S3ArchiveStore>()),
-                _ => new BlobArchiveStore(options, loggerFactory.CreateLogger<BlobArchiveStore>())
-            };
-        });
-        return services;
-    }
-
-    public static IServiceCollection AddOrderStore(this IServiceCollection services)
-    {
-        services.AddSqlConnections();
+        var login = DatabaseLogin.Create(configuration, identity, "SQL_USERNAME", "SQL_PASSWORD",
+            DatabaseLogin.SqlScope, tokenNeedsUserName: false);
+        services.AddSingleton(sp => new SqlConnectionFactory(sp.GetRequiredService<IOptions<SqlOptions>>(), login));
         services.AddSingleton<IOrderStore, SqlOrderStore>();
-        return services;
-    }
 
-    private static void AddSqlConnections(this IServiceCollection services)
-    {
-        services.TryAddSingleton(sp => SqlOptions.FromConfiguration(sp.GetRequiredService<IConfiguration>()));
-        services.TryAddKeyedSingleton<IDatabaseCredentialProvider>(SqlConnectionFactory.CredentialKey,
-            (sp, _) => DatabaseCredentialProviders.ForSql(sp.GetRequiredService<IConfiguration>()));
-        services.TryAddSingleton<SqlConnectionFactory>();
+        services.AddHealthChecks().Add(new HealthCheckRegistration(
+            "sql", sp => ActivatorUtilities.CreateInstance<SqlHealthCheck>(sp), failureStatus: null, tags: [HealthTags.Ready], HealthCheckTimeout));
+
+        return services;
     }
 }

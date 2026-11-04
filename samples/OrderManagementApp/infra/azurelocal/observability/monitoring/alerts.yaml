@@ -134,16 +134,39 @@ spec:
               is more than 5 minutes behind its primary. A failover now would lose the transactions it
               hasn't received. Check the node's disk and network.
 
-        - alert: PostgresWalArchivingStalled
-          # The write-ahead log is archived at least every 5 minutes (CloudNativePG's archive_timeout).
-          # Archiving that stops means backups stop, and the log piles up on the database's volume.
-          expr: max by (namespace, cluster) (cnpg_pg_stat_archiver_seconds_since_last_archival) > 1800
+        - alert: PostgresWalArchivingFailing
+          # PostgreSQL retries a segment it couldn't archive until it succeeds, so a last failure
+          # newer than the last success means archiving is failing now. Based on failures, not on
+          # the time since the last archive: a database with no writes (the inventory database
+          # overnight) has nothing to archive and must not alert.
+          expr: |
+            max by (namespace, cluster, pod) (
+              cnpg_pg_stat_archiver_last_failed_time > cnpg_pg_stat_archiver_last_archived_time
+            )
+            and on (namespace, pod)
+            increase(cnpg_pg_stat_archiver_failed_count[15m]) > 0
           for: 10m
           labels:
             severity: critical
           annotations:
-            summary: "PostgreSQL cluster {{ $labels.cluster }} hasn't archived its log for 30 minutes"
+            summary: "PostgreSQL cluster {{ $labels.cluster }} can't archive its write-ahead log"
             description: >-
-              Cluster {{ $labels.cluster }} (namespace {{ $labels.namespace }}) last archived write-ahead
-              log {{ $value | humanizeDuration }} ago, so its backups have stopped. Check the object store
-              in namespace object-store and the cluster's barman-cloud sidecar logs.
+              Instance {{ $labels.pod }} of cluster {{ $labels.cluster }} (namespace {{ $labels.namespace }})
+              has failed to archive write-ahead log for 10 minutes, so its backups have stopped and
+              the log piles up on its volume. Check the object store in namespace object-store and the
+              instance's plugin-barman-cloud sidecar logs.
+
+        - alert: PostgresWalArchiveBacklog
+          # Segments waiting to be archived that don't drain: archiving is stuck or far behind even
+          # though nothing reports a failure (an archive command that hangs, say).
+          expr: max by (namespace, cluster, pod) (cnpg_collector_pg_wal_archive_status{value="ready"}) > 10
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "PostgreSQL instance {{ $labels.pod }} has {{ $value }} write-ahead log segments waiting to be archived"
+            description: >-
+              Instance {{ $labels.pod }} of cluster {{ $labels.cluster }} (namespace {{ $labels.namespace }})
+              has had more than 10 write-ahead log segments waiting to be archived for 30 minutes.
+              Backups are falling behind and the log is filling the database's volume. Check the
+              object store in namespace object-store and the instance's plugin-barman-cloud sidecar logs.

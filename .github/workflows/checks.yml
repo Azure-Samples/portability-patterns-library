@@ -34,11 +34,17 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install the Radius and Bicep CLIs
+        # Pinned releases, each checked against the SHA-256 of the binary this workflow was
+        # written for, rather than an install script from a moving branch.
+        env:
+          RADIUS_SHA256: 8683feb46a2fd8c38e702ca8a0134813d48976410b9d74e690589ae6362ddfec
+          BICEP_SHA256: aed90eb2c69a6ee2bd70dc0d4354408ac4d04fd9911d3ec8e0cd74ad173e7139
         run: |
-          curl -fsSL https://raw.githubusercontent.com/radius-project/radius/main/deploy/install.sh |
-            /bin/bash -s -- --version "$RADIUS_VERSION" --install-dir "$HOME/.local/bin"
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSLo "$HOME/.local/bin/rad" "https://github.com/radius-project/radius/releases/download/v$RADIUS_VERSION/rad_linux_amd64"
           curl -fsSLo "$HOME/.local/bin/bicep" "https://github.com/Azure/bicep/releases/download/$BICEP_VERSION/bicep-linux-x64"
-          chmod +x "$HOME/.local/bin/bicep"
+          printf '%s  %s\n' "$RADIUS_SHA256" "$HOME/.local/bin/rad" "$BICEP_SHA256" "$HOME/.local/bin/bicep" | sha256sum --check --strict
+          chmod +x "$HOME/.local/bin/rad" "$HOME/.local/bin/bicep"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       # The app and Recipes use the Portability.Messaging/messageQueues type through this extension.
@@ -56,7 +62,7 @@ jobs:
           exit $status
 
   app:
-    name: App build and local run
+    name: App build, tests and local run
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -66,43 +72,105 @@ jobs:
 
       - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
-          dotnet-version: 9.0.x
+          dotnet-version: 9.0.320
 
       - name: Build
-        run: dotnet build OrderManagement.sln --configuration Release
+        run: dotnet build OrderManagement.sln --configuration Release -warnaserror
 
-      - name: Unit tests
+      # Unit tests, the API and inventory authorization tests, and the integration tests, which run
+      # PostgreSQL and SQL Server in containers. With CI=true, as here, they fail rather than skip
+      # when there is no container engine.
+      - name: Tests
         run: dotnet test OrderManagement.sln --configuration Release --no-build
 
-      # The same steps a developer follows in the README to run the app locally.
+      # The same steps a developer follows in the README to run the app locally, with a password
+      # for this run only.
       - name: Start the app with docker compose
         run: |
+          password="Ci-$(openssl rand -hex 16)-A1"
+          echo "::add-mask::$password"
+          echo "LOCAL_PASSWORD=$password" >> "$GITHUB_ENV"
+          export LOCAL_PASSWORD="$password"
           dotnet dev-certs https --export-path local/certs/localhost.crt --format Pem --no-password
           # Keycloak's container user must be able to read the certificate and key.
           chmod 644 local/certs/localhost.*
-          docker compose up --build --detach --wait --wait-timeout 600
+          docker compose up --build --detach --wait --wait-timeout 900
 
       - name: Check the app answers and sign-in is wired up
         run: |
           set -x
           curl -fsS http://localhost:8080/healthz
+          curl -fsS http://localhost:8080/healthz/ready
           test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/me)" = 401
           test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/products)" = 401
           issuer=$(curl -fsSk https://localhost:8443/realms/oms/.well-known/openid-configuration | jq -r .issuer)
           test "$issuer" = https://localhost:8443/realms/oms
-          # dbsetup created the databases, logins and seed data before the services started.
+          # dbsetup and the queue's topology ran before the services started.
           test "$(docker compose ps --all dbsetup --format '{{.ExitCode}}')" = 0
-          # The inventory service is internal; ask it from inside the compose network.
-          inventory() { docker run --rm --network order-management_default docker.io/curlimages/curl:8.11.1 -fsS "http://inventory:8080$1"; }
-          inventory /healthz
-          test "$(inventory /api/products | jq 'length')" = 5
-          test "$(inventory /api/products | jq '[.[] | select(.available > 0)] | length')" = 5
-          # The processor exits if it can't reach the queue, the database or object storage.
-          sleep 30
-          test "$(docker compose ps processor --format '{{.State}}')" = running
-          test "$(docker compose ps inventory --format '{{.State}}')" = running
-          # It created its bucket with the S3 keys it was given.
+          test "$(docker compose ps --all rabbitmq-setup --format '{{.ExitCode}}')" = 0
+          # The processor and the inventory service are internal; ask them from inside the network.
+          inside() { docker run --rm --network order-management_default docker.io/curlimages/curl:8.11.1 -fsS "$1"; }
+          inside http://processor:8080/healthz/ready
+          inside http://inventory:8080/healthz/ready
+          test "$(inside http://inventory:8080/api/products | jq 'length')" = 5
+          # The processor created its bucket with the S3 keys it was given.
           docker compose exec -T seaweedfs sh -c 'echo s3.bucket.list | weed shell' | grep -w orders
+
+      # Signs in as the local demo user the way the browser app does (authorization code with PKCE),
+      # places an order through the API, and waits for the processor to reserve its stock, archive
+      # it and record it.
+      - name: Place an order end to end
+        run: |
+          realm=https://localhost:8443/realms/oms/protocol/openid-connect
+          redirect=http://localhost:8080/
+          jar="$RUNNER_TEMP/keycloak-cookies"
+          verifier=$(openssl rand -hex 48)
+          challenge=$(printf '%s' "$verifier" | openssl dgst -sha256 -binary | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+          form=$(curl -fsSk -c "$jar" -G "$realm/auth" \
+            --data-urlencode client_id=oms-spa --data-urlencode response_type=code \
+            --data-urlencode "redirect_uri=$redirect" --data-urlencode "scope=openid api://oms-api/access_as_user" \
+            --data-urlencode "code_challenge=$challenge" --data-urlencode code_challenge_method=S256)
+          action=$(printf '%s' "$form" | grep -o 'action="[^"]*"' | head -n 1 | sed -e 's/^action="//' -e 's/"$//' -e 's/&amp;/\&/g')
+          location=$(curl -sk -b "$jar" -o /dev/null -w '%{redirect_url}' \
+            --data-urlencode username=demo --data-urlencode password=demo "$action")
+          code=$(printf '%s' "$location" | sed -n 's/.*[?&]code=\([^&]*\).*/\1/p')
+          test -n "$code"
+          token=$(curl -fsSk "$realm/token" -d grant_type=authorization_code -d client_id=oms-spa \
+            --data-urlencode "redirect_uri=$redirect" --data-urlencode "code=$code" --data-urlencode "code_verifier=$verifier" |
+            jq -r .access_token)
+          echo "::add-mask::$token"
+
+          api() { curl -fsS -H "Authorization: Bearer $token" -H 'Content-Type: application/json' "$@"; }
+          order=$(api -d '{"items":[{"sku":"GEN-500","quantity":1}]}' http://localhost:8080/api/orders | jq -r .orderId)
+          echo "Placed order $order"
+          for attempt in $(seq 1 60); do
+            status=$(curl -sS -H "Authorization: Bearer $token" "http://localhost:8080/api/orders/$order" | jq -r '.status // empty')
+            echo "Attempt $attempt: ${status:-not recorded yet}"
+            [ "$status" = Processed ] && break
+            sleep 5
+          done
+          test "$status" = Processed
+          test "$(api http://localhost:8080/api/products | jq '.[] | select(.sku == "GEN-500") | .available')" = 24
+
+      # dbsetup runs on every deployment, so a second run must find everything in place: the same
+      # migrations, data and grants.
+      - name: Run dbsetup again and check it changes nothing
+        run: |
+          pg() { docker compose exec -T postgres psql -U postgres -d inventory -AtX -c "$1"; }
+          sql() { docker compose exec -T sql /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -d omsdb -h -1 -W -b -Q "SET NOCOUNT ON; $1"; }
+          snapshot() {
+            pg "SELECT scriptname FROM public.schemaversions ORDER BY 1"
+            pg "SELECT sku, available FROM inventory.products ORDER BY 1"
+            pg "SELECT table_name, privilege_type FROM information_schema.role_table_grants WHERE grantee = 'inventory' ORDER BY 1, 2"
+            sql "SELECT ScriptName FROM dbo.SchemaVersions ORDER BY 1"
+            sql "SELECT OrderId, Status FROM dbo.Orders ORDER BY 1"
+            sql "SELECT pr.name, pe.permission_name FROM sys.database_permissions AS pe JOIN sys.database_principals AS pr ON pe.grantee_principal_id = pr.principal_id WHERE pr.name IN ('api', 'processor') ORDER BY 1, 2"
+          }
+          before=$(snapshot)
+          docker compose run --rm --no-deps dbsetup
+          after=$(snapshot)
+          echo "$after"
+          test "$before" = "$after"
 
       - name: Logs
         if: failure()
@@ -163,6 +231,8 @@ jobs:
       - name: PowerShell tests
         shell: pwsh
         run: |
+          # The Recipe tests compile the Recipe Packs with the Azure CLI's Bicep.
+          az bicep install
           Install-Module Pester -MinimumVersion 5.5 -Force -Scope CurrentUser
           $result = Invoke-Pester tests/scripts -Output Detailed -PassThru
           exit $result.FailedCount

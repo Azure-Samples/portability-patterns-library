@@ -1,6 +1,4 @@
-# Shared by setup-platform.ps1 and deploy.ps1: per-target values from scripts/settings.json.
-
-. (Join-Path $PSScriptRoot 'secrets.ps1')
+# Shared by setup-platform.ps1, deploy.ps1 and preflight.ps1: per-target values from scripts/settings.json.
 
 function Read-OmsSettings([string]$Target, [string]$Path) {
     if (-not $Path) { $Path = Join-Path (Split-Path -Parent $PSScriptRoot) 'settings.json' }
@@ -27,22 +25,6 @@ function Get-OmsStepArguments([hashtable]$Settings, [string]$Step, [string]$Scri
     $arguments
 }
 
-# The defaults a script declares in its param block, read without running it, so other scripts
-# can use the same values instead of repeating them.
-function Get-OmsScriptDefaults([string]$Path) {
-    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$null, [ref]$null)
-    $defaults = @{}
-    foreach ($parameter in $ast.ParamBlock.Parameters) {
-        if ($parameter.DefaultValue -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
-            $defaults[$parameter.Name.VariablePath.UserPath] = $parameter.DefaultValue.Value
-        }
-        elseif ($parameter.DefaultValue) {
-            try { $defaults[$parameter.Name.VariablePath.UserPath] = $parameter.DefaultValue.SafeGetValue() } catch { }
-        }
-    }
-    $defaults
-}
-
 # Points az at the target's subscription ('Common' SubscriptionId) for one run, so every step works
 # in the same subscription whatever az had selected before. Returns the previous subscription for
 # Restore-OmsSubscription, or nothing when there was nothing to change.
@@ -50,7 +32,8 @@ function Select-OmsSubscription([hashtable]$Settings) {
     $id = if ($Settings.ContainsKey('Common')) { $Settings['Common']['SubscriptionId'] }
     if (-not $id -or $id -like '<*') { return }
 
-    $previous = az account show --query id --output tsv 2>$null
+    $previous = az account show --query id --output tsv
+    if ($LASTEXITCODE -ne 0) { throw 'Not signed in to Azure. Run az login first.' }
     if ($previous -eq $id) { return }
 
     az account set --subscription $id
@@ -62,7 +45,9 @@ function Select-OmsSubscription([hashtable]$Settings) {
 }
 
 function Restore-OmsSubscription([string]$SubscriptionId) {
-    if ($SubscriptionId) { az account set --subscription $SubscriptionId 2>$null }
+    if (-not $SubscriptionId) { return }
+    az account set --subscription $SubscriptionId
+    if ($LASTEXITCODE -ne 0) { Write-Warning "Could not switch az back to subscription '$SubscriptionId'." }
 }
 
 

@@ -86,9 +86,9 @@ param kubernetesVersion string = ''
 param registrySku string = 'Standard'
 
 @description('''
-Entra ID object IDs granted cluster administrator access. Required because local accounts are
-disabled: without at least one entry nobody can reach the API server. `provision-infra.ps1` passes
-the signed-in user by default.
+Entra ID object IDs granted cluster administrator access: users, groups (preferred) or service
+principals. Required because local accounts are disabled: without at least one entry nobody can
+reach the API server. `provision-infra.ps1` passes the signed-in user by default.
 ''')
 param clusterAdminObjectIds array = []
 

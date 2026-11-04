@@ -1,46 +1,42 @@
 using System.Diagnostics;
+using Microsoft.Extensions.Options;
 using OrderManagement.Shared.Diagnostics;
 using OrderManagement.Shared.Inventory;
 using OrderManagement.Shared.Messaging;
 using OrderManagement.Shared.Models;
 using OrderManagement.Shared.Persistence;
 using OrderManagement.Shared.Storage;
+using Polly;
 
 namespace OrderManagement.Processor;
 
 /// <summary>
 /// Consumes orders from the portable queue, reserves their stock with the inventory service,
-/// archives each one as a JSON blob in object storage, and records it in SQL Server as processed,
-/// or rejected when the stock is not there. The blob is written before the SQL row so the row
-/// always points at an archive that exists; the reservation and the SQL upsert are idempotent per
-/// order, so a redelivered message is safe to reprocess. When an order fails on its last delivery
-/// and is not recorded, its stock is released before the broker dead-letters it.
+/// archives each one as a JSON document in object storage, and records it in SQL as processed, or
+/// rejected when the stock is not there. The document is written before the SQL row so the row
+/// always points at an archive that exists; the reservation, the archive and the SQL insert are
+/// idempotent per order, so a redelivered message is safe to reprocess. Transient failures are
+/// retried in place (<see cref="ProcessorOptions"/>). When an order fails on its last delivery and is
+/// not recorded, its stock is released before the broker dead-letters it.
 /// </summary>
 public sealed class OrderProcessor(
     IMessageSubscriber subscriber,
     IArchiveStore archiveStore,
     IOrderStore orderStore,
     IInventoryClient inventory,
+    [FromKeyedServices(OrderProcessor.PipelineName)] ResiliencePipeline pipeline,
+    IOptions<ProcessorOptions> options,
     OrderMetrics metrics,
     ILogger<OrderProcessor> logger) : BackgroundService
 {
-    // Long enough to ride out an inventory restart without using up the message's deliveries.
-    private static readonly TimeSpan InventoryRetryBudget = TimeSpan.FromMinutes(5);
-    private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromSeconds(30);
+    public const string PipelineName = "order-processing";
 
     private long _processed;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        logger.LogInformation("Processor starting; initializing object storage");
-
-        await archiveStore.InitializeAsync(stoppingToken).ConfigureAwait(false);
-
-        logger.LogInformation("Object storage ready; beginning to consume");
-
         await subscriber.RunAsync(HandleMessageAsync, stoppingToken).ConfigureAwait(false);
-
-        logger.LogInformation("Processor stopping after processing {Total} orders", _processed);
+        logger.LogInformation("Processor stopping after processing {Total} orders", Interlocked.Read(ref _processed));
     }
 
     private async Task HandleMessageAsync(QueueMessage message, CancellationToken cancellationToken)
@@ -57,9 +53,10 @@ public sealed class OrderProcessor(
 
         try
         {
-            await ProcessAsync(order, started, cancellationToken).ConfigureAwait(false);
+            await pipeline.ExecuteAsync(
+                async token => await ProcessAsync(order, started, token).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception ex) when (message.IsLastDelivery)
+        catch (Exception ex) when (message.IsLastDelivery && !cancellationToken.IsCancellationRequested)
         {
             // The broker dead-letters the order after this, so the stock it may hold is given back,
             // unless the order was recorded.
@@ -70,7 +67,12 @@ public sealed class OrderProcessor(
 
     private async Task ProcessAsync(Order order, long started, CancellationToken cancellationToken)
     {
-        var reservation = await ReserveAsync(order, cancellationToken).ConfigureAwait(false);
+        var reservation = await inventory.ReserveAsync(new ReservationRequest
+        {
+            OrderId = order.OrderId,
+            Lines = order.Lines.Select(line => new ReservationLine { Sku = line.Sku, Quantity = line.Quantity }).ToList()
+        }, cancellationToken).ConfigureAwait(false);
+
         var reserved = reservation.Status == ReservationStatus.Reserved;
         var (status, reason) = reserved
             ? (OrderStatus.Processed, (string?)null)
@@ -103,7 +105,7 @@ public sealed class OrderProcessor(
     // to be settled by hand, rather than sold twice.
     private async Task ReleaseUnrecordedStockAsync(Order order, Exception failure)
     {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var timeout = new CancellationTokenSource(options.Value.ReleaseTimeout);
 
         StoredOrder? recorded;
         try
@@ -135,36 +137,6 @@ public sealed class OrderProcessor(
         catch (Exception ex) when (ex is InventoryUnavailableException or InventoryRequestException or OperationCanceledException)
         {
             logger.LogError(ex, "Could not release the stock of dead-lettered order {OrderId}; release it by hand", order.OrderId);
-        }
-    }
-
-    // A transient inventory failure is retried here, with backoff, rather than by redelivering the
-    // message: the queue allows only a few deliveries. Past the budget the message fails and the
-    // broker redelivers it later.
-    private async Task<ReservationResult> ReserveAsync(Order order, CancellationToken cancellationToken)
-    {
-        var request = new ReservationRequest
-        {
-            OrderId = order.OrderId,
-            Lines = order.Lines.Select(line => new ReservationLine { Sku = line.Sku, Quantity = line.Quantity }).ToList()
-        };
-
-        var deadline = DateTimeOffset.UtcNow + InventoryRetryBudget;
-        var delay = TimeSpan.FromSeconds(1);
-        for (var attempt = 1; ; attempt++)
-        {
-            try
-            {
-                return await inventory.ReserveAsync(request, cancellationToken).ConfigureAwait(false);
-            }
-            catch (InventoryUnavailableException ex) when (DateTimeOffset.UtcNow + delay < deadline)
-            {
-                logger.LogWarning(
-                    "Inventory unavailable for order {OrderId} (attempt {Attempt}): {Reason}. Retrying in {Delay}",
-                    order.OrderId, attempt, ex.Message, delay);
-                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
-                delay = TimeSpan.FromSeconds(Math.Min(delay.TotalSeconds * 2, MaxRetryDelay.TotalSeconds));
-            }
         }
     }
 }

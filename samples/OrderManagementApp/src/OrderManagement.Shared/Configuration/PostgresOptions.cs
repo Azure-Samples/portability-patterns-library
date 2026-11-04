@@ -1,67 +1,60 @@
-using Microsoft.Extensions.Configuration;
+using System.ComponentModel.DataAnnotations;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Npgsql;
 
 namespace OrderManagement.Shared.Configuration;
 
 /// <summary>
-/// Where the <c>inventorydb</c> connection points: Azure Database for PostgreSQL on Azure, a
-/// PostgreSQL container on Azure Local and in local compose. Credentials are not part of it.
+/// The <c>inventorydb</c> connection (Azure Database for PostgreSQL on Azure, a PostgreSQL server on
+/// Azure Local and in local compose) and the client's tunables from the <c>InventoryDb</c> section.
+/// Credentials are not part of it.
 /// </summary>
 public sealed class PostgresOptions
 {
-    public required string Host { get; init; }
-    public required int Port { get; init; }
-    public required string Database { get; init; }
+    public const string ConnectionName = "inventorydb";
+    public const string SectionName = "InventoryDb";
+
+    [Required]
+    public string? Host { get; set; }
+
+    [Range(1, 65535)]
+    public int Port { get; set; } = 5432;
+
+    [Required]
+    public string? Database { get; set; }
 
     /// <summary><c>CONNECTION_INVENTORYDB_TLS</c>: <c>required</c> (default) or <c>optional</c>.</summary>
-    public required bool TlsRequired { get; init; }
+    public bool TlsRequired { get; set; } = true;
 
-    public static PostgresOptions FromConfiguration(IConfiguration configuration, string connectionName = "inventorydb")
-    {
-        var values = new ConnectionValues(configuration, connectionName);
-        var tls = values.Get("tls")?.Trim().ToLowerInvariant() ?? "required";
+    [Range(1, 600)]
+    public int ConnectTimeoutSeconds { get; set; } = 30;
 
-        return new PostgresOptions
-        {
-            Host = values.GetRequired("host"),
-            Port = values.GetInt32("port", 5432),
-            Database = values.Get("database") ?? "inventory",
-            TlsRequired = tls switch
-            {
-                "required" => true,
-                "optional" => false,
-                _ => throw new InvalidOperationException(
-                    $"Unsupported TLS setting '{tls}' for connection '{connectionName}'. Expected 'required' or 'optional'.")
-            }
-        };
-    }
+    [Range(1, 3600)]
+    public int CommandTimeoutSeconds { get; set; } = 60;
 
     /// <summary>
-    /// Connection string without a password; the data source supplies it per connection. With TLS
-    /// required the server's certificate is verified: Azure Database for PostgreSQL has one from a
-    /// public CA; an in-cluster server's CA is the file in <c>PGSSLROOTCERT</c>, which the Azure
-    /// Local platform sets.
+    /// With TLS required the server's certificate is verified: Azure Database for PostgreSQL has one
+    /// from a public CA; for an in-cluster server Npgsql reads the CA from <c>PGSSLROOTCERT</c>, which
+    /// the Azure Local platform sets.
     /// </summary>
-    public string BuildConnectionString(string userName, string? database = null)
+    public NpgsqlConnectionStringBuilder CreateConnectionStringBuilder(string? database = null) => new()
     {
-        var builder = new NpgsqlConnectionStringBuilder
-        {
-            Host = Host,
-            Port = Port,
-            Database = database ?? Database,
-            Username = userName,
-            SslMode = TlsRequired ? SslMode.VerifyFull : SslMode.Prefer,
-            Timeout = 30,
-            CommandTimeout = 60,
-            ApplicationName = "OrderManagement"
-        };
+        Host = Host,
+        Port = Port,
+        Database = database ?? Database,
+        SslMode = TlsRequired ? SslMode.VerifyFull : SslMode.Prefer,
+        Timeout = ConnectTimeoutSeconds,
+        CommandTimeout = CommandTimeoutSeconds,
+        ApplicationName = "OrderManagement"
+    };
 
-        var rootCertificate = Environment.GetEnvironmentVariable("PGSSLROOTCERT");
-        if (!string.IsNullOrWhiteSpace(rootCertificate))
+    public static OptionsBuilder<PostgresOptions> Add(IServiceCollection services) =>
+        services.AddConnectionOptions<PostgresOptions>(ConnectionName, SectionName, (options, values) =>
         {
-            builder.RootCertificate = rootCertificate;
-        }
-
-        return builder.ConnectionString;
-    }
+            options.Host = values.Get("host");
+            options.Port = values.GetInt32("port") ?? options.Port;
+            options.Database = values.Get("database");
+            options.TlsRequired = values.GetTlsRequired();
+        });
 }

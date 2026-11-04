@@ -48,9 +48,16 @@ param spaSettings object = {}
 @description('''
 How the inventory service validates the service tokens its callers present: `Authority`,
 `MetadataAddress` (optional) and `Audience`. Entra ID: the inventory app registration. Keycloak:
-the realm and the `oms-inventory` audience. Empty disables the check (local runs only).
+the realm and the `oms-inventory` audience. Required: the inventory service accepts no call without
+a valid token.
 ''')
-param inventoryAuthentication object = {}
+param inventoryAuthentication {
+  @minLength(1)
+  Authority: string
+  MetadataAddress: string?
+  @minLength(1)
+  Audience: string
+}
 
 @description('Scope the API and processor request a token for, to call the inventory service. Entra ID: `api://<client-id>/.default`. Empty where the token carries the audience by default (Keycloak).')
 param inventoryScope string = ''
@@ -93,7 +100,7 @@ func serviceEnv(serviceName string) object => {
 }
 
 var inventoryAuthenticationEnv = toObject(
-  filter(items(inventoryAuthentication), entry => !empty(string(entry.value))),
+  filter(items(inventoryAuthentication), entry => entry.value != null && !empty(string(entry.value))),
   entry => 'InventoryAuth__${entry.key}',
   entry => { value: string(entry.value) }
 )
@@ -173,13 +180,14 @@ resource inventoryDatabase 'Radius.Data/postgreSqlDatabases@2025-08-01-preview' 
 // API is published are decided by the platform's container Recipe, not here.
 
 // Inventory service: owns products and stock. Only the API and the processor call it, each with a
-// token from its own identity; no user tokens reach it.
+// token from its own identity; no user tokens reach it. Two replicas: both order paths depend on it,
+// so it must keep serving while a node is drained or a pod restarts.
 resource inventory 'Radius.Compute/containers@2025-08-01-preview' = {
   name: 'inventory'
   properties: {
     environment: environment
     application: app.id
-    replicas: 1
+    replicas: 2
     containers: {
       inventory: {
         image: inventoryImage
@@ -191,7 +199,7 @@ resource inventory 'Radius.Compute/containers@2025-08-01-preview' = {
         readinessProbe: {
           httpGet: {
             port: 8080
-            path: '/healthz'
+            path: '/healthz/ready'
           }
           periodSeconds: 10
         }
@@ -232,13 +240,14 @@ var inventoryClientEnv = {
 }
 
 // Orders API and browser app: users sign in, place orders, and the API publishes each order to the
-// queue. Products, stock and restocking go through the inventory service.
+// queue. Products, stock and restocking go through the inventory service. Two replicas: it is the
+// app's only public entry point.
 resource api 'Radius.Compute/containers@2025-08-01-preview' = {
   name: 'api'
   properties: {
     environment: environment
     application: app.id
-    replicas: 1
+    replicas: 2
     containers: {
       api: {
         image: apiImage
@@ -250,7 +259,7 @@ resource api 'Radius.Compute/containers@2025-08-01-preview' = {
         readinessProbe: {
           httpGet: {
             port: 8080
-            path: '/healthz'
+            path: '/healthz/ready'
           }
           periodSeconds: 10
         }
@@ -315,16 +324,39 @@ resource web 'Radius.Compute/routes@2025-08-01-preview' = {
   }
 }
 // Order processor: consumes orders, reserves their stock, archives each as a JSON blob, and records
-// the result in SQL.
+// the result in SQL. Two replicas, competing for the queue's messages: each order's reservation,
+// archive and SQL upsert are idempotent, so two consumers are safe, and orders keep flowing while
+// one is drained or restarting instead of waiting in the queue.
 resource processor 'Radius.Compute/containers@2025-08-01-preview' = {
   name: 'processor'
   properties: {
     environment: environment
     application: app.id
-    replicas: 1
+    replicas: 2
     containers: {
       processor: {
         image: processorImage
+        // No traffic comes in; the port serves the probes only.
+        ports: {
+          http: {
+            containerPort: 8080
+          }
+        }
+        readinessProbe: {
+          httpGet: {
+            port: 8080
+            path: '/healthz/ready'
+          }
+          periodSeconds: 10
+        }
+        livenessProbe: {
+          httpGet: {
+            port: 8080
+            path: '/healthz'
+          }
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        }
         env: union(serviceEnv('processor'), {
           SQL_USERNAME: { value: 'processor' }
         }, inventoryClientEnv)

@@ -3,6 +3,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using OrderManagement.DbSetup;
+using OrderManagement.Shared.Configuration;
+using OrderManagement.Shared.DependencyInjection;
 using OrderManagement.Shared.Diagnostics;
 
 // One-shot job, run before the services start: creates the databases, applies their migrations
@@ -13,13 +15,18 @@ builder.Logging.AddSimpleConsole(options => options.SingleLine = true);
 // Npgsql logs every command at Information; this job's own messages say what it did.
 builder.Logging.AddFilter("Npgsql", LogLevel.Warning);
 
+builder.Services.AddWorkloadIdentity(builder.Configuration);
+builder.Services.AddOptions<DbSetupOptions>().BindConfiguration(DbSetupOptions.SectionName);
+
 if (!string.IsNullOrWhiteSpace(builder.Configuration["CONNECTION_SQL_HOST"]))
 {
+    SqlOptions.Add(builder.Services);
     builder.Services.AddSingleton<IDatabaseSetup, SqlServerSetup>();
 }
 
 if (!string.IsNullOrWhiteSpace(builder.Configuration["CONNECTION_INVENTORYDB_HOST"]))
 {
+    PostgresOptions.Add(builder.Services);
     builder.Services.AddSingleton<IDatabaseSetup, PostgresSetup>();
 }
 

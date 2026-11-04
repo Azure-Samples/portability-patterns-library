@@ -40,13 +40,15 @@ function Get-OmsSecretValue {
     (Get-OmsSecretData -KubeContext $KubeContext -Namespace $Namespace -Name $Name)[$Key]
 }
 
-# Creates or replaces an Opaque Secret. The values go to kubectl on stdin, never on a command line.
+# Creates or replaces a Secret, Opaque unless -Type says otherwise. The values go to kubectl on
+# stdin, never on a command line.
 function Set-OmsSecret {
     param(
         [Parameter(Mandatory = $true)][string]$KubeContext,
         [Parameter(Mandatory = $true)][string]$Namespace,
         [Parameter(Mandatory = $true)][string]$Name,
-        [Parameter(Mandatory = $true)][hashtable]$Data
+        [Parameter(Mandatory = $true)][hashtable]$Data,
+        [string]$Type = 'Opaque'
     )
 
     $encoded = @{}
@@ -54,7 +56,7 @@ function Set-OmsSecret {
     @{
         apiVersion = 'v1'
         kind       = 'Secret'
-        type       = 'Opaque'
+        type       = $Type
         metadata   = @{ name = $Name; namespace = $Namespace }
         data       = $encoded
     } | ConvertTo-Json -Depth 5 | kubectl apply --context $KubeContext -f - | Out-Null

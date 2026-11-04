@@ -6,7 +6,7 @@ using OpenTelemetry;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
-using OrderManagement.Shared.Identity;
+using OrderManagement.Shared.DependencyInjection;
 
 namespace OrderManagement.Shared.Diagnostics;
 
@@ -63,13 +63,11 @@ public static class TelemetryExtensions
         var appInsights = builder.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"];
         if (!string.IsNullOrWhiteSpace(appInsights))
         {
+            var identity = builder.Services.AddWorkloadIdentity(builder.Configuration);
             telemetry.UseAzureMonitorExporter(options =>
             {
                 options.ConnectionString = appInsights;
-                if (!string.IsNullOrWhiteSpace(builder.Configuration["AZURE_CLIENT_ID"]))
-                {
-                    options.Credential = AzureCredentialFactory.Create();
-                }
+                options.Credential = identity.Entra?.Credential;
             });
         }
         else if (!string.IsNullOrWhiteSpace(builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"]))

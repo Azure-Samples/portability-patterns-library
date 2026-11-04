@@ -1,4 +1,7 @@
-using Microsoft.Extensions.Configuration;
+using System.ComponentModel.DataAnnotations;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
+using OrderManagement.Shared.Identity;
 
 namespace OrderManagement.Shared.Configuration;
 
@@ -9,56 +12,66 @@ public enum ArchiveProvider
 }
 
 /// <summary>
-/// Settings for the <c>archive</c> connection, backed by the built-in
-/// <c>Radius.Storage/objectStorage</c> Resource Type.
+/// The <c>archive</c> connection, backed by the built-in <c>Radius.Storage/objectStorage</c> Resource
+/// Type, and the client's tunables from the <c>Archive</c> section.
 ///
-/// In Azure this resolves to an Azure Storage account reached over its blob endpoint using
-/// Workload Identity. On Azure Local it resolves to a bucket in the site's S3-compatible object
-/// store (SeaweedFS), reached with S3 keys the platform issues to the services connected to it.
+/// On Azure this is a blob container in a storage account, reached with the workload identity. On
+/// Azure Local it is a bucket in the site's S3-compatible object store (SeaweedFS), reached with the
+/// S3 keys the platform issues to the services connected to it.
 /// </summary>
 public sealed class ArchiveOptions
 {
+    public const string ConnectionName = "archive";
+    public const string SectionName = "Archive";
+
     /// <summary>The blob container, or on S3 the bucket.</summary>
-    public required string ContainerName { get; init; }
+    [Required]
+    public string? ContainerName { get; set; }
 
     /// <summary>
     /// Blob service endpoint, for example <c>https://mystorage.blob.core.windows.net</c>, or the S3
     /// endpoint, for example <c>https://seaweedfs-s3.object-store.svc.cluster.local:8443</c>.
     /// </summary>
-    public string? Endpoint { get; init; }
-
-    public string? AccountName { get; init; }
+    [Required]
+    public Uri? Endpoint { get; set; }
 
     /// <summary>S3 access key ID. Present only on S3, where it selects that provider.</summary>
-    public string? AccessKeyId { get; init; }
+    public string? AccessKeyId { get; set; }
 
-    public string? SecretAccessKey { get; init; }
+    public string? SecretAccessKey { get; set; }
 
-    public ArchiveProvider Provider => string.IsNullOrWhiteSpace(AccessKeyId) ? ArchiveProvider.AzureBlob : ArchiveProvider.S3;
+    /// <summary>The region S3 requests are signed for. A self-hosted store accepts any.</summary>
+    [Required]
+    public string Region { get; set; } = "us-east-1";
 
-    public static ArchiveOptions FromConfiguration(IConfiguration configuration, string connectionName = "archive")
-    {
-        var values = new ConnectionValues(configuration, connectionName);
-        var options = new ArchiveOptions
-        {
-            ContainerName = values.Get("containerName") ?? "orders",
-            Endpoint = values.Get("endpoint"),
-            AccountName = values.Get("accountName"),
-            AccessKeyId = values.Get("accessKeyId"),
-            SecretAccessKey = values.Get("secretAccessKey")
-        };
+    /// <summary>Retries of a failed request, with exponential backoff, by the storage SDK itself.</summary>
+    [Range(0, 20)]
+    public int MaxRetries { get; set; } = 3;
 
-        if (options.Endpoint is null)
-        {
-            throw new InvalidOperationException(
-                $"Object storage requires an endpoint: CONNECTION_{connectionName.ToUpperInvariant()}_ENDPOINT.");
-        }
-        if (options.Provider == ArchiveProvider.S3 && options.SecretAccessKey is null)
-        {
-            throw new InvalidOperationException(
-                $"S3 object storage requires both keys: CONNECTION_{connectionName.ToUpperInvariant()}_ACCESSKEYID and _SECRETACCESSKEY.");
-        }
+    public TimeSpan RetryDelay { get; set; } = TimeSpan.FromSeconds(0.8);
 
-        return options;
-    }
+    public TimeSpan MaxRetryDelay { get; set; } = TimeSpan.FromMinutes(1);
+
+    /// <summary>How long one request may take.</summary>
+    public TimeSpan RequestTimeout { get; set; } = TimeSpan.FromSeconds(100);
+
+    public ArchiveProvider Provider => AccessKeyId is null ? ArchiveProvider.AzureBlob : ArchiveProvider.S3;
+
+    public static OptionsBuilder<ArchiveOptions> Add(IServiceCollection services) =>
+        services.AddConnectionOptions<ArchiveOptions>(ConnectionName, SectionName, (options, values) =>
+            {
+                options.ContainerName = values.Get("containerName");
+                options.Endpoint = values.Get("endpoint") is { } endpoint
+                    ? Uri.TryCreate(endpoint, UriKind.Absolute, out var uri)
+                        ? uri
+                        : throw new InvalidOperationException($"{values.Key("endpoint")} must be an absolute URL, not '{endpoint}'.")
+                    : null;
+                options.AccessKeyId = values.Get("accessKeyId");
+                options.SecretAccessKey = values.Get("secretAccessKey");
+            })
+            .Validate(options => options.AccessKeyId is null || options.SecretAccessKey is not null,
+                "S3 object storage needs both keys: CONNECTION_ARCHIVE_ACCESSKEYID and CONNECTION_ARCHIVE_SECRETACCESSKEY.")
+            .Validate<WorkloadIdentity>(
+                (options, identity) => options.Provider != ArchiveProvider.AzureBlob || identity.Entra is not null,
+                "Blob storage needs the pod's Entra workload identity (AZURE_CLIENT_ID and AZURE_FEDERATED_TOKEN_FILE).");
 }

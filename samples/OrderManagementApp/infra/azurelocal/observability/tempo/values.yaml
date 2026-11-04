@@ -35,8 +35,20 @@ tempo:
       memory: 1Gi
   securityContext:
     allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true  # it writes only to its volume, /var/tempo
     capabilities:
       drop: [ALL]
+    seccompProfile:
+      type: RuntimeDefault
+
+# The pod's: the image's tempo user, never root.
+securityContext:
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
 
 persistence:
   enabled: true

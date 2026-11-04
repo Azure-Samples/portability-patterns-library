@@ -1,62 +1,79 @@
+using System.ComponentModel.DataAnnotations;
 using Microsoft.Data.SqlClient;
-using Microsoft.Extensions.Configuration;
-using OrderManagement.Shared.Identity;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace OrderManagement.Shared.Configuration;
 
 /// <summary>
-/// Where the <c>sql</c> connection points, backed by the built-in
-/// <c>Radius.Data/sqlServerDatabases</c> Resource Type: Azure SQL Database on Azure, a SQL Server
-/// container on Azure Local.
-///
-/// Only the target comes from the connection. How the service signs in is a separate concern
-/// (<see cref="IDatabaseCredentialProvider"/>): each service has its own least-privilege principal.
+/// The <c>sql</c> connection, backed by the built-in <c>Radius.Data/sqlServerDatabases</c> Resource
+/// Type (Azure SQL Database on Azure, a SQL Server container on Azure Local), and the client's
+/// tunables from the <c>Sql</c> section. Only the target comes from the connection: each service signs
+/// in as its own least-privilege principal (<see cref="Identity.DatabaseLogin"/>).
 /// </summary>
 public sealed class SqlOptions
 {
-    public required string Host { get; init; }
-    public required int Port { get; init; }
-    public required string Database { get; init; }
+    public const string ConnectionName = "sql";
+    public const string SectionName = "Sql";
 
-    public static SqlOptions FromConfiguration(IConfiguration configuration, string connectionName = "sql")
-    {
-        var values = new ConnectionValues(configuration, connectionName);
+    [Required]
+    public string? Host { get; set; }
 
-        return new SqlOptions
-        {
-            Host = values.GetRequired("host"),
-            Port = values.GetInt32("port", 1433),
-            Database = values.Get("database") ?? "omsdb"
-        };
-    }
+    [Range(1, 65535)]
+    public int Port { get; set; } = 1433;
+
+    [Required]
+    public string? Database { get; set; }
 
     /// <summary>
-    /// Connection string for <paramref name="database"/> (default: the application database). With
-    /// an access token the string carries no credentials; the token is attached to the connection.
+    /// <c>CONNECTION_SQL_TLS</c>: <c>required</c> (default) encrypts the connection and verifies the
+    /// server's certificate against the CAs the process trusts; on Azure Local that is the site CA the
+    /// platform gives every pod. <c>optional</c> is only for a local server without a certificate.
     /// </summary>
-    public string BuildConnectionString(DatabaseCredential credential, string? database = null)
+    public bool TlsRequired { get; set; } = true;
+
+    [Range(1, 600)]
+    public int ConnectTimeoutSeconds { get; set; } = 30;
+
+    [Range(1, 3600)]
+    public int CommandTimeoutSeconds { get; set; } = 60;
+
+    /// <summary>
+    /// SqlClient's own retry of opening a connection, on the errors it knows to be transient (an Azure
+    /// SQL failover or reconfiguration, for example), with exponential backoff.
+    /// </summary>
+    [Range(1, 60)]
+    public int OpenRetries { get; set; } = 5;
+
+    public TimeSpan OpenRetryDelay { get; set; } = TimeSpan.FromSeconds(1);
+
+    public TimeSpan OpenRetryMaxDelay { get; set; } = TimeSpan.FromSeconds(30);
+
+    public SqlConnectionStringBuilder CreateConnectionStringBuilder(string? database = null) => new()
     {
-        var builder = new SqlConnectionStringBuilder
+        DataSource = $"tcp:{Host},{Port}",
+        InitialCatalog = database ?? Database,
+        Encrypt = TlsRequired ? SqlConnectionEncryptOption.Mandatory : SqlConnectionEncryptOption.Optional,
+        TrustServerCertificate = false,
+        ConnectTimeout = ConnectTimeoutSeconds,
+        CommandTimeout = CommandTimeoutSeconds,
+        ApplicationName = "OrderManagement"
+    };
+
+    public SqlRetryLogicBaseProvider CreateOpenRetryProvider() =>
+        SqlConfigurableRetryFactory.CreateExponentialRetryProvider(new SqlRetryLogicOption
         {
-            DataSource = $"tcp:{Host},{Port}",
-            InitialCatalog = database ?? Database,
-            Encrypt = true,
-            ConnectTimeout = 30,
-            CommandTimeout = 60,
-            ApplicationName = "OrderManagement"
-        };
+            NumberOfTries = OpenRetries,
+            DeltaTime = OpenRetryDelay,
+            MaxTimeInterval = OpenRetryMaxDelay
+        });
 
-        if (credential.IsAccessToken)
+    public static OptionsBuilder<SqlOptions> Add(IServiceCollection services) =>
+        services.AddConnectionOptions<SqlOptions>(ConnectionName, SectionName, (options, values) =>
         {
-            return builder.ConnectionString;
-        }
-
-        builder.UserID = credential.UserName;
-        builder.Password = credential.Secret;
-
-        // A SQL login means the SQL Server container, which uses a self-signed certificate.
-        builder.TrustServerCertificate = true;
-
-        return builder.ConnectionString;
-    }
+            options.Host = values.Get("host");
+            options.Port = values.GetInt32("port") ?? options.Port;
+            options.Database = values.Get("database");
+            options.TlsRequired = values.GetTlsRequired();
+        });
 }

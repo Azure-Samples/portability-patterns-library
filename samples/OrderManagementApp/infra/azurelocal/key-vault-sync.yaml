@@ -2,11 +2,20 @@
 # application namespace, through the Key Vault Secret Store extension. Applied by
 # scripts/infra/azurelocal/key-vault.ps1 with the ${...} values filled in.
 #
-# No workload reads oms-db-passwords. It is where new versions arrive: scripts/deploy.ps1 sets
-# them in the databases, then copies each service's own password into
-# {service}-db-credentials, which the Recipe Pack hands to the service. A pod that restarts in
-# between keeps the password the database still has. With the link to Azure down, the last copies
-# keep working.
+# No service reads oms-db-passwords; only the database setup job does. It is where new versions
+# arrive: scripts/deploy.ps1 sets them in the databases (the setup job reads them from here), then
+# copies each service's own password into {service}-db-credentials, which the Recipe Pack hands to
+# the service. A pod that restarts in between keeps the password the database still has. With the
+# link to Azure down, the last copies keep working.
+#
+# The administrator passwords are synced here too, into the application namespace, because that's
+# where everything that uses them runs, and a pod can only read Secrets in its own namespace: the
+# SQL Server and PostgreSQL servers the Recipes deploy there (each Recipe keeps its administrator
+# password in a Secret next to its server), and the database setup job (scripts/lib/database.ps1),
+# which signs in as administrator to create each service's user. Syncing them elsewhere would add a
+# copy, not remove this one. Moving them out takes the database servers and the setup job out of
+# the application namespace. Until then, keep Secret read access in the namespace to the deploy
+# identity and cluster administrators: the services' own accounts have none.
 apiVersion: v1
 kind: ServiceAccount
 metadata:

@@ -20,15 +20,19 @@
     What gets deployed is in infra/azurelocal/keycloak: keycloak.yaml (two Keycloak replicas),
     database/ (their PostgreSQL database: with -Availability high a CloudNativePG cluster backed up
     to the site's object store, with standard one StatefulSet), service.yaml (Keycloak's load
-    balancer address) and realm.json (the 'oms' realm: AD federation, app roles, the sign-in and
-    workload clients). This script does the per-site parts
-    around those files: it creates the Secrets, gives Keycloak its address and a certificate for it,
-    writes the site values into the keycloak-realm-settings ConfigMap, applies the folder with
-    kustomize, and prepares the app's namespace. The folder's README.md describes the same steps by
-    hand.
+    balancer address), realm.json (the 'oms' realm: AD federation, app roles, the sign-in and
+    workload clients) and realm-config.yaml (a Job that applies realm.json with keycloak-config-cli).
+    This script does the per-site parts around those files: it creates the Secrets, gives Keycloak
+    its address and certificates, writes the site values into the keycloak-realm-settings ConfigMap,
+    applies the folder with kustomize, waits for the realm to be applied, and prepares the app's
+    namespace. The folder's README.md describes the same steps by hand.
+
+    Every run applies realm.json and the site values again, so changing the app's address, the
+    directory, the bind password or realm.json and re-running is all a change takes.
 
     Keycloak's address is one from the Arc load balancer, kept on later runs, so its issuer URL,
-    https://<address>/realms/oms, doesn't depend on any one node.
+    https://<address>/realms/oms, doesn't depend on any one node. The admin console is not served
+    on that address; see "Admin access" in the folder's README.md.
 
     Keycloak trusts the cluster's ServiceAccount token issuer. It fetches the cluster's signing keys
     from the API server inside the cluster (kubernetes.default.svc), never from the issuer's own
@@ -49,6 +53,9 @@
     Host name of the site's domain controller. Under LDAPS this must
     be the name in the controller's certificate, not its address, or the handshake fails.
 
+.PARAMETER AdDomain
+    The Active Directory domain, such as contoso.local. Keycloak reads the OU -AdOuName under it.
+
 .PARAMETER KeycloakIp
     Address for Keycloak from the load balancer's range. Empty keeps the one it has, or takes the
     first free one.
@@ -64,10 +71,10 @@
     provision-observability.ps1 serves Grafana.
 
 .PARAMETER Registry
-    Registry holding the mirrored Keycloak and PostgreSQL images, normally the in-cluster connected
-    registry. Omit to read it from the image pull secret in -ApplicationNamespace; with no
-    such secret, the images come from the public registries, which only works where the cluster has
-    internet.
+    Registry holding the mirrored Keycloak, keycloak-config-cli and PostgreSQL images, normally the
+    in-cluster connected registry. Omit to read it from the image pull secret in
+    -ApplicationNamespace; with no such secret, the images come from the public registries, which
+    only works where the cluster has internet.
 
 .PARAMETER UseLdaps
     Bind to the directory over LDAPS on 636, which is the default. The certificate comes from the
@@ -75,9 +82,9 @@
     389, which sends the bind password and every user password across the network in the clear.
 
 .PARAMETER CertificateIssuer
-    cert-manager ClusterIssuer that issues and renews Keycloak's certificate, and with -Availability
-    standard its database's, 'site-ca' from provision-ingress.ps1 by default. Pass '' to supply
-    Secrets identity/keycloak-tls (and keycloak-db-tls) yourself, which then aren't renewed.
+    cert-manager ClusterIssuer that issues and renews the certificates of Keycloak and of its
+    database, 'site-ca' from provision-ingress.ps1 by default. Pass '' to supply Secrets
+    identity/keycloak-tls and keycloak-db-tls yourself, which then aren't renewed.
 
 .EXAMPLE
     ./scripts/infra/azurelocal/keycloak.ps1 -AdServer dc01.contoso.local -AdDomain contoso.local -AllowInClusterIssuer
@@ -85,7 +92,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$AdServer,
-    [string]$AdDomain = 'azurelocal.lab',
+    [Parameter(Mandatory = $true)][string]$AdDomain,
     [string]$AdOuName = 'OMS',
     # The read-only account Keycloak binds to the directory with. Empty: svc-keycloak@<AdDomain>.
     # Its password is asked for once, when Secret identity/oms-ad-bind doesn't exist yet.
@@ -108,11 +115,9 @@ param(
 
     [ValidateSet('high', 'standard')]
     [string]$Availability = 'high',
-    # ClusterIssuer for Keycloak's certificate, which provision-ingress.ps1 creates. Empty to supply
-    # Secret identity/keycloak-tls yourself.
+    # ClusterIssuer for the certificates of Keycloak and its database, which provision-ingress.ps1
+    # creates. Empty to supply Secrets identity/keycloak-tls and keycloak-db-tls yourself.
     [string]$CertificateIssuer = 'site-ca',
-
-    [switch]$SkipVerify,
 
     # Accept the cluster's default issuer, https://kubernetes.default.svc.cluster.local, on a cluster
     # created without workload identity. Keycloak gets the signing keys from the API server either way.
@@ -127,14 +132,23 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
 $Namespace = 'identity'
 $ReleaseName = 'keycloak'
 $RealmName = 'oms'
+$RealmJobName = 'keycloak-realm-config'
 $ImagePullSecretName = 'azurelocal-registry'
+$AdminClientSecretName = 'keycloak-admin-client'
 $BindSecretName = 'oms-ad-bind'
 $CaSecretName = 'oms-ad-ca'
 $BackupSecretName = 'backup-object-store'
+$TlsSecretName = 'keycloak-tls'
 $DatabaseTlsSecretName = 'keycloak-db-tls'
 $keycloakDir = Join-Path $repoRoot 'infra/azurelocal/keycloak'
 $highAvailability = $Availability -eq 'high'
-$databaseManifest = Join-Path $keycloakDir "database/$(if ($highAvailability) { 'cloudnative-pg' } else { 'postgres' }).yaml"
+$databaseFile = "database/$(if ($highAvailability) { 'cloudnative-pg' } else { 'postgres' }).yaml"
+# The public images the manifests name; a site with its own registry pulls the same paths from it.
+$images = @(
+    'quay.io/keycloak/keycloak',
+    'docker.io/adorsys/keycloak-config-cli',
+    $(if ($highAvailability) { 'ghcr.io/cloudnative-pg/postgresql' } else { 'docker.io/library/postgres' })
+)
 Push-Location $repoRoot
 
 function Invoke-Checked {
@@ -160,14 +174,65 @@ function New-RandomSecret {
     return [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
 }
 
-# The CA behind Keycloak's certificate, which workloads and browsers check Keycloak against.
-function Get-KeycloakCa {
-    # cert-manager writes the issuing CA next to the certificate as ca.crt. A self-signed certificate
-    # supplied by hand has none; then the certificate itself is what's trusted.
-    $ca = Get-SecretValue -Name 'keycloak-tls' -Key 'ca.crt'
-    if (-not $ca) { $ca = Get-SecretValue -Name 'keycloak-tls' -Key 'tls.crt' }
-    if (-not $ca) { throw "Secret '$Namespace/keycloak-tls' holds no certificate to check Keycloak's against." }
-    $ca
+# Renders infra/azurelocal/keycloak and the database file for -Availability through a kustomize
+# overlay, in a copy of the folder: the overlay points the images at -Registry, and records
+# Keycloak's address on its pods, so a changed address rolls them (Keycloak reads it only at start).
+function Get-KeycloakManifest([string]$KeycloakUrl) {
+    $workDir = Join-Path ([IO.Path]::GetTempPath()) "oms-keycloak-$([guid]::NewGuid().ToString('n'))"
+    New-Item -ItemType Directory -Path $workDir | Out-Null
+    try {
+        Copy-Item -Path $keycloakDir -Destination (Join-Path $workDir 'keycloak') -Recurse
+
+        $overlay = [ordered]@{
+            apiVersion = 'kustomize.config.k8s.io/v1beta1'
+            kind       = 'Kustomization'
+            namespace  = $Namespace
+            resources  = @('keycloak', "keycloak/$databaseFile")
+            patches    = @(@{
+                    target = @{ kind = 'Deployment'; name = $ReleaseName }
+                    patch  = (ConvertTo-Json -Depth 5 -InputObject @(@{
+                                op    = 'add'
+                                path  = '/spec/template/metadata/annotations'
+                                value = @{ 'oms/keycloak-hostname' = $KeycloakUrl }
+                            }))
+                })
+        }
+        if ($Registry) {
+            # CloudNativePG names its image in spec.imageName, which kustomize's image setting
+            # doesn't cover unless told to.
+            @{ images = @(@{ path = 'spec/imageName'; kind = 'Cluster' }) } | ConvertTo-Json -Depth 5 |
+                Set-Content -Path (Join-Path $workDir 'image-fields.yaml') -Encoding utf8
+            $overlay.configurations = @('image-fields.yaml')
+            # quay.io/keycloak/keycloak -> <registry>/keycloak/keycloak, docker.io/library/postgres
+            # -> <registry>/postgres: the paths images.txt mirrors them to.
+            $overlay.images = @($images | ForEach-Object { @{ name = $_; newName = "$Registry/$($_ -replace '^[^/]+/(library/)?', '')" } })
+        }
+        # JSON is YAML, so kustomize reads this as it is.
+        $overlay | ConvertTo-Json -Depth 10 | Set-Content -Path (Join-Path $workDir 'kustomization.yaml') -Encoding utf8
+
+        $rendered = kubectl kustomize $workDir
+        if ($LASTEXITCODE -ne 0) { throw 'Could not render infra/azurelocal/keycloak.' }
+        $rendered
+    }
+    finally {
+        Remove-Item -Path $workDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# Waits for the realm Job to finish, and shows its log when it fails.
+function Wait-RealmJob([int]$TimeoutSeconds = 1800) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ($true) {
+        $job = kubectl --context $KubeContext -n $Namespace get job $RealmJobName --output json | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0) { throw "Could not read Job $Namespace/$RealmJobName." }
+        $finished = @($job.status.conditions | Where-Object { $_.status -eq 'True' } | ForEach-Object { $_.type })
+        if ($finished -contains 'Complete') { return }
+        if ($finished -contains 'Failed' -or (Get-Date) -gt $deadline) {
+            Write-Host (kubectl --context $KubeContext -n $Namespace logs "job/$RealmJobName" --tail=40 2>&1 | Out-String)
+            throw "Applying realm.json failed (Job $Namespace/$RealmJobName). Its log is above."
+        }
+        Start-Sleep -Seconds 10
+    }
 }
 
 try {
@@ -253,27 +318,25 @@ run scripts/infra/azurelocal/ad-setup.ps1.
         Write-Host "    secret/$BindSecretName for $AdBindUpn" -ForegroundColor DarkGray
     }
 
-    $adminPassword = Get-SecretValue -Name 'keycloak-admin' -Key 'password'
-    $dbPassword = Get-SecretValue -Name 'keycloak-db' -Key 'password'
-
-    if (-not $adminPassword) { $adminPassword = New-RandomSecret }
-    if (-not $dbPassword) { $dbPassword = New-RandomSecret }
-
-    foreach ($pair in @(
-            @{ Name = 'keycloak-admin'; Type = 'Opaque'; Username = 'admin'; Password = $adminPassword },
-            # CloudNativePG reads the database login in the basic-auth form.
-            @{ Name = 'keycloak-db'; Type = 'kubernetes.io/basic-auth'; Username = 'keycloak'; Password = $dbPassword }
-        )) {
-        # Values go to kubectl on stdin, never on a command line.
-        @{
-            apiVersion = 'v1'
-            kind       = 'Secret'
-            type       = $pair.Type
-            metadata   = @{ name = $pair.Name; namespace = $Namespace }
-            stringData = @{ username = $pair.Username; password = $pair.Password }
-        } | ConvertTo-Json -Depth 5 | kubectl --context $KubeContext apply -f - | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Could not write the '$($pair.Name)' Secret." }
+    # The admin service account the realm Job signs in with. Keycloak creates it, as a temporary
+    # admin, only on its first start against an empty database, so the secret is never changed.
+    if (-not (Get-SecretValue -Name $AdminClientSecretName -Key 'client-secret')) {
+        Set-OmsSecret -KubeContext $KubeContext -Namespace $Namespace -Name $AdminClientSecretName `
+            -Data @{ 'client-id' = 'realm-config'; 'client-secret' = (New-RandomSecret) }
     }
+
+    # CloudNativePG reads the database login in the basic-auth form. The value goes to kubectl on
+    # stdin, never on a command line.
+    $dbPassword = Get-SecretValue -Name 'keycloak-db' -Key 'password'
+    if (-not $dbPassword) { $dbPassword = New-RandomSecret }
+    @{
+        apiVersion = 'v1'
+        kind       = 'Secret'
+        type       = 'kubernetes.io/basic-auth'
+        metadata   = @{ name = 'keycloak-db'; namespace = $Namespace }
+        stringData = @{ username = 'keycloak'; password = $dbPassword }
+    } | ConvertTo-Json -Depth 5 | kubectl --context $KubeContext apply -f - | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Could not write the 'keycloak-db' Secret." }
 
     # With high availability the database is a CloudNativePG cluster that backs up to the site's
     # object store with this namespace's credentials.
@@ -286,18 +349,11 @@ run scripts/infra/azurelocal/ad-setup.ps1.
         }
     }
 
-    # The 'grafana' client's secret, generated once. Keycloak reads it from this Secret, and
-    # provision-observability.ps1 gives Grafana the same value. It goes to kubectl on stdin, never
-    # on a command line.
+    # The 'grafana' client's secret, generated once. The realm Job reads it from this Secret, and
+    # provision-observability.ps1 gives Grafana the same value.
     if (-not (Get-SecretValue -Name 'grafana-oauth' -Key 'client-secret')) {
-        @{
-            apiVersion = 'v1'
-            kind       = 'Secret'
-            type       = 'Opaque'
-            metadata   = @{ name = 'grafana-oauth'; namespace = $Namespace }
-            stringData = @{ 'client-id' = 'grafana'; 'client-secret' = (New-RandomSecret) }
-        } | ConvertTo-Json -Depth 5 | kubectl --context $KubeContext apply -f - | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Could not write the 'grafana-oauth' Secret." }
+        Set-OmsSecret -KubeContext $KubeContext -Namespace $Namespace -Name 'grafana-oauth' `
+            -Data @{ 'client-id' = 'grafana'; 'client-secret' = (New-RandomSecret) }
     }
 
     # ------------------------------------------------------------------------------------------
@@ -305,9 +361,11 @@ run scripts/infra/azurelocal/ad-setup.ps1.
     # certificate and the realm settings that name it.
     # ------------------------------------------------------------------------------------------
     Write-Host "==> Keycloak's address on the site network" -ForegroundColor Cyan
-    if (-not $KeycloakIp) { $KeycloakIp = Get-OmsIngressAddress $KubeContext $Namespace $ReleaseName }
     kubectl --context $KubeContext apply -f (Join-Path $keycloakDir 'service.yaml') | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Could not apply infra/azurelocal/keycloak/service.yaml.' }
+    # Only Keycloak's own clients reach its pods and its database.
+    kubectl --context $KubeContext apply -f (Join-Path $repoRoot 'infra/azurelocal/keycloak-network-policy.yaml') | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Could not apply infra/azurelocal/keycloak-network-policy.yaml.' }
     if ($KeycloakIp) {
         # Pins the address, so it survives the Service being recreated.
         kubectl --context $KubeContext -n $Namespace annotate service $ReleaseName --overwrite `
@@ -332,8 +390,8 @@ run scripts/infra/azurelocal/ad-setup.ps1.
 
     # ------------------------------------------------------------------------------------------
     # Site values. The realm and the manifests are files in infra/azurelocal/keycloak; what
-    # differs per site goes into the keycloak-realm-settings ConfigMap, and Keycloak fills the
-    # ${...} placeholders in realm.json from it when it imports the realm.
+    # differs per site goes into the keycloak-realm-settings ConfigMap, and the realm Job fills the
+    # ${...} placeholders in realm.json from it on every run.
     # ------------------------------------------------------------------------------------------
     Write-Host "==> Writing the site settings for the '$RealmName' realm" -ForegroundColor Cyan
 
@@ -376,28 +434,13 @@ run scripts/infra/azurelocal/ad-setup.ps1.
         SPA_ORIGIN        = $SpaOrigin.TrimEnd('/')
         GRAFANA_ORIGIN    = $GrafanaOrigin.TrimEnd('/')
     }
-    $previousSettings = kubectl --context $KubeContext -n $Namespace get configmap keycloak-realm-settings `
-        --ignore-not-found --output 'jsonpath={.data}'
+    # None of these is secret, so they can go on the command line.
     $literals = $realmSettings.GetEnumerator() | ForEach-Object { "--from-literal=$($_.Key)=$($_.Value)" }
     kubectl --context $KubeContext -n $Namespace create configmap keycloak-realm-settings $literals `
         --dry-run=client --output yaml | kubectl --context $KubeContext apply -f - | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Could not write the keycloak-realm-settings ConfigMap.' }
-    # Keycloak reads these when it starts, so a running Keycloak restarts to pick up a change.
-    $currentSettings = kubectl --context $KubeContext -n $Namespace get configmap keycloak-realm-settings --output 'jsonpath={.data}'
-    $settingsChanged = $previousSettings -and ($previousSettings -ne $currentSettings)
 
-    $clusterCaManifest = @"
-apiVersion: v1
-kind: Secret
-metadata:
-  name: cluster-ca
-  namespace: $Namespace
-type: Opaque
-stringData:
-  cluster-ca.pem: |
-$(($clusterCaPem -split "`n" | ForEach-Object { '    ' + $_.TrimEnd() }) -join "`n")
-"@
-    $clusterCaManifest | kubectl --context $KubeContext apply -f - | Out-Null
+    Set-OmsSecret -KubeContext $KubeContext -Namespace $Namespace -Name 'cluster-ca' -Data @{ 'cluster-ca.pem' = $clusterCaPem }
 
     if ($Registry) {
         # Pull secrets do not cross namespaces, so the one the rest of the deployment uses has to
@@ -408,91 +451,88 @@ $(($clusterCaPem -split "`n" | ForEach-Object { '    ' + $_.TrimEnd() }) -join "
     # Keycloak refuses to start 'start' mode over plain HTTP, so it needs a certificate before the
     # Deployment is applied. cert-manager issues it from the site CA and renews it 30 days before it
     # expires; Keycloak re-reads the files every 10 minutes (keycloak.yaml), so no restart is needed.
+    # The database's certificate comes from the same CA, which Keycloak checks it against.
     if ($CertificateIssuer) {
         if (-not (kubectl --context $KubeContext get clusterissuer $CertificateIssuer --ignore-not-found --output name)) {
-            throw "No ClusterIssuer '$CertificateIssuer'. Run ./scripts/infra/azurelocal/provision-ingress.ps1 first, or pass -CertificateIssuer '' and create Secret $Namespace/keycloak-tls yourself."
+            throw "No ClusterIssuer '$CertificateIssuer'. Run ./scripts/infra/azurelocal/provision-ingress.ps1 first, or pass -CertificateIssuer '' and create Secrets $Namespace/$TlsSecretName and $DatabaseTlsSecretName yourself."
         }
-        Write-Host "==> Certificate for Keycloak from ClusterIssuer '$CertificateIssuer'" -ForegroundColor Cyan
+        Write-Host "==> Certificates for Keycloak and its database from ClusterIssuer '$CertificateIssuer'" -ForegroundColor Cyan
 
         # The load balancer address goes in as a real iPAddress entry: browsers reject an address
-        # listed as a DNS name when the URL is an address.
-        @"
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: keycloak-tls
-  namespace: $Namespace
-spec:
-  secretName: keycloak-tls
-  commonName: $ReleaseName.$Namespace.svc
-  dnsNames:
-    - $ReleaseName
-    - $ReleaseName.$Namespace
-    - $ReleaseName.$Namespace.svc
-    - $ReleaseName.$Namespace.svc.cluster.local
-  ipAddresses:
-    - $keycloakAddress
-  duration: 2160h
-  renewBefore: 720h
-  privateKey:
-    algorithm: RSA
-    size: 2048
-    rotationPolicy: Always
-  issuerRef:
-    kind: ClusterIssuer
-    name: $CertificateIssuer
-"@ | kubectl --context $KubeContext apply -f - | Out-Null
+        # listed as a DNS name when the URL is an address. 'localhost' is for the admin console,
+        # which administrators reach through a port-forward (KC_HOSTNAME_ADMIN in keycloak.yaml).
+        @{
+            apiVersion = 'cert-manager.io/v1'
+            kind       = 'Certificate'
+            metadata   = @{ name = $TlsSecretName; namespace = $Namespace }
+            spec       = @{
+                secretName  = $TlsSecretName
+                issuerRef   = @{ kind = 'ClusterIssuer'; name = $CertificateIssuer }
+                commonName  = "$ReleaseName.$Namespace.svc"
+                dnsNames    = @($ReleaseName, "$ReleaseName.$Namespace", "$ReleaseName.$Namespace.svc", "$ReleaseName.$Namespace.svc.cluster.local", 'localhost')
+                ipAddresses = @($keycloakAddress)
+                duration    = '2160h'
+                renewBefore = '720h'
+                privateKey  = @{ algorithm = 'RSA'; size = 2048; rotationPolicy = 'Always' }
+            }
+        } | ConvertTo-Json -Depth 5 | kubectl --context $KubeContext apply -f - | Out-Null
         if ($LASTEXITCODE -ne 0) { throw 'Creating the Keycloak Certificate failed.' }
-        Wait-OmsCertificate $KubeContext $Namespace 'keycloak-tls'
 
-        # CloudNativePG gives its own database a certificate; the StatefulSet's comes from the same
-        # issuer as Keycloak's.
-        if (-not $highAvailability) {
-            @{
-                apiVersion = 'cert-manager.io/v1'
-                kind       = 'Certificate'
-                metadata   = @{ name = $DatabaseTlsSecretName; namespace = $Namespace }
-                spec       = @{
-                    secretName  = $DatabaseTlsSecretName
-                    issuerRef   = @{ kind = 'ClusterIssuer'; name = $CertificateIssuer }
-                    commonName  = "keycloak-db-rw.$Namespace.svc"
-                    dnsNames    = @('keycloak-db-rw', "keycloak-db-rw.$Namespace", "keycloak-db-rw.$Namespace.svc", "keycloak-db-rw.$Namespace.svc.cluster.local")
-                    usages      = @('server auth')
-                    duration    = '2160h'
-                    renewBefore = '720h'
-                    privateKey  = @{ algorithm = 'RSA'; size = 2048; rotationPolicy = 'Always' }
-                }
-            } | ConvertTo-Json -Depth 5 | kubectl --context $KubeContext apply -f - | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "Creating the Certificate for Keycloak's database failed." }
-            Wait-OmsCertificate $KubeContext $Namespace $DatabaseTlsSecretName
-        }
+        # CloudNativePG reloads the server certificate when a Secret with this label changes.
+        @{
+            apiVersion = 'cert-manager.io/v1'
+            kind       = 'Certificate'
+            metadata   = @{ name = $DatabaseTlsSecretName; namespace = $Namespace }
+            spec       = @{
+                secretName     = $DatabaseTlsSecretName
+                secretTemplate = @{ labels = @{ 'cnpg.io/reload' = '' } }
+                issuerRef      = @{ kind = 'ClusterIssuer'; name = $CertificateIssuer }
+                commonName     = "keycloak-db-rw.$Namespace.svc"
+                dnsNames       = @('keycloak-db-rw', "keycloak-db-rw.$Namespace", "keycloak-db-rw.$Namespace.svc", "keycloak-db-rw.$Namespace.svc.cluster.local")
+                usages         = @('server auth')
+                duration       = '2160h'
+                renewBefore    = '720h'
+                privateKey     = @{ algorithm = 'RSA'; size = 2048; rotationPolicy = 'Always' }
+            }
+        } | ConvertTo-Json -Depth 5 | kubectl --context $KubeContext apply -f - | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Creating the Certificate for Keycloak's database failed." }
+
+        Wait-OmsCertificate $KubeContext $Namespace $TlsSecretName
+        Wait-OmsCertificate $KubeContext $Namespace $DatabaseTlsSecretName
     }
     else {
         # cert-manager would keep overwriting a certificate supplied by hand.
-        if (kubectl --context $KubeContext -n $Namespace get certificate keycloak-tls --ignore-not-found --output name) {
-            throw @"
-cert-manager manages Secret $Namespace/keycloak-tls, so it would replace your certificate. Remove its
+        foreach ($name in @($TlsSecretName, $DatabaseTlsSecretName)) {
+            if (kubectl --context $KubeContext -n $Namespace get certificate $name --ignore-not-found --output name) {
+                throw @"
+cert-manager manages Secret $Namespace/$name, so it would replace your certificate. Remove its
 Certificate first, then create the Secret (deleting the Certificate may delete the Secret with it):
-  kubectl --context $KubeContext -n $Namespace delete certificate keycloak-tls
-  kubectl --context $KubeContext -n $Namespace create secret tls keycloak-tls --cert <crt> --key <key>
+  kubectl --context $KubeContext -n $Namespace delete certificate $name
+"@
+            }
+        }
+    }
+    # Keycloak's pods and the realm Job check Keycloak and the database against ca.crt, which
+    # cert-manager writes next to the certificate.
+    foreach ($name in @($TlsSecretName, $DatabaseTlsSecretName)) {
+        if (-not (Get-SecretValue -Name $name -Key 'ca.crt')) {
+            throw @"
+Secret $Namespace/$name needs tls.crt, tls.key and ca.crt, the CA that issued the certificate.
+With -CertificateIssuer '', create it yourself:
+  kubectl --context $KubeContext -n $Namespace create secret generic $name --type=kubernetes.io/tls --from-file=tls.crt=<crt> --from-file=tls.key=<key> --from-file=ca.crt=<ca>
+The certificate names $(if ($name -eq $TlsSecretName) { "Keycloak's address $keycloakAddress, $ReleaseName.$Namespace.svc and localhost" } else { "keycloak-db-rw and keycloak-db-rw.$Namespace.svc" }).
 "@
         }
-        if (-not (kubectl --context $KubeContext -n $Namespace get secret keycloak-tls --ignore-not-found --output name)) {
-            throw "With -CertificateIssuer '', create the Keycloak certificate yourself: kubectl --context $KubeContext -n $Namespace create secret tls keycloak-tls --cert <crt> --key <key>"
-        }
-        if (-not $highAvailability -and -not (kubectl --context $KubeContext -n $Namespace get secret $DatabaseTlsSecretName --ignore-not-found --output name)) {
-            throw "With -CertificateIssuer '', create the database's certificate yourself, for keycloak-db-rw.$Namespace.svc: kubectl --context $KubeContext -n $Namespace create secret tls $DatabaseTlsSecretName --cert <crt> --key <key>"
-        }
     }
+
+    # ------------------------------------------------------------------------------------------
+    # Keycloak, its database and the realm Job. A Job runs once, so the previous run's goes first.
+    # ------------------------------------------------------------------------------------------
     Write-Host "==> Deploying Keycloak and its database from infra/azurelocal/keycloak" -ForegroundColor Cyan
-    $rendered = kubectl kustomize $keycloakDir
-    if ($LASTEXITCODE -ne 0) { throw 'Could not render infra/azurelocal/keycloak.' }
-    $rendered = @($rendered) + '---' + (Get-Content $databaseManifest)
-    if ($Registry) {
-        # The manifests name the public images; the site pulls the same images from its own registry.
-        $rendered = $rendered -replace '(image|imageName): (quay\.io|ghcr\.io|docker\.io/library)/', "`${1}: $Registry/"
+    Invoke-Checked "Removing the previous $RealmJobName Job" {
+        kubectl --context $KubeContext -n $Namespace delete job $RealmJobName --ignore-not-found | Out-Null
     }
-    $rendered | kubectl --context $KubeContext -n $Namespace apply -f - | Out-Null
+    Get-KeycloakManifest $keycloakUrl | kubectl --context $KubeContext -n $Namespace apply -f - | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Could not apply infra/azurelocal/keycloak.' }
 
     Write-Host "==> Waiting for Keycloak's database" -ForegroundColor Cyan
@@ -507,24 +547,12 @@ Certificate first, then create the Secret (deleting the Certificate may delete t
     }
 
     Write-Host "==> Waiting for Keycloak to become ready" -ForegroundColor Cyan
-    if ($settingsChanged) {
-        kubectl --context $KubeContext -n $Namespace rollout restart deployment $ReleaseName | Out-Null
-    }
     Invoke-Checked 'keycloak rollout' {
         kubectl --context $KubeContext -n $Namespace rollout status deployment $ReleaseName --timeout=900s | Out-Null
     }
 
-    # Keycloak imports the realm on start and only becomes ready once it has, so the rollout above
-    # covers the realm. An LDAP misconfiguration shows up as a federation provider that loads but
-    # never returns a user, which only Keycloak's log shows.
-    if (-not $SkipVerify) {
-        $ldapError = kubectl --context $KubeContext -n $Namespace logs "deploy/$ReleaseName" --tail=200 |
-            Select-String -Pattern 'ERROR|WARN' |
-            Select-String -Pattern 'ldap|NamingException|federation'
-        if ($ldapError) {
-            Write-Warning "Keycloak logged a directory problem:`n$($ldapError -join "`n")"
-        }
-    }
+    Write-Host "==> Applying realm.json to the '$RealmName' realm" -ForegroundColor Cyan
+    Wait-RealmJob
 
     # Workloads need the certificate authority they check Keycloak against in their own namespace.
     # Each service's identity is its own service account there, which the container Recipe creates
@@ -537,25 +565,13 @@ Certificate first, then create the Secret (deleting the Certificate may delete t
     # Keycloak serves a certificate issued by a CA the cluster does not know, so the workload and
     # RabbitMQ both need that CA. Publishing the issuer rather than the serving certificate is what
     # lets a strict TLS client, such as the Erlang one RabbitMQ uses, build a valid path.
-    $keycloakCert = Get-KeycloakCa
-
-    $caFile = New-TemporaryFile
-    try {
-        Set-Content -Path $caFile -Value $keycloakCert -Encoding ascii -NoNewline
-
-        kubectl --context $KubeContext -n $ApplicationNamespace delete secret $WorkloadCaSecretName `
-            --ignore-not-found | Out-Null
-        kubectl --context $KubeContext -n $ApplicationNamespace create secret generic $WorkloadCaSecretName `
-            --from-file="ca.crt=$caFile" | Out-Null
-    }
-    finally {
-        Remove-Item -Path $caFile -Force -ErrorAction SilentlyContinue
-    }
+    $keycloakCa = Get-SecretValue -Name $TlsSecretName -Key 'ca.crt'
+    Set-OmsSecret -KubeContext $KubeContext -Namespace $ApplicationNamespace -Name $WorkloadCaSecretName -Data @{ 'ca.crt' = $keycloakCa }
     Write-Host "    secret/$WorkloadCaSecretName" -ForegroundColor DarkGray
 
     # Sign-in sends the browser to Keycloak, so browsers have to trust the CA behind its certificate.
     $identityCaFile = Join-Path $repoRoot 'oms-identity-ca.crt'
-    [IO.File]::WriteAllText($identityCaFile, $keycloakCert)
+    [IO.File]::WriteAllText($identityCaFile, $keycloakCa)
 
     Write-Host "`n================ Identity ready ================" -ForegroundColor Green
     Write-Host "Keycloak realm   : $issuerUrl"
@@ -574,6 +590,10 @@ Certificate first, then create the Secret (deleting the Certificate may delete t
     Write-Host ''
     Write-Host 'The pod gets that assertion from a projected volume, not from a stored secret:' -ForegroundColor DarkGray
     Write-Host "  serviceAccountToken: { audience: '$issuerUrl', path: token, expirationSeconds: 600 }"
+    Write-Host ''
+    Write-Host "The admin console isn't on the site network. Members of the directory group oms-identity-admins reach it with:" -ForegroundColor Yellow
+    Write-Host "  kubectl --context $KubeContext -n $Namespace port-forward service/$ReleaseName 8443:443"
+    Write-Host "  https://localhost:8443/admin/$RealmName/console/"
     Write-Host ''
     Write-Host 'Trust the CA behind Keycloak''s certificate on a machine outside the domain (once; it shows a confirmation prompt). With the site CA, this is the same CA the ingress uses:'
     Write-Host "  Import-Certificate -FilePath $identityCaFile -CertStoreLocation Cert:\CurrentUser\Root"

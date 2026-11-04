@@ -79,7 +79,7 @@ All commands run from this folder, `samples/OrderManagementApp`.
   `kubelogin` (`az aks install-cli`)
 - [Helm](https://helm.sh/docs/intro/install/)
 - [Radius CLI 0.60](https://docs.radapp.io/installation/)
-- [PowerShell 7](https://learn.microsoft.com/powershell/scripting/install/installing-powershell)
+- [PowerShell 7.3 or later](https://learn.microsoft.com/powershell/scripting/install/installing-powershell)
 - Docker or Podman
 
 **To deploy to Azure Local:**
@@ -111,8 +111,12 @@ services as on Azure Local, with no cluster and no Radius.
 ```powershell
 dotnet dev-certs https --trust
 dotnet dev-certs https --export-path local/certs/localhost.crt --format Pem --no-password
+$env:LOCAL_PASSWORD = '<a password for the local containers>'   # or LOCAL_PASSWORD=... in a .env file here
 docker compose up --build
 ```
+
+`LOCAL_PASSWORD` needs at least 8 characters with upper and lower case letters and digits; SQL
+Server refuses weaker ones. Every port is published on 127.0.0.1 only.
 
 On Linux and macOS, also run `chmod 644 local/certs/localhost.*` before `docker compose up`, so the
 Keycloak container can read the certificate.
@@ -125,11 +129,11 @@ If your network blocks them, ask for access, or point the build at your own NuGe
 [NuGet.Config](https://learn.microsoft.com/nuget/reference/nuget-config-file) in this folder; the
 build uses it when it's there, and Git ignores it.
 
-To run the tests, which need no containers or cluster:
+To run the tests:
 
 ```powershell
-dotnet test
-Invoke-Pester ./tests/scripts   # the setup scripts' credential helpers; needs Pester 5
+dotnet test                     # the integration tests start PostgreSQL and SQL Server in Docker or Podman, and are skipped without one
+Invoke-Pester ./tests/scripts   # the setup scripts; needs Pester 5 and the Azure CLI's Bicep
 ```
 
 ## Deploy to Azure
@@ -241,15 +245,16 @@ For production, you would also need:
   off site (see [Object storage for Azure Local](./infra/azurelocal/object-store/README.md)). Nothing
   backs up SQL Server; schedule its backups and copy them off the cluster.
 - **Sizing:** the volume sizes and CPU and memory limits are small defaults; set them from your load.
-- **Licensing:** SQL Server runs the Developer edition, which isn't licensed for production. Set
-  `SqlServerEdition` in the `Deploy` settings to `Standard`, `Enterprise` or your product key.
-  Standard and Enterprise are licensed per core for what the container may use: `SqlServerCpuLimit`
-  in the same settings, 2 by default. See Microsoft's SQL Server licensing guide for the minimums.
-- **Upgrades:** the SQL Server image tag floats (`2022-latest`). Pin it, and test upgrades of every
-  image and operator before rolling them out.
-- **Hardening:** the app doesn't verify SQL Server's certificate; give SQL Server one from the site
-  CA. The platform's administrators hold broad rights (cluster administrator, the operators,
-  Owner on the Azure resource group for Radius); keep them to trusted operators.
+- **Licensing:** SQL Server runs the Express edition, which is free and licensed for production up
+  to 10 GB per database. For more, set `SqlServerEdition` in the `Deploy` settings to `Standard`,
+  `Enterprise` or your product key. Standard and Enterprise are licensed per core for what the
+  container may use: `SqlServerCpuLimit` in the same settings, 2 by default. See Microsoft's SQL
+  Server licensing guide for the minimums.
+- **Upgrades:** every image is pinned to an exact version in
+  [images.txt](./infra/azurelocal/images.txt) and the Recipe Pack. Test a new version of any image
+  or operator before rolling it out.
+- **Hardening:** the platform's administrators hold broad rights (cluster administrator, the
+  operators, Owner on the Azure resource group for Radius); keep them to trusted operators.
 
 The database passwords live in Key Vault. To change one, set a new version of its secret in the
 vault (`sql-admin-password`, `postgres-admin-password`, `sql-api-password`,

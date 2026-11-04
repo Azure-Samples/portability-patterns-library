@@ -14,6 +14,8 @@
       * AD Certificate Services, if no certificate authority is installed yet, so the controller
         enrols a server certificate and LDAPS works on 636. An existing CA is reused.
       * The OMS OU, the oms-app-readers / oms-app-writers / oms-inventory-admins groups, the
+        oms-operators group (who may use the site's Grafana; the sample inventory administrator is
+        in it), the oms-identity-admins group (administrators of the app's Keycloak realm; it starts empty), the
         Keycloak bind account, a sample user who places orders and a sample inventory administrator.
       * Limits on the bind account: it can sign in only at the domain controllers, can't be
         delegated, and is denied listing every container outside the OMS OU.
@@ -27,46 +29,57 @@
       -ComputerName  PowerShell remoting (WinRM), from the site's management machine or any machine
                      that reaches the controller, or 'localhost' on the controller itself. This is
                      the usual way: it needs no access to the machine that hosts the controller.
-      -VmName        PowerShell Direct, from the Hyper-V host that runs the controller as a VM, as
-                     in a lab where the controller has no network path from your machine.
+      -VmName        PowerShell Direct, from the Hyper-V host that runs the controller as a VM, for
+                     a controller with no network path from your machine.
     If you'd rather not run it, make the same objects with the Active Directory PowerShell module
     instead; docs/authentication.md lists them under "Connect your Active Directory".
 
-    The script is safe to re-run. Re-running resets the passwords of the accounts it manages and
-    rewrites the Secrets. The bind account's limits cover the containers and domain controllers that
-    exist when it runs, so re-run it after adding either.
+    The script is safe to re-run. Accounts that already exist keep their passwords, so Keycloak's
+    directory sign-in keeps working; pass -ResetBindPassword to give the bind account a new one, then
+    run keycloak.ps1, which applies it to Keycloak. The bind account's limits cover the containers
+    and domain controllers that exist when it runs, so re-run it after adding either.
 
 .PARAMETER VmName
     Name of the domain controller VM, when this runs on its Hyper-V host (PowerShell Direct).
 
 .PARAMETER ComputerName
     Name of the domain controller, reached over PowerShell remoting. Use 'localhost' when this runs
-    on the controller itself. Takes precedence over -VmName.
+    on the controller itself.
+
+.PARAMETER DomainName
+    The controller's Active Directory domain, such as contoso.local. The script stops if the
+    controller belongs to another one.
 
 .PARAMETER DomainAdminCredential
     Domain administrator of the controller's domain. Prompted for when omitted.
+
+.PARAMETER ResetBindPassword
+    Give an existing bind account a new password, and write it to the cluster. Without it, an
+    existing bind account keeps its password.
 
 .PARAMETER SkipBindSecret
     Do not write the bind credential and CA certificate into Kubernetes Secrets. By default they
     are written to the cluster so that scripts/infra/azurelocal/keycloak.ps1 can pick them up without the
     passwords being typed or displayed.
 
+.PARAMETER CaCommonName
+    Name of the enterprise CA to install when the controller has none. Empty: <domain>-<controller>-CA,
+    the name Windows suggests.
+
 .EXAMPLE
     # From the site's management machine, reaching the domain controller over WinRM.
     ./scripts/infra/azurelocal/ad-setup.ps1 -ComputerName dc01.contoso.local -DomainName contoso.local `
-        -NetbiosName CONTOSO -KubeContext my-aksarc
+        -KubeContext my-aksarc
 
 .EXAMPLE
-    # Lab: elevated, on the Hyper-V host that runs the domain controller VM.
-    ./scripts/infra/azurelocal/ad-setup.ps1 -VmName DC01 -DomainName azurelocal.lab -NetbiosName AZURELOCAL `
-        -KubeContext bcd-aksarc
+    # Elevated, on the Hyper-V host that runs the domain controller VM.
+    ./scripts/infra/azurelocal/ad-setup.ps1 -VmName <vm name> -DomainName contoso.local -KubeContext my-aksarc
 #>
-[CmdletBinding()]
+[CmdletBinding(DefaultParameterSetName = 'Remoting')]
 param(
-    [string]$VmName = 'DC01',
-    [string]$ComputerName,
-    [string]$DomainName = 'azurelocal.lab',
-    [string]$NetbiosName = 'AZURELOCAL',
+    [Parameter(Mandatory = $true, ParameterSetName = 'Direct')][string]$VmName,
+    [Parameter(Mandatory = $true, ParameterSetName = 'Remoting')][string]$ComputerName,
+    [Parameter(Mandatory = $true)][string]$DomainName,
     [string]$OuName = 'OMS',
 
     [pscredential]$DomainAdminCredential,
@@ -75,10 +88,11 @@ param(
     [string]$DemoUserName = 'oms-demo',
     [string]$InventoryAdminUserName = 'oms-inventory-admin',
 
+    [switch]$ResetBindPassword,
     [switch]$SkipBindSecret,
     [switch]$SkipCertificateAuthority,
     # Only used when the controller has no certificate authority yet.
-    [string]$CaCommonName = 'OMS Lab Root CA',
+    [string]$CaCommonName,
     [string]$KubeContext = 'bcd-aksarc',
     [string]$SecretNamespace = 'identity',
     [string]$SecretName = 'oms-ad-bind',
@@ -97,7 +111,7 @@ function Test-Elevated {
 }
 
 # Meets the default domain policy on its own, rather than relying on a random draw to include
-# every character class.
+# every character class. Drawn from the system's cryptographic random number generator.
 function New-DirectoryPassword {
     $sets = @(
         'ABCDEFGHJKLMNPQRSTUVWXYZ',
@@ -105,71 +119,19 @@ function New-DirectoryPassword {
         '23456789',
         '!@#$%^&*-_'
     )
+    $random = { param($max) [Security.Cryptography.RandomNumberGenerator]::GetInt32($max) }
 
-    $chars = foreach ($set in $sets) {
-        $set[(Get-Random -Maximum $set.Length)]
-    }
+    $chars = [Collections.Generic.List[char]]::new()
+    foreach ($set in $sets) { $chars.Add($set[(& $random $set.Length)]) }
     $all = -join $sets
-    $chars += 1..16 | ForEach-Object { $all[(Get-Random -Maximum $all.Length)] }
+    foreach ($i in 1..16) { $chars.Add($all[(& $random $all.Length)]) }
 
-    return -join ($chars | Sort-Object { Get-Random })
-}
-
-# Promotion only rejects a weak restore-mode password after the role install has already run, so
-# the same rules are applied up front: three of the four character classes, and long enough to
-# satisfy any sensible policy.
-# PowerShell Direct answers only once the guest has booted far enough to run the VM management
-# service, which is well after the VM reports 'Running'. Returns $null on success, otherwise the
-# failure message, because a rejected password and an unbooted guest are otherwise indistinguishable.
-function Test-GuestCredential {
-    param([Parameter(Mandatory = $true)][pscredential]$Credential)
-
-    try {
-        $null = Invoke-Guest -Credential $Credential -ScriptBlock { $env:COMPUTERNAME } -ErrorAction Stop
-        return $null
+    # Fisher-Yates, so the guaranteed characters don't sit at the start.
+    for ($i = $chars.Count - 1; $i -gt 0; $i--) {
+        $j = & $random ($i + 1)
+        $chars[$i], $chars[$j] = $chars[$j], $chars[$i]
     }
-    catch { return $_.Exception.Message }
-}
-
-# Accepts several candidate credentials because promotion swaps the local account for a domain
-# one, and returns whichever the guest accepted.
-function Wait-GuestReady {
-    param(
-        [Parameter(Mandatory = $true)][pscredential[]]$Credential,
-        [int]$TimeoutMinutes = 20,
-        [string]$What = 'guest'
-    )
-
-    # The guest can briefly reject a correct password while LSA starts, so allow a short grace
-    # period before concluding the password is actually wrong rather than waiting out the timeout.
-    $invalidCredentialGrace = 6
-    $invalidCredentialCount = 0
-    $lastError = $null
-
-    $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
-    while ((Get-Date) -lt $deadline) {
-        $allInvalid = $true
-        foreach ($candidate in $Credential) {
-            $lastError = Test-GuestCredential -Credential $candidate
-            if (-not $lastError) { return $candidate }
-            if ($lastError -notmatch 'credential is invalid') { $allInvalid = $false }
-        }
-
-        if ($allInvalid) {
-            $invalidCredentialCount++
-            if ($invalidCredentialCount -ge $invalidCredentialGrace) {
-                throw @"
-'$target' rejected the password for '$($Credential.UserName -join "', '")'.
-The controller is reachable, so this is the password, not the connection.
-Check the account and password, then re-run.
-"@
-            }
-        }
-
-        Start-Sleep -Seconds 10
-    }
-
-    throw "Timed out waiting $TimeoutMinutes minutes for $What on '$target'. Last error: $lastError"
+    return -join $chars
 }
 
 function Invoke-Guest {
@@ -277,37 +239,35 @@ try {
     }
 
     if (-not $DomainAdminCredential) {
-        $DomainAdminCredential = Get-Credential -UserName "$NetbiosName\Administrator" `
+        $DomainAdminCredential = Get-Credential -UserName "Administrator@$DomainName" `
             -Message "Domain administrator of '$DomainName' on '$target'"
     }
     $domainCredential = $DomainAdminCredential
 
     Write-Host "==> Connecting to '$target' $(if ($ComputerName) { 'over PowerShell remoting' } else { 'over PowerShell Direct' })" -ForegroundColor Cyan
-    $null = Wait-GuestReady -Credential $domainCredential -TimeoutMinutes 5 -What 'the domain administrator account'
-
     # NTLM falls back to the local SAM when the domain prefix does not resolve, so a credential
-    # being accepted says nothing about the machine's role; the guest's own answer is authoritative.
-    $domainRole = [int](Invoke-Guest -Credential $domainCredential -ScriptBlock {
-            (Get-CimInstance -ClassName Win32_ComputerSystem).DomainRole
-        })
-    if ($domainRole -lt 4) {
-        throw "'$target' is not a domain controller (DomainRole $domainRole)."
-    }
-
-    Write-Host "==> Waiting for the directory to accept requests" -ForegroundColor Cyan
-    $deadline = (Get-Date).AddMinutes(10)
-    while ($true) {
-        $ready = Invoke-Guest -Credential $domainCredential -ScriptBlock {
-            try {
-                Import-Module ActiveDirectory -ErrorAction Stop
-                $null = Get-ADDomain -ErrorAction Stop
-                $true
+    # being accepted says nothing about the machine's role; the controller's own answer is
+    # authoritative.
+    try {
+        $controller = Invoke-Guest -Credential $domainCredential -ScriptBlock {
+            $ErrorActionPreference = 'Stop'
+            $role = [int](Get-CimInstance -ClassName Win32_ComputerSystem).DomainRole
+            $dnsRoot = $null
+            if ($role -ge 4) {
+                Import-Module ActiveDirectory
+                $dnsRoot = (Get-ADDomain).DNSRoot
             }
-            catch { $false }
+            [pscustomobject]@{ DomainRole = $role; DnsRoot = $dnsRoot }
         }
-        if ($ready) { break }
-        if ((Get-Date) -gt $deadline) { throw 'The directory never began answering.' }
-        Start-Sleep -Seconds 15
+    }
+    catch {
+        throw "Could not run commands on '$target' as '$($domainCredential.UserName)': $($_.Exception.Message)"
+    }
+    if ($controller.DomainRole -lt 4) {
+        throw "'$target' is not a domain controller (DomainRole $($controller.DomainRole))."
+    }
+    if ($controller.DnsRoot -ne $DomainName) {
+        throw "'$target' is a domain controller of '$($controller.DnsRoot)', not '$DomainName'."
     }
 
     # A domain controller only opens LDAPS once it holds a certificate with the Server
@@ -328,6 +288,11 @@ try {
                 $caName = $activeCa
             }
             else {
+                # The name Windows suggests when you install a CA by hand.
+                if (-not $caName) {
+                    Import-Module ActiveDirectory
+                    $caName = "$((Get-ADDomain).NetBIOSName)-$env:COMPUTERNAME-CA"
+                }
                 Install-WindowsFeature -Name ADCS-Cert-Authority -IncludeManagementTools | Out-Null
 
                 Import-Module ADCSDeployment
@@ -380,13 +345,15 @@ try {
         Write-Host '    certificate authority ready; LDAPS available on 636' -ForegroundColor DarkGray
     }
 
+    # Passwords are only set on accounts this run creates, and on the bind account with
+    # -ResetBindPassword, so a re-run never breaks a sign-in that works.
     $bindPassword = New-DirectoryPassword
     $demoPassword = New-DirectoryPassword
     $inventoryAdminPassword = New-DirectoryPassword
 
-    Write-Host "==> Creating the demo organisational unit and accounts" -ForegroundColor Cyan
+    Write-Host "==> Creating the app's organisational unit, groups and accounts" -ForegroundColor Cyan
     $created = Invoke-Guest -Credential $domainCredential -ScriptBlock {
-        param($ouName, $bindName, $bindPw, $demoName, $demoPw, $adminName, $adminPw)
+        param($ouName, $bindName, $bindPw, $resetBind, $demoName, $demoPw, $adminName, $adminPw)
         $ErrorActionPreference = 'Stop'
         Import-Module ActiveDirectory
 
@@ -398,65 +365,59 @@ try {
                 -ProtectedFromAccidentalDeletion $true
         }
 
-        foreach ($group in 'oms-app-readers', 'oms-app-writers', 'oms-inventory-admins') {
+        # oms-identity-admins administer the app's Keycloak realm; add your administrators to it.
+        # oms-operators use the site's Grafana.
+        foreach ($group in 'oms-app-readers', 'oms-app-writers', 'oms-inventory-admins', 'oms-operators', 'oms-identity-admins') {
             if (-not (Get-ADGroup -Filter "Name -eq '$group'" -ErrorAction SilentlyContinue)) {
                 New-ADGroup -Name $group -GroupScope Global -GroupCategory Security -Path $ouPath
             }
         }
 
-        # Keycloak reads the directory over LDAP with this account. It joins no group, and
-        # Set-BindAccountRestriction below narrows it further.
-        $bindSecure = ConvertTo-SecureString $bindPw -AsPlainText -Force
-        if (Get-ADUser -Filter "SamAccountName -eq '$bindName'" -ErrorAction SilentlyContinue) {
-            Set-ADAccountPassword -Identity $bindName -NewPassword $bindSecure -Reset
-        }
-        else {
-            New-ADUser -Name $bindName -SamAccountName $bindName `
-                -UserPrincipalName "$bindName@$($domain.DNSRoot)" -Path $ouPath `
-                -AccountPassword $bindSecure -PasswordNeverExpires $true `
-                -CannotChangePassword $true -Enabled $true `
-                -Description 'Keycloak LDAP user federation bind account'
+        # Creates the account with the given password, or leaves an existing one's alone unless
+        # $reset. Returns whether the password was set.
+        function Set-OmsUser([string]$Name, [string]$Initial, [string]$Description, [bool]$Reset, [hashtable]$Options = @{}) {
+            $secure = ConvertTo-SecureString $Initial -AsPlainText -Force
+            if (Get-ADUser -Filter "SamAccountName -eq '$Name'" -ErrorAction SilentlyContinue) {
+                if (-not $Reset) { return $false }
+                Set-ADAccountPassword -Identity $Name -NewPassword $secure -Reset
+                return $true
+            }
+            New-ADUser -Name $Name -SamAccountName $Name -UserPrincipalName "$Name@$($domain.DNSRoot)" `
+                -Path $ouPath -AccountPassword $secure -PasswordNeverExpires $true -Enabled $true `
+                -Description $Description @Options
+            return $true
         }
 
-        $demoSecure = ConvertTo-SecureString $demoPw -AsPlainText -Force
-        if (Get-ADUser -Filter "SamAccountName -eq '$demoName'" -ErrorAction SilentlyContinue) {
-            Set-ADAccountPassword -Identity $demoName -NewPassword $demoSecure -Reset
-        }
-        else {
-            New-ADUser -Name $demoName -SamAccountName $demoName `
-                -UserPrincipalName "$demoName@$($domain.DNSRoot)" -Path $ouPath `
-                -AccountPassword $demoSecure -PasswordNeverExpires $true -Enabled $true `
-                -Description 'Sample end user for API authentication'
-        }
+        # Keycloak reads the directory over LDAP with this account. It joins no group, and
+        # Set-BindAccountRestriction below narrows it further.
+        $bindSet = Set-OmsUser -Name $bindName -Initial $bindPw -Description 'Keycloak LDAP user federation bind account' -Reset $resetBind -Options @{ CannotChangePassword = $true }
+
+        $demoSet = Set-OmsUser -Name $demoName -Initial $demoPw -Description 'Sample end user for API authentication' -Reset $false
         Add-ADGroupMember -Identity 'oms-app-readers' -Members $demoName -ErrorAction SilentlyContinue
         Add-ADGroupMember -Identity 'oms-app-writers' -Members $demoName -ErrorAction SilentlyContinue
 
-        # A second sample user, who maintains the inventory rather than placing orders.
-        $adminSecure = ConvertTo-SecureString $adminPw -AsPlainText -Force
-        if (Get-ADUser -Filter "SamAccountName -eq '$adminName'" -ErrorAction SilentlyContinue) {
-            Set-ADAccountPassword -Identity $adminName -NewPassword $adminSecure -Reset
-        }
-        else {
-            New-ADUser -Name $adminName -SamAccountName $adminName `
-                -UserPrincipalName "$adminName@$($domain.DNSRoot)" -Path $ouPath `
-                -AccountPassword $adminSecure -PasswordNeverExpires $true -Enabled $true `
-                -Description 'Sample inventory administrator'
-        }
+        # A second sample user, who maintains the inventory and watches the site rather than placing orders.
+        $adminSet = Set-OmsUser -Name $adminName -Initial $adminPw -Description 'Sample inventory administrator' -Reset $false
         Add-ADGroupMember -Identity 'oms-inventory-admins' -Members $adminName -ErrorAction SilentlyContinue
+        Add-ADGroupMember -Identity 'oms-operators' -Members $adminName -ErrorAction SilentlyContinue
 
         [pscustomobject]@{
-            DnsRoot          = $domain.DNSRoot
-            BaseDn           = $domain.DistinguishedName
-            OuDn             = $ouPath
-            BindDn           = (Get-ADUser -Identity $bindName).DistinguishedName
-            BindUpn          = "$bindName@$($domain.DNSRoot)"
-            DemoUpn          = "$demoName@$($domain.DNSRoot)"
-            InventoryAdminUpn = "$adminName@$($domain.DNSRoot)"
-            # Setup generates the machine name, so the certificate's subject is whatever this is
-            # rather than the VM name, and that is the name LDAPS has to be reached by.
-            DcFqdn           = "$env:COMPUTERNAME.$($domain.DNSRoot)".ToLowerInvariant()
+            DnsRoot              = $domain.DNSRoot
+            BaseDn               = $domain.DistinguishedName
+            OuDn                 = $ouPath
+            BindDn               = (Get-ADUser -Identity $bindName).DistinguishedName
+            BindUpn              = "$bindName@$($domain.DNSRoot)"
+            BindPasswordSet      = $bindSet
+            DemoUpn              = "$demoName@$($domain.DNSRoot)"
+            DemoPasswordSet      = $demoSet
+            InventoryAdminUpn    = "$adminName@$($domain.DNSRoot)"
+            InventoryAdminPasswordSet = $adminSet
+            # The controller's own name, which its LDAPS certificate carries. With -VmName it can
+            # differ from the VM's name.
+            DcFqdn               = "$env:COMPUTERNAME.$($domain.DNSRoot)".ToLowerInvariant()
         }
-    } -ArgumentList $OuName, $BindAccountName, $bindPassword, $DemoUserName, $demoPassword, $InventoryAdminUserName, $inventoryAdminPassword
+    } -ArgumentList $OuName, $BindAccountName, $bindPassword, $ResetBindPassword.IsPresent, $DemoUserName, $demoPassword, $InventoryAdminUserName, $inventoryAdminPassword
+    if ($created.BindPasswordSet) { Write-Host "    new password for $($created.BindUpn)" -ForegroundColor DarkGray }
 
     Set-BindAccountRestriction -Credential $domainCredential
 
@@ -468,36 +429,37 @@ try {
             Write-Host "==> Publishing the bind credential to the cluster" -ForegroundColor Cyan
             kubectl --context $KubeContext create namespace $SecretNamespace `
                 --dry-run=client --output yaml | kubectl --context $KubeContext apply -f - | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Creating namespace '$SecretNamespace' failed." }
 
-            # Every key at once, so a re-run that reset a password stays consistent. The values go to
-            # kubectl on stdin, never on a command line. The inventory administrator's credentials
-            # are for sign-in tests.
-            Set-OmsSecret -KubeContext $KubeContext -Namespace $SecretNamespace -Name $SecretName -Data @{
-                'bind-dn'                  = $created.BindDn
-                'bind-upn'                 = $created.BindUpn
-                'bind-password'            = $bindPassword
-                'demo-upn'                 = $created.DemoUpn
-                'demo-password'            = $demoPassword
-                'inventory-admin-upn'      = $created.InventoryAdminUpn
-                'inventory-admin-password' = $inventoryAdminPassword
-            }
-
+            # Passwords this run didn't set stay as the Secret has them. The values go to kubectl on
+            # stdin, never on a command line. The sample users' credentials are for sign-in tests.
+            $data = Get-OmsSecretData -KubeContext $KubeContext -Namespace $SecretNamespace -Name $SecretName
+            if ($data['bind-upn'] -and $data['bind-upn'] -ne $created.BindUpn) { $data.Remove('bind-password') }
+            $data['bind-dn'] = $created.BindDn
+            $data['bind-upn'] = $created.BindUpn
+            $data['demo-upn'] = $created.DemoUpn
+            $data['inventory-admin-upn'] = $created.InventoryAdminUpn
+            if ($created.BindPasswordSet) { $data['bind-password'] = $bindPassword }
+            if ($created.DemoPasswordSet) { $data['demo-password'] = $demoPassword }
+            if ($created.InventoryAdminPasswordSet) { $data['inventory-admin-password'] = $inventoryAdminPassword }
+            Set-OmsSecret -KubeContext $KubeContext -Namespace $SecretNamespace -Name $SecretName -Data $data
             Write-Host "    secret/$SecretName in namespace $SecretNamespace" -ForegroundColor DarkGray
+
+            if (-not $data['bind-password']) {
+                Write-Warning @"
+'$($created.BindUpn)' already existed, so its password is unknown here and Secret
+$SecretNamespace/$SecretName has none. Re-run with -ResetBindPassword to give it a new one, or let
+keycloak.ps1 ask for the current one.
+"@
+            }
+            elseif ($created.BindPasswordSet) {
+                Write-Host '    run keycloak.ps1 to apply the new bind password to Keycloak' -ForegroundColor Yellow
+            }
 
             # Keycloak is not domain joined, so it never receives the root certificate the way a
             # member machine would; it has to be handed over explicitly for LDAPS to validate.
             if ($caCertPem) {
-                $caFile = New-TemporaryFile
-                try {
-                    Set-Content -Path $caFile -Value $caCertPem -Encoding ascii
-                    kubectl --context $KubeContext -n $SecretNamespace delete secret $CaSecretName `
-                        --ignore-not-found | Out-Null
-                    kubectl --context $KubeContext -n $SecretNamespace create secret generic $CaSecretName `
-                        "--from-file=ca.crt=$caFile" | Out-Null
-                    if ($LASTEXITCODE -ne 0) { throw 'Could not write the CA certificate Secret.' }
-                }
-                finally { Remove-Item $caFile -ErrorAction SilentlyContinue }
-
+                Set-OmsSecret -KubeContext $KubeContext -Namespace $SecretNamespace -Name $CaSecretName -Data @{ 'ca.crt' = $caCertPem }
                 Write-Host "    secret/$CaSecretName in namespace $SecretNamespace" -ForegroundColor DarkGray
             }
         }
@@ -505,19 +467,20 @@ try {
 
     Write-Host "`n================ Domain controller ready ================" -ForegroundColor Green
     Write-Host "Connected to  : $target"
-    Write-Host "Domain        : $($created.DnsRoot) ($NetbiosName)"
+    Write-Host "Domain        : $($created.DnsRoot)"
     Write-Host "Controller    : $($created.DcFqdn)"
     Write-Host "Search base   : $($created.BaseDn)"
-    Write-Host "Demo OU       : $($created.OuDn)"
+    Write-Host "App OU        : $($created.OuDn)"
     Write-Host "Bind account  : $($created.BindUpn)"
     Write-Host "Sample user   : $($created.DemoUpn) (places orders)"
     Write-Host "Inventory admin: $($created.InventoryAdminUpn) (restocks products)"
+    Write-Host "Realm admins  : oms-identity-admins (add the people who administer Keycloak's 'oms' realm)"
     if ($caCertPem) { Write-Host "LDAP          : ldaps://$($created.DcFqdn):636" }
     else { Write-Host "LDAP          : ldap://$($created.DcFqdn):389 (no TLS)" -ForegroundColor Yellow }
     Write-Host ''
     Write-Host 'The generated passwords were written to the cluster, never to this console.' -ForegroundColor DarkGray
-    Write-Host "Read them back with:" -ForegroundColor DarkGray
-    Write-Host "  kubectl --context $KubeContext -n $SecretNamespace get secret $SecretName -o jsonpath='{.data.bind-password}'"
+    Write-Host "Read one back (base64) with:" -ForegroundColor DarkGray
+    Write-Host "  kubectl --context $KubeContext -n $SecretNamespace get secret $SecretName -o jsonpath='{.data.demo-password}'"
     Write-Host 'Next, stand up Keycloak (cluster nodes already resolve the domain through this controller):' -ForegroundColor Yellow
     Write-Host "  ./scripts/infra/azurelocal/keycloak.ps1 -AdServer $($created.DcFqdn) -AdDomain $($created.DnsRoot) -SpaOrigin https://<app address> -KubeContext $KubeContext -AllowInClusterIssuer ..."
 }

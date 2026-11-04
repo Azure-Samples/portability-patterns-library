@@ -1,12 +1,15 @@
 using System.Net;
 using System.Net.Http.Json;
 using OrderManagement.Shared.Models;
+using Polly.CircuitBreaker;
+using Polly.Timeout;
 
 namespace OrderManagement.Shared.Inventory;
 
 /// <summary>
 /// <see cref="IInventoryClient"/> over the inventory service's HTTP API. A typed client: the base
-/// address (<c>Inventory__BaseUrl</c>) and the token handler are configured where it is registered.
+/// address, the token handler and the resilience handler (retries, timeouts, circuit breaker) are
+/// configured where it is registered.
 /// </summary>
 public sealed class HttpInventoryClient(HttpClient http) : IInventoryClient
 {
@@ -53,6 +56,7 @@ public sealed class HttpInventoryClient(HttpClient http) : IInventoryClient
     }
 
     // Separates "try again later" from "this request is wrong", which callers handle differently.
+    // What reaches here has already been retried by the resilience handler.
     private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         using (request)
@@ -62,13 +66,9 @@ public sealed class HttpInventoryClient(HttpClient http) : IInventoryClient
             {
                 response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
             }
-            catch (HttpRequestException ex)
+            catch (Exception ex) when (ex is HttpRequestException or TimeoutRejectedException or BrokenCircuitException)
             {
                 throw new InventoryUnavailableException($"The inventory service could not be reached: {ex.Message}", ex);
-            }
-            catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
-            {
-                throw new InventoryUnavailableException("The inventory service did not answer in time.", ex);
             }
 
             if ((int)response.StatusCode >= 500 ||

@@ -140,6 +140,21 @@ prometheus-node-exporter:
   # plane, which AKS enabled by Arc manages and which doesn't trust the connected registry: the
   # registry's trust DaemonSet only runs where workloads can, so the image can't be pulled there.
   tolerations: []
+  # Unprivileged (the chart's nobody user), and nothing more than reading the host's /proc and /sys.
+  securityContext:
+    fsGroup: 65534
+    runAsGroup: 65534
+    runAsNonRoot: true
+    runAsUser: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
+    seccompProfile:
+      type: RuntimeDefault
   resources:
     requests:
       cpu: 10m
@@ -220,7 +235,6 @@ grafana:
       enabled: false
     users:
       allow_sign_up: false
-      auto_assign_org_role: Viewer
     auth.generic_oauth:
       enabled: true
       name: Keycloak
@@ -238,10 +252,14 @@ grafana:
       name_attribute_path: name
       # Directory accounts may have no mail attribute.
       email_attribute_path: email || preferred_username
-      # Realm roles arrive in the 'roles' claim (the grafana client's mapper in realm.json).
-      # Inventory managers can edit dashboards; everyone else who can sign in to the realm views.
-      role_attribute_path: contains(roles || `[]`, 'Inventory.Manage') && 'Editor' || 'Viewer'
-      role_attribute_strict: false
+      # Realm roles arrive in the 'roles' claim (the grafana client's mapper in realm.json). Only
+      # operators, the realm role Operations.Monitor (directory group oms-operators), get in, as
+      # Editor: Explore, where the logs and traces are, needs it. Logs carry customers' order
+      # details, so no one else gets even a Viewer account: with role_attribute_strict, an empty
+      # role refuses the sign-in. The role is checked again at every sign-in, so removing someone
+      # from the group takes Grafana away from them.
+      role_attribute_path: contains(roles || `[]`, 'Operations.Monitor') && 'Editor' || ''
+      role_attribute_strict: true
       allow_assign_grafana_admin: false
 
   sidecar:

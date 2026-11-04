@@ -47,7 +47,7 @@ credential from what the platform provides, with no platform switch:
 |---|---|---|---|
 | Queue | [Entra Workload ID](https://learn.microsoft.com/azure/aks/workload-identity-overview) | the pod's Kubernetes token, exchanged at Keycloak for a token RabbitMQ accepts | [ServiceCollectionExtensions.cs](../src/OrderManagement.Shared/DependencyInjection/ServiceCollectionExtensions.cs) |
 | Object storage | Entra Workload ID | S3 keys the platform issues to the namespace, limited to its own buckets, given only to the services connected to object storage | [ArchiveOptions.cs](../src/OrderManagement.Shared/Configuration/ArchiveOptions.cs) |
-| SQL, PostgreSQL | Entra Workload ID: a database user for the service's managed identity | the service's own database login, password from Key Vault | [DatabaseCredentialProviders.cs](../src/OrderManagement.Shared/Identity/DatabaseCredentialProviders.cs) |
+| SQL, PostgreSQL | Entra Workload ID: a database user for the service's managed identity | the service's own database login, password from Key Vault | [DatabaseLogin.cs](../src/OrderManagement.Shared/Identity/DatabaseLogin.cs) |
 | Inventory service | Entra Workload ID: a token for the `oms-inventory` app | the same Keycloak token as for the queue, which also names `oms-inventory` | [ServiceCollectionExtensions.cs](../src/OrderManagement.Shared/DependencyInjection/ServiceCollectionExtensions.cs) |
 
 On Azure Local, Keycloak plays Entra's part: it trusts the cluster's token issuer, the way Entra
@@ -111,9 +111,15 @@ On Azure Local, users and their roles come from Active Directory through Keycloa
 needs:
 
 - An OU for the app, `OMS`. Keycloak reads users and groups only from it.
-- Three groups in it: `oms-app-readers` (`Orders.Read`), `oms-app-writers` (`Orders.Create`) and
-  `oms-inventory-admins` (`Inventory.Manage` and `Orders.Read`). Granting access is adding people
-  to these groups.
+- These groups in it. Granting access is adding people to them:
+
+  | Group | Gets |
+  |---|---|
+  | `oms-app-readers` | `Orders.Read` |
+  | `oms-app-writers` | `Orders.Create` |
+  | `oms-inventory-admins` | `Inventory.Manage` and `Orders.Read` |
+  | `oms-operators` | `Operations.Monitor`: the site's Grafana (dashboards, logs, traces) |
+  | `oms-identity-admins` | Administration of the app's Keycloak realm, `oms`, and nothing else |
 - A bind account for Keycloak, `svc-keycloak`, limited to what Keycloak does: sign in to a domain
   controller over LDAP and read the users and groups in the OU. It's in no group, can sign in only
   at the domain controllers, can't be delegated, and is denied listing every container outside the
@@ -126,7 +132,7 @@ domain administrator, once the cluster exists:
 
 ```powershell
 ./scripts/infra/azurelocal/ad-setup.ps1 -ComputerName <domain controller> -DomainName <domain> `
-    -NetbiosName <NETBIOS name> -KubeContext <cluster context>
+    -KubeContext <cluster context>
 ```
 
 If your directory already has these, you don't need it: put the bind account in
@@ -135,8 +141,9 @@ If your directory already has these, you don't need it: put the bind account in
 account's password and keeps it, with the certificate, in the cluster.
 
 The listing limits cover the containers and domain controllers that exist when the script runs, so
-run it again after adding either. That resets the bind password: set the new one in the Keycloak
-admin console, under **oms** > **User federation** > **active-directory** > **Bind credentials**.
+run it again after adding either; that leaves the existing passwords alone. To change the bind
+password, run it with `-ResetBindPassword`, then `keycloak.ps1` (the `Keycloak` setup step), which
+gives Keycloak the new one.
 Some things stay readable, as they are for every account in the domain: the names of the containers
 directly under the domain root (Keycloak has to find the OU there), the sub-containers of Group
 Policy objects, the forest's configuration, schema and DNS partitions, and the domain controllers'

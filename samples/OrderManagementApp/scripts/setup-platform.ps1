@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+#Requires -Version 7.3
 <#
 .SYNOPSIS
     Prepares a site for the Order Management sample, once: cluster, HTTPS ingress, user sign-in

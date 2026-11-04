@@ -17,7 +17,9 @@ imagePullSecrets:
 deploymentMode: Monolithic
 
 loki:
-  # One tenant: Grafana and the collector are the only clients, both in this namespace.
+  # One tenant, no authentication: Grafana and the collector are the only clients, both in this
+  # namespace, and the namespace's network policies (monitoring/network-policies.yaml) let no other
+  # pod reach Loki.
   auth_enabled: false
   commonConfig:
     replication_factor: 1

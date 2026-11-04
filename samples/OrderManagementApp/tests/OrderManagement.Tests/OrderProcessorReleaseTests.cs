@@ -1,5 +1,6 @@
 using System.Diagnostics.Metrics;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using OrderManagement.Processor;
 using OrderManagement.Shared.Diagnostics;
 using OrderManagement.Shared.Inventory;
@@ -7,6 +8,7 @@ using OrderManagement.Shared.Messaging;
 using OrderManagement.Shared.Models;
 using OrderManagement.Shared.Persistence;
 using OrderManagement.Shared.Storage;
+using Polly;
 
 namespace OrderManagement.Tests;
 
@@ -80,6 +82,36 @@ public sealed class OrderProcessorReleaseTests
         Assert.Empty(inventory.Released);
     }
 
+    [Fact]
+    public async Task Retries_a_transient_failure_in_place_rather_than_using_up_a_delivery()
+    {
+        var store = new FakeOrderStore { TransientFailures = 2 };
+        var inventory = new FakeInventory();
+        var options = new ProcessorOptions { RetryDelay = TimeSpan.FromMilliseconds(1), MaxRetryDelay = TimeSpan.FromMilliseconds(5) };
+        var pipeline = new ResiliencePipelineBuilder();
+        options.ConfigurePipeline(pipeline, NullLogger.Instance);
+
+        var failure = await RunOneAsync(store, inventory, lastDelivery: false, pipeline.Build());
+
+        Assert.Null(failure);
+        Assert.Equal(OrderStatus.Processed, store.Recorded[TestOrder.OrderId]);
+    }
+
+    [Fact]
+    public async Task Fails_the_delivery_at_once_on_an_error_that_retrying_cannot_fix()
+    {
+        var store = new FakeOrderStore();
+        var inventory = new FakeInventory { Refuse = true };
+        var options = new ProcessorOptions { RetryDelay = TimeSpan.FromMilliseconds(1), MaxRetryDelay = TimeSpan.FromMilliseconds(5) };
+        var pipeline = new ResiliencePipelineBuilder();
+        options.ConfigurePipeline(pipeline, NullLogger.Instance);
+
+        var failure = await RunOneAsync(store, inventory, lastDelivery: false, pipeline.Build());
+
+        Assert.IsType<InventoryRequestException>(failure);
+        Assert.Equal(1, inventory.Reservations);
+    }
+
     private static readonly Order TestOrder = new()
     {
         OrderId = Guid.NewGuid(),
@@ -90,12 +122,14 @@ public sealed class OrderProcessorReleaseTests
     };
 
     // Runs the processor over one delivery of the test order and returns what the handler threw.
-    private static async Task<Exception?> RunOneAsync(FakeOrderStore store, FakeInventory inventory, bool lastDelivery)
+    private static async Task<Exception?> RunOneAsync(
+        FakeOrderStore store, FakeInventory inventory, bool lastDelivery, ResiliencePipeline? pipeline = null)
     {
         var subscriber = new OneMessageSubscriber(new QueueMessage("message-1", TestOrder.ToJson()) { IsLastDelivery = lastDelivery });
         using var meters = new TestMeterFactory();
         var processor = new OrderProcessor(
-            subscriber, new FakeArchiveStore(), store, inventory, new OrderMetrics(meters), NullLogger<OrderProcessor>.Instance);
+            subscriber, new FakeArchiveStore(), store, inventory, pipeline ?? ResiliencePipeline.Empty,
+            Options.Create(new ProcessorOptions()), new OrderMetrics(meters), NullLogger<OrderProcessor>.Instance);
 
         await processor.StartAsync(CancellationToken.None);
         await processor.ExecuteTask!;
@@ -124,6 +158,7 @@ public sealed class OrderProcessorReleaseTests
     private sealed class FakeOrderStore : IOrderStore
     {
         public bool FailRecord { get; init; }
+        public int TransientFailures { get; set; }
         public bool CommitBeforeFailing { get; init; }
         public bool FailLookup { get; init; }
         public Dictionary<Guid, string> Recorded { get; } = [];
@@ -131,6 +166,12 @@ public sealed class OrderProcessorReleaseTests
 
         public Task RecordAsync(Order order, string archiveUri, string status, string? statusReason, CancellationToken cancellationToken)
         {
+            if (TransientFailures > 0)
+            {
+                TransientFailures--;
+                throw new TimeoutException("SQL is failing over.");
+            }
+
             if (!FailRecord || CommitBeforeFailing)
             {
                 Recorded[order.OrderId] = status;
@@ -168,9 +209,16 @@ public sealed class OrderProcessorReleaseTests
     private sealed class FakeInventory : IInventoryClient
     {
         public List<Guid> Released { get; } = [];
+        public bool Refuse { get; init; }
+        public int Reservations { get; private set; }
 
-        public Task<ReservationResult> ReserveAsync(ReservationRequest request, CancellationToken cancellationToken) =>
-            Task.FromResult(new ReservationResult { OrderId = request.OrderId, Status = ReservationStatus.Reserved });
+        public Task<ReservationResult> ReserveAsync(ReservationRequest request, CancellationToken cancellationToken)
+        {
+            Reservations++;
+            return Refuse
+                ? throw new InventoryRequestException(System.Net.HttpStatusCode.Forbidden, "Not allowed.")
+                : Task.FromResult(new ReservationResult { OrderId = request.OrderId, Status = ReservationStatus.Reserved });
+        }
 
         public Task ReleaseAsync(Guid orderId, CancellationToken cancellationToken)
         {
@@ -185,8 +233,6 @@ public sealed class OrderProcessorReleaseTests
 
     private sealed class FakeArchiveStore : IArchiveStore
     {
-        public Task InitializeAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-
         public Task<string> ArchiveAsync(Order order, CancellationToken cancellationToken) => Task.FromResult($"archive/{order.OrderId}.json");
     }
 

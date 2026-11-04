@@ -1,19 +1,17 @@
 using System.Text.Json;
-using OrderManagement.Shared.Models;
 using Dapper;
-using Microsoft.Data.SqlClient;
+using OrderManagement.Shared.Models;
 
 namespace OrderManagement.Shared.Persistence;
 
 /// <summary>SQL Server and Azure SQL Database implementation of <see cref="IOrderStore"/>.</summary>
 public sealed class SqlOrderStore(SqlConnectionFactory connections) : IOrderStore
 {
-    // SQL Server error 208: invalid object name. dbsetup creates the table; until it has run there
-    // is simply nothing to show.
-    private const int InvalidObjectName = 208;
-
-    private const string UpsertSql = """
-        MERGE dbo.Orders AS target
+    // Inserts the order once: a redelivered message finds it there and changes nothing. HOLDLOCK
+    // keeps the key range locked from the check to the insert, so two deliveries of the same order at
+    // once can't both find it missing.
+    private const string RecordSql = """
+        MERGE dbo.Orders WITH (HOLDLOCK) AS target
         USING (SELECT @OrderId AS OrderId) AS source
         ON target.OrderId = source.OrderId
         WHEN NOT MATCHED THEN
@@ -31,9 +29,7 @@ public sealed class SqlOrderStore(SqlConnectionFactory connections) : IOrderStor
         Order order, string archiveUri, string status, string? statusReason, CancellationToken cancellationToken)
     {
         await using var connection = await connections.OpenAsync(cancellationToken).ConfigureAwait(false);
-
-        // MERGE keeps the processor idempotent: queue redelivery must not create duplicate rows.
-        await connection.ExecuteAsync(new CommandDefinition(UpsertSql, new
+        await connection.ExecuteAsync(new CommandDefinition(RecordSql, new
         {
             order.OrderId,
             order.CustomerId,
@@ -67,16 +63,9 @@ public sealed class SqlOrderStore(SqlConnectionFactory connections) : IOrderStor
 
     private async Task<IEnumerable<OrderRow>> QueryAsync(string sql, object parameters, CancellationToken cancellationToken)
     {
-        try
-        {
-            await using var connection = await connections.OpenAsync(cancellationToken).ConfigureAwait(false);
-            return await connection.QueryAsync<OrderRow>(
-                new CommandDefinition(sql, parameters, cancellationToken: cancellationToken)).ConfigureAwait(false);
-        }
-        catch (SqlException ex) when (ex.Number == InvalidObjectName)
-        {
-            return [];
-        }
+        await using var connection = await connections.OpenAsync(cancellationToken).ConfigureAwait(false);
+        return await connection.QueryAsync<OrderRow>(
+            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken)).ConfigureAwait(false);
     }
 
     private static StoredOrder ToStoredOrder(OrderRow row) => new()

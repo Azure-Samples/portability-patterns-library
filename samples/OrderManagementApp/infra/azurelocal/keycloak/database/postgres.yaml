@@ -1,15 +1,15 @@
 # Keycloak's database when Availability is 'standard': one PostgreSQL server in a StatefulSet, in the
 # identity namespace, with no operator and no backups. Sign-in stops while its pod restarts, and a
-# lost volume loses Keycloak's data (the realm can be imported again; users come from Active
-# Directory). With 'high', cloudnative-pg.yaml here is used instead.
+# lost volume loses Keycloak's data (realm-config.yaml creates the realm again; users come from
+# Active Directory). With 'high', cloudnative-pg.yaml here is used instead.
 #
 # The Service has the name CloudNativePG gives its read-write Service, keycloak-db-rw, so Keycloak
 # connects to either database the same way. Connections are encrypted with a certificate from the
-# site CA, which the server reloads every hour.
+# site CA, which the server reloads every hour, and Keycloak checks it against that CA.
 #
 # Expects in the identity namespace:
 #   Secret keycloak-db           username, password   the database login
-#   Secret keycloak-db-tls       tls.crt, tls.key     the server's certificate, for keycloak-db-rw.identity.svc
+#   Secret keycloak-db-tls       tls.crt, tls.key, ca.crt   the server's certificate, for keycloak-db-rw
 #   Secret azurelocal-registry   image pull secret, when pulling from a private registry
 apiVersion: v1
 kind: ConfigMap
@@ -51,13 +51,19 @@ spec:
       imagePullSecrets:
         - name: azurelocal-registry
       terminationGracePeriodSeconds: 60
-      # The image runs PostgreSQL as uid 70; the group lets it read the key, which PostgreSQL accepts
-      # when root owns the file with mode 0640.
+      # The image's postgres user is uid 70, and everything runs as it from the start. The group
+      # lets it write its volumes and read the key, which PostgreSQL accepts when root owns the file
+      # with mode 0640.
       securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
         fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: postgres
-          image: docker.io/library/postgres:17-alpine
+          image: docker.io/library/postgres:17.11-alpine3.24
           args:
             - -c
             - hba_file=/etc/postgres-config/pg_hba.conf
@@ -67,6 +73,11 @@ spec:
             - ssl_cert_file=/etc/postgres-tls/tls.crt
             - -c
             - ssl_key_file=/etc/postgres-tls/tls.key
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           env:
             - name: POSTGRES_DB
               value: keycloak
@@ -80,11 +91,26 @@ spec:
               value: /var/lib/postgresql/data/pgdata
           ports:
             - containerPort: 5432
+          # The first start creates the database and crash recovery can take a while, so the other
+          # probes wait for this one.
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -h /var/run/postgresql -U \"$POSTGRES_USER\" -d keycloak"]
+            periodSeconds: 10
+            failureThreshold: 60
+          # Restarts a server that no longer answers at all. Exit code 1, a server that answers but
+          # refuses connections while it starts or stops, is not a reason to restart it.
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -h /var/run/postgresql -U \"$POSTGRES_USER\" -d keycloak; test $? -ne 2"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
           readinessProbe:
             exec:
               command: ["sh", "-c", "pg_isready -h /var/run/postgresql -U \"$POSTGRES_USER\" -d keycloak"]
-            initialDelaySeconds: 10
             periodSeconds: 10
+            timeoutSeconds: 5
           resources:
             requests:
               cpu: 50m
@@ -102,14 +128,21 @@ spec:
               readOnly: true
             - name: run
               mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
         # PostgreSQL reads its certificate only at start or on reload, so this asks it to reload every
         # hour; a renewed certificate is in use well before the old one expires.
         - name: reload-certificate
-          image: docker.io/library/postgres:17-alpine
+          image: docker.io/library/postgres:17.11-alpine3.24
           command:
             - sh
             - -c
             - while true; do sleep 3600; PGPASSWORD="$POSTGRES_PASSWORD" psql -h /var/run/postgresql -U "$POSTGRES_USER" -d keycloak -qc "SELECT pg_reload_conf()" || true; done
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           env:
             - name: POSTGRES_USER
               valueFrom:
@@ -135,6 +168,8 @@ spec:
             secretName: keycloak-db-tls
             defaultMode: 0640
         - name: run
+          emptyDir: {}
+        - name: tmp
           emptyDir: {}
   volumeClaimTemplates:
     - metadata:

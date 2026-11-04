@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+#Requires -Version 7.3
 <#
 .SYNOPSIS
     Deploys the Order Management sample: the same deploy/app.bicep and images to Azure or to
