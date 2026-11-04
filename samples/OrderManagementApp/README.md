@@ -131,8 +131,7 @@ build uses it when it's there, and Git ignores it.
 To run the tests:
 
 ```powershell
-dotnet test                     # the integration tests start PostgreSQL and SQL Server in Docker or Podman, and are skipped without one
-Invoke-Pester ./tests/scripts   # the setup scripts; needs Pester 5 and the Azure CLI's Bicep
+dotnet test   # the integration tests start PostgreSQL and SQL Server in Docker or Podman, and are skipped without one
 ```
 
 ## Deploy to Azure

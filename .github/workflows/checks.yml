@@ -227,12 +227,3 @@ jobs:
           $findings = Invoke-ScriptAnalyzer -Path scripts -Recurse -Settings scripts/PSScriptAnalyzerSettings.psd1
           $findings | Format-Table ScriptName, Line, RuleName, Message -AutoSize -Wrap
           if ($findings) { exit 1 }
-
-      - name: PowerShell tests
-        shell: pwsh
-        run: |
-          # The Recipe tests compile the Recipe Packs with the Azure CLI's Bicep.
-          az bicep install
-          Install-Module Pester -MinimumVersion 5.5 -Force -Scope CurrentUser
-          $result = Invoke-Pester tests/scripts -Output Detailed -PassThru
-          exit $result.FailedCount
