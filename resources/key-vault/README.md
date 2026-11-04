@@ -34,7 +34,7 @@ How the extension maps to Key Vault on AKS, and how the sample uses it: [Key Vau
 
 **Data:** secrets stay in Key Vault. Nothing moves; the cluster holds copies.
 
-**When to use it on Azure Local:** Key Vault adds a copy outside the cluster and central rotation and audit, at the cost of rotating only while the link to Azure is up. Secrets that only matter inside the site, such as keys for a store that runs in the same cluster, can stay as Kubernetes Secrets generated on site; a rebuilt cluster gets new ones. The sample keeps its database passwords in Key Vault and its object store keys in the cluster.
+**When to use it on Azure Local:** Key Vault adds a copy outside the cluster and central rotation and audit, at the cost of rotating only while the link to Azure is up. Secrets that only matter inside the site, such as database passwords or keys for a store that runs in the same cluster, can stay as Kubernetes Secrets generated on site; a rebuilt cluster gets new ones.
 
 ## Sample
 

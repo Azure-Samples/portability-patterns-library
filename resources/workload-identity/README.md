@@ -28,7 +28,7 @@ How Entra concepts map to Keycloak, and how the sample does each step: [Keycloak
 
 | Pattern | Limitation for this resource |
 |---|---|
-| [Workload identity](https://learn.microsoft.com/entra/workload-id/workload-identities-overview) | Only services that accept OAuth 2.0 tokens from your identity provider can use it. In the sample RabbitMQ and the inventory service do; SQL Server and PostgreSQL use a password per service, kept in [Key Vault](../key-vault/README.md), and the object store S3 keys per namespace, although SeaweedFS can also accept service account tokens. |
+| [Workload identity](https://learn.microsoft.com/entra/workload-id/workload-identities-overview) | Only services that accept OAuth 2.0 tokens from your identity provider can use it. In the sample RabbitMQ and the inventory service do; SQL Server and PostgreSQL use a password per service, stored as a Kubernetes Secret, and the object store S3 keys per namespace, although SeaweedFS can also accept service account tokens. |
 | [Reliability](https://learn.microsoft.com/azure/well-architected/reliability/) | The identity provider becomes a critical dependency on site. If it's down, pods can't get new tokens once their current ones expire. |
 | [Security](https://learn.microsoft.com/azure/well-architected/security/) | You protect the identity provider's administration, signing keys and certificates, which Entra handles for you on Azure. |
 

@@ -35,7 +35,7 @@ How flexible server maps to each alternative, and how the sample does each step:
 |---|---|---|
 | Sign-in | [Microsoft Entra authentication](https://learn.microsoft.com/azure/postgresql/flexible-server/concepts-azure-ad-authentication) only, password authentication disabled | Password (SCRAM-SHA-256) over TLS |
 | What the application sends | An Entra access token, through the ordinary password field | The role's password |
-| Stored secret | None | A password per role, kept in Key Vault and synced into the cluster |
+| Stored secret | None | A password per role, stored as a Kubernetes Secret |
 | In Npgsql | [`UsePeriodicPasswordProvider`](https://www.npgsql.org/doc/security.html) supplies a fresh token for new connections | The same hook supplies the password |
 
 Password-free options on Azure Local exist but aren't used by the sample, which uses passwords for PostgreSQL as it does for SQL Server:
@@ -48,7 +48,7 @@ Password-free options on Azure Local exist but aren't used by the sample, which 
 | Pattern | Limitation for this resource |
 |---|---|
 | [Data store](https://learn.microsoft.com/azure/architecture/guide/technology-choices/data-store-overview) | Same engine, so queries and data carry over. Server parameters, extensions and connection pooling are configured on the cluster, not through Azure. |
-| [Workload identity](https://learn.microsoft.com/entra/workload-id/workload-identities-overview) | Entra ID isn't available. The sample uses a password per role, kept in Key Vault. Client certificates would remove the stored password. |
+| [Workload identity](https://learn.microsoft.com/entra/workload-id/workload-identities-overview) | Entra ID isn't available. The sample uses a password per role, stored as a Kubernetes Secret. Client certificates would remove the stored password. |
 | [Reliability](https://learn.microsoft.com/azure/well-architected/reliability/) | You run the database. CloudNativePG provides failover, synchronous replicas and point-in-time restore, but the sample's backups go to an object store in the same cluster, so copy them off site. A single container has none of these. |
 
 **Data:** data in flexible server doesn't move by itself. Dump and restore it during a planned switch.
