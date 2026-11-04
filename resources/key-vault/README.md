@@ -34,6 +34,8 @@ How the extension maps to Key Vault on AKS, and how the sample uses it: [Key Vau
 
 **Data:** secrets stay in Key Vault. Nothing moves; the cluster holds copies.
 
+**When to use it on Azure Local:** Key Vault adds a copy outside the cluster and central rotation and audit, at the cost of rotating only while the link to Azure is up. Secrets that only matter inside the site, such as keys for a store that runs in the same cluster, can stay as Kubernetes Secrets generated on site; a rebuilt cluster gets new ones. The sample keeps its database passwords in Key Vault and its object store keys in the cluster.
+
 ## Sample
 
 The [Order Management sample](../../samples/OrderManagementApp/README.md) on Azure Local keeps its database passwords in Key Vault, for SQL Server and PostgreSQL, and copies them into the cluster with the Secret Store extension. On Azure it needs no secrets: every service signs in with workload identity. [Key Vault with the Secret Store extension](./alternatives/secret-store-extension.md#how-the-order-management-sample-does-it) points to the code.
