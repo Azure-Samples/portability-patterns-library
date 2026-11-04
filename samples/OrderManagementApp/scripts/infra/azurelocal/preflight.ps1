@@ -151,6 +151,18 @@ if ($signedIn) {
         if ($available -eq 'true') { Add-Result Azure 'Registry' PASS "$($s.RegistryName) (available, setup creates it)" }
         else { Add-Result Azure 'Registry' FAIL "'$($s.RegistryName)' is taken; pick another RegistryName" }
     }
+
+    # The KeyVault step grants the cluster's sync identity, and you, access to the vault's secrets,
+    # which takes the right to create role assignments; Contributor doesn't have it. Roles held
+    # through a group count; a PIM-eligible role counts only once activated.
+    $assignee = if ($account.user.type -eq 'servicePrincipal') { $account.user.name } else { az ad signed-in-user show --query id --output tsv 2>$null }
+    $subscriptionScope = "/subscriptions/$($account.id)"
+    $scopes = @('/', $subscriptionScope, "$subscriptionScope/resourceGroups/$($s.ResourceGroup)")
+    $canAssign = @(az role assignment list --assignee $assignee --all --include-inherited --include-groups @sub --output json 2>$null | ConvertFrom-Json |
+            Where-Object { $_.roleDefinitionName -in 'Owner', 'User Access Administrator', 'Role Based Access Control Administrator' -and
+                ($_.scope -in $scopes -or $_.scope -like '/providers/Microsoft.Management/managementGroups/*') }) | Select-Object -First 1
+    if ($canAssign) { Add-Result Azure 'Can create role assignments' PASS "$($canAssign.roleDefinitionName) on $($canAssign.scope)" }
+    else { Add-Result Azure 'Can create role assignments' FAIL "needs Owner, User Access Administrator or Role Based Access Control Administrator on the subscription or resource group '$($s.ResourceGroup)', for the KeyVault step" }
 }
 
 # --- Network ------------------------------------------------------------------------------------
