@@ -35,7 +35,7 @@ How flexible server maps to each alternative, and how the sample does each step:
 |---|---|---|
 | Sign-in | [Microsoft Entra authentication](https://learn.microsoft.com/azure/postgresql/flexible-server/concepts-azure-ad-authentication) only, password authentication disabled | Password (SCRAM-SHA-256) over TLS |
 | What the application sends | An Entra access token, through the ordinary password field | The role's password |
-| Stored secret | None | A password per role, stored as a Kubernetes Secret |
+| Stored secret | None | A password per role, generated on site and stored as a Kubernetes Secret; changed by a rotation script |
 | In Npgsql | [`UsePeriodicPasswordProvider`](https://www.npgsql.org/doc/security.html) supplies a fresh token for new connections | The same hook supplies the password |
 
 Password-free options on Azure Local exist but aren't used by the sample, which uses passwords for PostgreSQL as it does for SQL Server:

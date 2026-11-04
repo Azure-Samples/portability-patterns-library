@@ -4,7 +4,7 @@ Azure Key Vault runs in Azure. A workload on Azure Local that has to keep workin
 
 | Target | Alternative | Portability class | Availability | Summary |
 |---|---|---|---|---|
-| Azure Local | [Key Vault with the Secret Store extension](./alternatives/secret-store-extension.md) | `adapter-required` | Sample available | Secrets stay in Key Vault in Azure. An Arc extension copies them into Kubernetes Secrets in the cluster, which keep working offline. |
+| Azure Local | [Key Vault with the Secret Store extension](./alternatives/secret-store-extension.md) | `adapter-required` | Sample available | Secrets stay in Key Vault in Azure. An Arc extension copies them into Kubernetes Secrets in the cluster, which keep working offline. For secrets that already live in Azure. |
 | Azure Local | [OpenBao](https://openbao.org/docs/) | — | Documentation available | Not evaluated by this project. Open-source vault (MPL-2.0, a fork of HashiCorp Vault) run on site, with Kubernetes sign-in and short-lived database credentials. |
 | Azure Local | [Key Vault with disconnected operations](https://learn.microsoft.com/azure/azure-local/manage/disconnected-operations-overview) | — | Documentation available | Not evaluated by this project. The Key Vault service runs on site, for Azure Local instances approved for disconnected operations. |
 
@@ -34,8 +34,20 @@ How the extension maps to Key Vault on AKS, and how the sample uses it: [Key Vau
 
 **Data:** secrets stay in Key Vault. Nothing moves; the cluster holds copies.
 
-**When to use it on Azure Local:** Key Vault adds a copy outside the cluster and central rotation and audit, at the cost of rotating only while the link to Azure is up. Secrets that only matter inside the site, such as database passwords or keys for a store that runs in the same cluster, can stay as Kubernetes Secrets generated on site; a rebuilt cluster gets new ones.
+**When to use it on Azure Local:** Key Vault adds a copy outside the cluster and central rotation and audit, at the cost of rotating only while the link to Azure is up. Use it for secrets and certificates that already live in Azure and must reach the site, such as a partner's API key. Secrets that only matter inside the site, such as database passwords or keys for a store that runs in the same cluster, can stay as Kubernetes Secrets generated on site; a rebuilt cluster gets new ones.
+
+## Rotating secrets on site
+
+Key Vault doesn't rotate database passwords itself on Azure either: you write a function, triggered by a near-expiry event, that changes the password in the database and stores the new version. On Azure Local the same pattern runs on site:
+
+| Option | What it does | Notes |
+|---|---|---|
+| A rotation script or workflow on site | Changes the value in the database or store, updates the Kubernetes Secret, restarts or reloads the clients | No extra platform. What the sample does. |
+| [OpenBao](https://openbao.org/docs/) | Rotates PostgreSQL, MySQL and Active Directory passwords on a schedule, issues short-lived database users and certificates | Open source (MPL-2.0). No SQL Server plugin. You run it, including unsealing after a restart. |
+| [HashiCorp Vault](https://developer.hashicorp.com/vault/docs/secrets/databases) | The same, and SQL Server | Business Source License, not open source. Enterprise adds replication between sites. |
+
+Secrets without a plugin, such as S3 keys or partner API keys, need their own rotation in every option.
 
 ## Sample
 
-The [Order Management sample](../../samples/OrderManagementApp/README.md) on Azure Local keeps its database passwords in Key Vault, for SQL Server and PostgreSQL, and copies them into the cluster with the Secret Store extension. On Azure it needs no secrets: every service signs in with workload identity. [Key Vault with the Secret Store extension](./alternatives/secret-store-extension.md#how-the-order-management-sample-does-it) points to the code.
+The [Order Management sample](../../samples/OrderManagementApp/README.md) on Azure Local sets up Key Vault and the Secret Store extension as the path for secrets that already live in Azure, and shows how to sync one. Nothing goes through it by default: the sample's database passwords and object store keys are born on site, so it generates them in the cluster and changes them with a rotation script. On Azure it needs no secrets: every service signs in with workload identity. [Key Vault with the Secret Store extension](./alternatives/secret-store-extension.md#how-the-order-management-sample-does-it) points to the code.
