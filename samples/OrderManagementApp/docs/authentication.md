@@ -47,7 +47,7 @@ credential from what the platform provides, with no platform switch:
 |---|---|---|---|
 | Queue | [Entra Workload ID](https://learn.microsoft.com/azure/aks/workload-identity-overview) | the pod's Kubernetes token, exchanged at Keycloak for a token RabbitMQ accepts | [ServiceCollectionExtensions.cs](../src/OrderManagement.Shared/DependencyInjection/ServiceCollectionExtensions.cs) |
 | Object storage | Entra Workload ID | S3 keys the platform issues to the namespace, limited to its own buckets, given only to the services connected to object storage | [ArchiveOptions.cs](../src/OrderManagement.Shared/Configuration/ArchiveOptions.cs) |
-| SQL, PostgreSQL | Entra Workload ID: a database user for the service's managed identity | the service's own database login, password from Key Vault | [DatabaseLogin.cs](../src/OrderManagement.Shared/Identity/DatabaseLogin.cs) |
+| SQL, PostgreSQL | Entra Workload ID: a database user for the service's managed identity | the service's own database login, with a password generated on site | [DatabaseLogin.cs](../src/OrderManagement.Shared/Identity/DatabaseLogin.cs) |
 | Inventory service | Entra Workload ID: a token for the `oms-inventory` app | the same Keycloak token as for the queue, which also names `oms-inventory` | [ServiceCollectionExtensions.cs](../src/OrderManagement.Shared/DependencyInjection/ServiceCollectionExtensions.cs) |
 
 On Azure Local, Keycloak plays Entra's part: it trusts the cluster's token issuer, the way Entra
@@ -77,10 +77,10 @@ the schema, add the next file rather than editing one already applied.
   administrator is a dedicated managed identity, `id-oms-db-admin`, used by the setup job alone. The
   services' users are their managed identities.
 - **Azure Local:** each service has a database login of its own (`api`, `processor`, `inventory`).
-  The passwords, and the administrators', are in Azure Key Vault, which the Secret Store extension
-  syncs into the cluster while the link to Azure is up. The deploy script sets them in the
-  databases, then gives each service only its own password, in Secret `<service>-db-credentials`.
-  See the [README](../README.md#deploy-to-azure-local) to change one.
+  The deploy script generates the passwords, and the administrators', on site the first time, into
+  Secret `oms-db-passwords`, and keeps them after that. It sets them in the databases, then gives
+  each service only its own password, in Secret `<service>-db-credentials`. See the
+  [README](../README.md#deploy-to-azure-local) to change one.
 
 ### Calls between services
 

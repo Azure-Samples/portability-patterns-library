@@ -1,21 +1,44 @@
-# Syncs the database passwords from Azure Key Vault into the Secret oms-db-passwords in the
-# application namespace, through the Key Vault Secret Store extension. Applied by
-# scripts/infra/azurelocal/key-vault.ps1 with the ${...} values filled in.
+# The service account the Key Vault Secret Store extension reads the vault as, in the namespace the
+# secrets go to. Applied by scripts/infra/azurelocal/key-vault.ps1 with the ${...} values filled in;
+# infra/azurelocal/key-vault.bicep federates the vault's reader identity with it.
 #
-# No service reads oms-db-passwords; only the database setup job does. It is where new versions
-# arrive: scripts/deploy.ps1 sets them in the databases (the setup job reads them from here), then
-# copies each service's own password into {service}-db-credentials, which the Recipe Pack hands to
-# the service. A pod that restarts in between keeps the password the database still has. With the
-# link to Azure down, the last copies keep working.
+# Nothing in the sample is synced by default: its database passwords and object store keys are
+# generated on site. To bring a secret that already lives in Key Vault to the site, add it to the
+# vault and apply a SecretProviderClass and a SecretSync next to this account, for example:
 #
-# The administrator passwords are synced here too, into the application namespace, because that's
-# where everything that uses them runs, and a pod can only read Secrets in its own namespace: the
-# SQL Server and PostgreSQL servers the Recipes deploy there (each Recipe keeps its administrator
-# password in a Secret next to its server), and the database setup job (scripts/lib/database.ps1),
-# which signs in as administrator to create each service's user. Syncing them elsewhere would add a
-# copy, not remove this one. Moving them out takes the database servers and the setup job out of
-# the application namespace. Until then, keep Secret read access in the namespace to the deploy
-# identity and cluster administrators: the services' own accounts have none.
+#   apiVersion: secrets-store.csi.x-k8s.io/v1
+#   kind: SecretProviderClass
+#   metadata:
+#     name: partner-api
+#     namespace: <namespace>
+#   spec:
+#     provider: azure
+#     parameters:
+#       clientID: "<syncClientId output of key-vault.bicep>"
+#       keyvaultName: <vault>
+#       tenantID: "<tenant>"
+#       objects: |
+#         array:
+#           - |
+#             objectName: partner-api-key
+#             objectType: secret
+#   ---
+#   apiVersion: secret-sync.x-k8s.io/v1alpha1
+#   kind: SecretSync
+#   metadata:
+#     name: partner-api
+#     namespace: <namespace>
+#   spec:
+#     serviceAccountName: secret-sync
+#     secretProviderClassName: partner-api
+#     secretObject:
+#       type: Opaque
+#       data:
+#         - sourcePath: partner-api-key
+#           targetKey: api-key
+#
+# The extension checks the vault for new versions while the site is connected (hourly by default);
+# with the link down, the last copy keeps working.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -24,54 +47,3 @@ metadata:
   annotations:
     azure.workload.identity/client-id: "${CLIENT_ID}"
     azure.workload.identity/tenant-id: "${TENANT_ID}"
----
-apiVersion: secrets-store.csi.x-k8s.io/v1
-kind: SecretProviderClass
-metadata:
-  name: oms-key-vault
-  namespace: ${NAMESPACE}
-spec:
-  provider: azure
-  parameters:
-    clientID: "${CLIENT_ID}"
-    keyvaultName: ${KEYVAULT_NAME}
-    tenantID: "${TENANT_ID}"
-    objects: |
-      array:
-        - |
-          objectName: sql-admin-password
-          objectType: secret
-        - |
-          objectName: postgres-admin-password
-          objectType: secret
-        - |
-          objectName: sql-api-password
-          objectType: secret
-        - |
-          objectName: sql-processor-password
-          objectType: secret
-        - |
-          objectName: postgres-inventory-password
-          objectType: secret
----
-apiVersion: secret-sync.x-k8s.io/v1alpha1
-kind: SecretSync
-metadata:
-  name: oms-db-passwords
-  namespace: ${NAMESPACE}
-spec:
-  serviceAccountName: ${SERVICE_ACCOUNT}
-  secretProviderClassName: oms-key-vault
-  secretObject:
-    type: Opaque
-    data:
-      - sourcePath: sql-admin-password
-        targetKey: sql-admin-password
-      - sourcePath: postgres-admin-password
-        targetKey: postgres-admin-password
-      - sourcePath: sql-api-password
-        targetKey: sql-api-password
-      - sourcePath: sql-processor-password
-        targetKey: sql-processor-password
-      - sourcePath: postgres-inventory-password
-        targetKey: postgres-inventory-password

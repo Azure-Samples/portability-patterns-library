@@ -18,7 +18,7 @@
       Cluster   infra/azurelocal/provision-infra.ps1         AKS Arc cluster, ACR, load balancer
       Images    infra/azurelocal/import-images.ps1           third-party images mirrored into the ACR
       Registry  infra/azurelocal/connected-registry.ps1      in-cluster registry that keeps serving offline
-      KeyVault  infra/azurelocal/key-vault.ps1               database passwords in Key Vault, synced into the cluster
+      KeyVault  infra/azurelocal/key-vault.ps1               Key Vault and its Secret Store extension, for secrets from Azure
       Ingress   infra/azurelocal/provision-ingress.ps1       NGINX ingress, site CA, renewed certificates
       Operators infra/azurelocal/provision-operators.ps1     CloudNativePG and RabbitMQ operators: replicas, failover, backups
                                                              (only with Availability 'high')

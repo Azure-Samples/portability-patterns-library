@@ -13,12 +13,11 @@
 
     Each service signs in to Keycloak as itself, with its Kubernetes service account token
     (Keycloak client workload-<service>), to the queue with that token, and to its database as its
-    own least-privilege user. The database passwords come from Key Vault, synced into Secret
-    oms-db-passwords by the Key Vault Secret Store extension (setup-platform.ps1, KeyVault step).
-    This script sets them in the databases through the database setup job, then copies each
-    service's password into <service>-db-credentials, which the Recipe Pack hands to that service
-    only. So to change a password: set a new version in Key Vault, wait for the sync, and run this
-    script again.
+    own least-privilege user. The database passwords are generated on site, once, into Secret
+    oms-db-passwords, and kept on later runs; nothing in Azure holds them. This script sets them in
+    the databases through the database setup job, then copies each service's password into
+    <service>-db-credentials, which the Recipe Pack hands to that service only. To change one, run
+    scripts/infra/azurelocal/rotate-credentials.ps1, which needs only the cluster.
 
     The RabbitMQ administrator is the platform's, not a workload's: this script generates its
     password once, into Secret -RabbitMqAdminSecretName, and the queue Recipes take it from there.
@@ -32,7 +31,7 @@
                          the link is up and keeps serving what it has when it is not.
 
     Prerequisite: ./scripts/setup-platform.ps1 -Target AzureLocal (cluster, image mirror, connected
-    registry, Key Vault sync, Keycloak, ingress and the orders app's sign-in registration). Usually
+    registry, Keycloak, ingress and the orders app's sign-in registration). Usually
     run through ./scripts/deploy.ps1 -Target AzureLocal, which supplies the settings.
 
     Images are built with podman when it is available, otherwise docker. With neither, for example
@@ -44,11 +43,6 @@
 
 .EXAMPLE
     ./scripts/deploy/azurelocal.ps1 -RegistryName <acr-name> -ResourceGroup <resource-group> -KubeContext <context>
-
-.EXAMPLE
-    # Apply passwords changed in Key Vault, without rebuilding or reinstalling Radius.
-    ./scripts/deploy/azurelocal.ps1 -RegistryName <acr-name> -ResourceGroup <resource-group> -KubeContext <context> `
-        -SkipImageBuild -SkipRadiusInstall
 #>
 [CmdletBinding()]
 param(
@@ -88,8 +82,8 @@ param(
     # The application's services; each gets its own service account, Keycloak client and database user.
     [string[]]$Services = @('api', 'processor', 'inventory'),
 
-    # Database passwords synced from Key Vault by scripts/infra/azurelocal/key-vault.ps1, and the
-    # Secret that records the administrator passwords the databases currently have.
+    # Database passwords, generated on site once, and the Secret that records the administrator
+    # passwords the databases currently have.
     [string]$PasswordsSecretName = 'oms-db-passwords',
     [string]$AppliedAdminSecretName = 'oms-db-admin',
     # The RabbitMQ administrator's credentials (keys username, password and default_user.conf),
@@ -160,6 +154,7 @@ if (-not $ImageTag) {
 . (Join-Path $repoRoot 'scripts/lib/recipes.ps1')
 . (Join-Path $repoRoot 'scripts/lib/cluster.ps1')
 . (Join-Path $repoRoot 'scripts/lib/database.ps1')
+. (Join-Path $repoRoot 'scripts/lib/credentials.ps1')
 . (Join-Path $repoRoot 'scripts/lib/azure.ps1')
 Push-Location $repoRoot
 
@@ -602,42 +597,14 @@ try {
     }
 
     # ------------------------------------------------------------------------------------------
-    # Database passwords, from Key Vault through Secret $PasswordsSecretName. SQL Server reads its
-    # administrator password only when it first creates its data, so a changed one is set in the
-    # running server, signing in with the previous one, which $AppliedAdminSecretName records.
-    # Passwords go over stdin, never on a command line. The PostgreSQL operator applies a changed
-    # administrator password itself, from the Secret its Recipe writes.
+    # Database passwords, generated on site the first time into Secret $PasswordsSecretName and kept
+    # after that. A changed SQL administrator password is set in the running server; the PostgreSQL
+    # Recipes apply a changed administrator password themselves, from the Secret they write.
     # ------------------------------------------------------------------------------------------
-    $passwords = Get-OmsSecretData $KubeContext $ApplicationNamespace $PasswordsSecretName
-    $missingKeys = @('sql-admin-password', 'postgres-admin-password', 'sql-api-password', 'sql-processor-password', 'postgres-inventory-password') |
-        Where-Object { -not $passwords[$_] }
-    if ($missingKeys) {
-        throw "Secret '$PasswordsSecretName' lacks $($missingKeys -join ', '). Run ./scripts/setup-platform.ps1 -Target AzureLocal (the KeyVault step)."
-    }
-    $applied = Get-OmsSecretData $KubeContext $ApplicationNamespace $AppliedAdminSecretName
-
-    # Passwords are case-sensitive, hence -cne.
-    $previous = $applied['sql-admin-password']
-    if ($previous -and $passwords['sql-admin-password'] -cne $previous) {
-        $podNames = Invoke-Checked 'listing the SQL Server pods' {
-            kubectl get pods --context $KubeContext --namespace $ApplicationNamespace --selector 'app=mssql' `
-                --field-selector status.phase=Running --output jsonpath='{.items[*].metadata.name}'
-        }
-        $pods = @($podNames -split ' ' | Where-Object { $_ })
-        if (-not $pods) { throw 'The SQL administrator password changed in Key Vault, but no SQL Server is running to change it in. Start SQL Server, then run this again.' }
-        foreach ($pod in $pods) {
-            Write-Host "==> Changing the SQL administrator password in $pod" -ForegroundColor Cyan
-            "$previous`nALTER LOGIN sa WITH PASSWORD = N'$($passwords['sql-admin-password'].Replace("'", "''"))';`nGO" |
-                kubectl exec --stdin $pod --container mssql --context $KubeContext --namespace $ApplicationNamespace -- `
-                    bash -c 'IFS= read -r P; export SQLCMDPASSWORD="${P%$''\r''}"; /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -b' |
-                Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "Changing the SQL administrator password in $pod failed." }
-        }
-    }
-    $previous = $null
-    Set-OmsSecret $KubeContext $ApplicationNamespace $AppliedAdminSecretName @{
-        'sql-admin-password' = $passwords['sql-admin-password']
-    }
+    Write-Host "==> Database passwords (Secret '$PasswordsSecretName')" -ForegroundColor Cyan
+    $passwords = Initialize-OmsDatabasePasswords $KubeContext $ApplicationNamespace $PasswordsSecretName
+    Set-OmsSqlAdminPassword -KubeContext $KubeContext -Namespace $ApplicationNamespace `
+        -Password $passwords['sql-admin-password'] -AppliedSecretName $AppliedAdminSecretName
 
     # User sign-in for the orders API and browser app goes through the same Keycloak realm. Only
     # these values differ from an Entra deployment; the application code is identical.
@@ -718,7 +685,7 @@ try {
     }
 
     # As the database administrators, create the schemas and each service's database user with
-    # only the rights it needs, setting the passwords from Key Vault.
+    # only the rights it needs, setting the passwords from $PasswordsSecretName.
     $sql = (Get-OmsRadiusResource -Type 'Radius.Data/sqlServerDatabases' -Name 'ordersdb' -Workspace $WorkspaceName -Group $RadiusGroup).properties
     $postgres = (Get-OmsRadiusResource -Type 'Radius.Data/postgreSqlDatabases' -Name 'inventorydb' -Workspace $WorkspaceName -Group $RadiusGroup).properties
     $fromPasswords = { param($key) @{ Secret = $PasswordsSecretName; Key = $key } }

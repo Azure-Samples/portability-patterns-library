@@ -76,6 +76,23 @@ buckets:
 It needs at least three nodes: the masters must each be on a different node, and so must the volume
 servers.
 
+## Changing keys
+
+An identity may have several keys at once, so a key changes with no downtime.
+[rotate-credentials.ps1](../../../scripts/infra/azurelocal/rotate-credentials.ps1) does it with
+nothing but the cluster:
+
+```powershell
+./scripts/infra/azurelocal/rotate-credentials.ps1 -KubeContext <context> -Credential object-store
+./scripts/infra/azurelocal/rotate-credentials.ps1 -KubeContext <context> -Credential backup-object-store -Namespace identity
+```
+
+It adds a new key next to the old one in `object-store-s3-config` and restarts the S3 gateways, which
+read that config only when they start. It then writes the new key to the namespace's Secret and
+restarts the applications that use it; the PostgreSQL clusters reload theirs without a restart, since
+`backup-object-store` carries the `cnpg.io/reload` label. Last, it keeps only the new key, restarts
+the gateways again and, for backups, checks that each cluster still archives its write-ahead log.
+
 ## For production
 
 - **Copy data off the cluster.** The store is in the same cluster as what it holds, so it protects

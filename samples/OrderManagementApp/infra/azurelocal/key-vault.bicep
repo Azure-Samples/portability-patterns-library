@@ -1,9 +1,8 @@
-// Azure Key Vault for the Azure Local site's secrets, synced into the cluster by the Key Vault Secret
-// Store extension so they keep working while the site is cut off from Azure.
-//
-// Holds the database passwords: each service's own least-privilege database user, and the database
-// administrators, which only the database setup job uses. Operations change them here; the
-// extension copies new versions into Kubernetes Secrets while the site is connected.
+// Azure Key Vault for secrets and certificates that already live in Azure and must reach the Azure
+// Local site, for example an existing certificate or a partner's API key. The Key Vault Secret Store
+// extension copies them into Kubernetes Secrets while the site is connected, and the copies keep
+// working while it is cut off. The sample's own credentials don't go through it: they are generated
+// on site (see the README's production list).
 //
 //   * Key Vault, RBAC authorization, soft delete and purge protection.
 //   * A user-assigned managed identity that the extension uses to read the vault, with a federated
@@ -25,7 +24,7 @@ param clusterName string
 @description('Name of the managed identity the Secret Store extension reads the vault with.')
 param identityName string = 'id-oms-secret-sync'
 
-@description('Namespace the secrets are synced into: the application namespace.')
+@description('Namespace the secrets are synced into.')
 param syncNamespace string
 
 @description('Service account the Secret Store extension authenticates as, in that namespace.')

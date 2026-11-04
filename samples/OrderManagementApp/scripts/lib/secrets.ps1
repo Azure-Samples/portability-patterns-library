@@ -48,16 +48,19 @@ function Set-OmsSecret {
         [Parameter(Mandatory = $true)][string]$Namespace,
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][hashtable]$Data,
-        [string]$Type = 'Opaque'
+        [string]$Type = 'Opaque',
+        [hashtable]$Labels = @{}
     )
 
     $encoded = @{}
     foreach ($key in $Data.Keys) { $encoded[$key] = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$Data[$key])) }
+    $metadata = @{ name = $Name; namespace = $Namespace }
+    if ($Labels.Count) { $metadata.labels = $Labels }
     @{
         apiVersion = 'v1'
         kind       = 'Secret'
         type       = $Type
-        metadata   = @{ name = $Name; namespace = $Namespace }
+        metadata   = $metadata
         data       = $encoded
     } | ConvertTo-Json -Depth 5 | kubectl apply --context $KubeContext -f - | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Writing Secret '$Namespace/$Name' failed." }

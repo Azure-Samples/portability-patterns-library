@@ -51,15 +51,14 @@ needs.
 | SQL (orders) | Azure SQL Database | SQL Server container |
 | PostgreSQL (stock) | Azure Database for PostgreSQL flexible server | PostgreSQL cluster, three instances, run by the CloudNativePG operator and backed up to object storage in the cluster (one server, no backups, with `Availability` `standard`) |
 | User sign-in | Microsoft Entra ID | Keycloak, federated to the site's Active Directory |
-| How each service authenticates | Its own managed identity, through Entra Workload ID (no secrets) | Its own Kubernetes service account token, exchanged with Keycloak for the queue and the inventory service; its own database user, password from Key Vault |
-| Secrets | None: databases use Entra authentication | Database passwords in Azure Key Vault, synced into the cluster by the Secret Store extension |
+| How each service authenticates | Its own managed identity, through Entra Workload ID (no secrets) | Its own Kubernetes service account token, exchanged with Keycloak for the queue and the inventory service; its own database user, with a password generated on site |
+| Secrets | None: databases use Entra authentication | Database passwords and object store keys generated on site and kept in the cluster; Key Vault, through the Secret Store extension, for secrets that already live in Azure |
 | Monitoring | Application Insights, with alerts | On-site OpenTelemetry collector, Prometheus and Grafana, with alerts |
 | Images and Recipes | Azure Container Registry | ACR connected registry inside the cluster |
 | HTTPS address | Managed NGINX ingress (app routing add-on) on a public IP, `<label>.<region>.cloudapp.azure.com`, certificate from Let's Encrypt | NGINX ingress on an address from the Arc load balancer on the site network, certificate from a site CA, renewed by cert-manager in the cluster |
 
 The Azure Local column runs nothing in Azure at runtime. That is what lets the app keep working when
-the site is cut off from Azure. Key Vault is only read while the link is up; the cluster keeps the
-last synced passwords.
+the site is cut off from Azure. Its credentials are made and changed on site too.
 
 ## Prerequisites
 
@@ -225,11 +224,11 @@ only the Recipe Pack picks different Recipes. See [Azure Local settings](./docs/
 Everything the app needs at run time is on site, so it keeps serving users: pods restart and move
 between workers with images from the in-cluster registry, users sign in through Keycloak and Active
 Directory, services get their tokens from Keycloak, and cert-manager renews certificates from the site
-CA. Database passwords already synced from Key Vault stay in the cluster.
+CA. Database passwords and object store keys are in the cluster, and change there.
 
 Installing and changing the deployment need the link: the setup steps download Helm charts and
-operator manifests from their public repositories, a new version is built and published in Azure
-and reaches the site through the connected registry, and changed passwords come from Key Vault.
+operator manifests from their public repositories, and a new version is built and published in Azure
+and reaches the site through the connected registry.
 Plan installs and upgrades for when the site is connected. Azure Local itself has to connect at least
 once every 30 days; past that, running VMs, including the cluster's, keep running, but nothing on the
 instance can be created or changed.
@@ -255,12 +254,38 @@ For production, you would also need:
   or operator before rolling it out.
 - **Hardening:** the platform's administrators hold broad rights (cluster administrator, the
   operators, Owner on the Azure resource group for Radius); keep them to trusted operators.
+- **Credentials kept on site:** the database passwords and object store keys are generated on site
+  and stored only in the cluster, as Kubernetes Secrets, which AKS on Azure Local encrypts at rest.
+  Back up the cluster's Secrets, or accept resetting them after rebuilding the cluster.
+- **Rotation is a script, not automatic:**
+  [rotate-credentials.ps1](./scripts/infra/azurelocal/rotate-credentials.ps1) changes a password or
+  a key with nothing but the cluster. That is the same pattern as Key Vault on Azure, where rotation
+  is a function you write, run on a near-expiry event. For automatic rotation, run a secret store on
+  site: [OpenBao](https://openbao.org) (MPL-2.0) rotates PostgreSQL, MySQL and Active Directory
+  passwords and issues certificates, but has no SQL Server plugin;
+  [HashiCorp Vault](https://developer.hashicorp.com/vault) (Business Source License; Enterprise adds
+  replication between sites) also rotates SQL Server passwords. Secrets without a plugin, such as
+  the S3 keys, still need their own rotation.
+- **No stored S3 key for the app (optional):** SeaweedFS can exchange a Keycloak token for temporary
+  S3 credentials (STS `AssumeRoleWithWebIdentity`), the model the queue and the inventory service
+  already use. It needs SeaweedFS's advanced IAM with Keycloak as identity provider, a role limited
+  to the processor and its buckets, and a credential provider in the app. The backup keys stay static.
 
-The database passwords live in Key Vault. To change one, set a new version of its secret in the
-vault (`sql-admin-password`, `postgres-admin-password`, `sql-api-password`,
-`sql-processor-password` or `postgres-inventory-password`). Once the Secret Store extension has
-synced it (hourly by default), run `./scripts/deploy.ps1 -Target AzureLocal -SkipImageBuild -SkipRadiusInstall`
-to set it in the database and restart the service.
+To change a database password or an object store key:
+
+```powershell
+# One or more of: sql-api-password, sql-processor-password, postgres-inventory-password,
+# sql-admin-password, postgres-admin-password, object-store, backup-object-store
+./scripts/infra/azurelocal/rotate-credentials.ps1 -KubeContext <context> -Credential sql-api-password
+```
+
+A service's new password takes effect when its pods restart, so expect a few failed requests from
+that service meanwhile. An object store key changes with no downtime: the new key works alongside
+the old one until every client uses it.
+
+To bring a secret that already lives in Azure to the site, such as a certificate or a partner's API
+key, keep it in Key Vault and sync it as [key-vault-sync.yaml](./infra/azurelocal/key-vault-sync.yaml)
+shows.
 
 ## Clean up
 

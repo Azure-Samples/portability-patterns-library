@@ -7,7 +7,7 @@
 .DESCRIPTION
     Runs, in order:
       1. scripts/infra/azurelocal/preflight.ps1   (Azure Local only; stops on any FAIL)
-      2. scripts/setup-platform.ps1               cluster, registry, Key Vault sync, sign-in, ingress, monitoring
+      2. scripts/setup-platform.ps1               cluster, registry, Key Vault, sign-in, ingress, monitoring
       3. scripts/deploy.ps1                       images, Recipes, rad deploy
     Every step is idempotent, so re-running it updates what is there. Values come from
     scripts/settings.json, as for the scripts it runs.

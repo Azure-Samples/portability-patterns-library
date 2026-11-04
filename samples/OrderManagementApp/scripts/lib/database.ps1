@@ -6,6 +6,10 @@
 # and each service's least-privilege database user, as the database administrator. It runs outside
 # the Radius application because only it may hold administrator rights. $Environment holds plain
 # values; $SecretEnvironment maps variable names to @{ Secret = ...; Key = ... } in the namespace.
+#
+# The job's definition is kept in the cluster as a suspended CronJob, which never runs on its own:
+# Start-OmsDatabaseSetup runs it again from there, with nothing but the cluster, as
+# scripts/infra/azurelocal/rotate-credentials.ps1 does to set a changed password.
 function Invoke-OmsDatabaseSetup {
     param(
         [Parameter(Mandatory = $true)][string]$KubeContext,
@@ -23,9 +27,6 @@ function Invoke-OmsDatabaseSetup {
     )
 
     $name = 'dbsetup'
-    kubectl delete job $name --namespace $Namespace --context $KubeContext --ignore-not-found --wait=true | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Deleting the previous database setup job failed." }
-
     $env = @($Environment.GetEnumerator() | Sort-Object Name | ForEach-Object {
             @{ name = $_.Name; value = [string]$_.Value }
         }) + @($SecretEnvironment.GetEnumerator() | Sort-Object Name | ForEach-Object {
@@ -57,22 +58,48 @@ function Invoke-OmsDatabaseSetup {
     }
     if ($ServiceAccountName) { $podSpec.serviceAccountName = $ServiceAccountName }
     if ($ImagePullSecretName) { $podSpec.imagePullSecrets = @(@{ name = $ImagePullSecretName }) }
-    $job = [ordered]@{
+    $template = [ordered]@{
         apiVersion = 'batch/v1'
-        kind       = 'Job'
+        kind       = 'CronJob'
         metadata   = @{ name = $name; namespace = $Namespace; labels = @{ 'app.kubernetes.io/name' = $name } }
         spec       = @{
-            backoffLimit            = 2
-            ttlSecondsAfterFinished = 86400
-            template                = @{
-                metadata = @{ labels = (@{ 'app.kubernetes.io/name' = $name } + $PodLabels) }
-                spec     = $podSpec
+            suspend     = $true
+            schedule    = '0 0 1 1 *'
+            jobTemplate = @{
+                metadata = @{ labels = @{ 'app.kubernetes.io/name' = $name } }
+                spec     = @{
+                    backoffLimit            = 2
+                    ttlSecondsAfterFinished = 86400
+                    template                = @{
+                        metadata = @{ labels = (@{ 'app.kubernetes.io/name' = $name } + $PodLabels) }
+                        spec     = $podSpec
+                    }
+                }
             }
         }
     }
+    $template | ConvertTo-Json -Depth 20 | kubectl apply --context $KubeContext -f - | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Writing the database setup job failed.' }
 
+    Start-OmsDatabaseSetup -KubeContext $KubeContext -Namespace $Namespace -TimeoutSeconds $TimeoutSeconds
+}
+
+# Runs the database setup job Invoke-OmsDatabaseSetup defined, with the values its Secrets hold now,
+# and waits for it.
+function Start-OmsDatabaseSetup {
+    param(
+        [Parameter(Mandatory = $true)][string]$KubeContext,
+        [Parameter(Mandatory = $true)][string]$Namespace,
+        [int]$TimeoutSeconds = 900
+    )
+
+    if (-not (kubectl get cronjob dbsetup --namespace $Namespace --context $KubeContext --ignore-not-found --output name)) {
+        if ($LASTEXITCODE -ne 0) { throw "Reading the database setup job in '$Namespace' failed." }
+        throw "No database setup job in '$Namespace'. Deploy the application first."
+    }
+    $name = 'dbsetup-' + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     Write-Host "==> Creating database schemas and each service's database user (job '$name')" -ForegroundColor Cyan
-    $job | ConvertTo-Json -Depth 20 | kubectl apply --context $KubeContext -f - | Out-Null
+    kubectl create job $name --from=cronjob/dbsetup --namespace $Namespace --context $KubeContext | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Creating the database setup job failed.' }
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)

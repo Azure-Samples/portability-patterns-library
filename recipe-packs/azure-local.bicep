@@ -18,7 +18,7 @@
 // management interface.
 //
 // Credentials that can't come from that identity, such as each service's database password, are
-// synced into the cluster from Azure Key Vault and reach the service through containerEnvFromSecrets.
+// generated on site and reach the service through containerEnvFromSecrets.
 //
 // Images and Recipes are pinned to exact versions, so a restarted pod or a redeployment never picks
 // up a different one. The tags here must match what infra/azurelocal/images.txt mirrors.
@@ -129,7 +129,7 @@ param siteCaSecretName string = ''
 
 @description('''
 Kubernetes Secrets, by name, whose keys become environment variables of every container, such as
-per-service database passwords synced from Key Vault. {resource} is the container resource name.
+per-service database passwords. {resource} is the container resource name.
 ''')
 param containerEnvFromSecrets array = []
 

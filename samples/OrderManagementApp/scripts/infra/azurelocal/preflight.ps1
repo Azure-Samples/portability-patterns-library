@@ -179,7 +179,7 @@ if ($signedIn) {
         }
     }
 
-    # The KeyVault step grants the cluster's sync identity, and you, access to the vault's secrets,
+    # The KeyVault step grants the extension's identity, and you, access to the vault's secrets,
     # which takes the right to create role assignments; Contributor doesn't have it. Roles held
     # through a group count; a PIM-eligible role counts only once activated.
     Invoke-AzureCheck 'Can create role assignments' {

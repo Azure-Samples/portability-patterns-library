@@ -27,7 +27,7 @@
 
     A network policy, infra/azurelocal/object-store/network-policy.yaml, lets in only those clients:
     it admits the namespaces this script labels object-store/objects and object-store/backups.
-    Idempotent.
+    Idempotent. To change a namespace's keys, run rotate-credentials.ps1.
 
     The store is in the same cluster as what it holds: it covers a failed node or pod, a bad change
     or a deleted table, not losing the cluster. infra/azurelocal/object-store/README.md says how to
@@ -73,6 +73,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
 . (Join-Path $repoRoot 'scripts/lib/cluster.ps1')
+. (Join-Path $repoRoot 'scripts/lib/credentials.ps1')
 
 if (-not $ObjectStorageNamespaces) { $ObjectStorageNamespaces = @($ApplicationNamespace) }
 $highAvailability = $Availability -eq 'high'
@@ -89,13 +90,6 @@ $S3Port = 8443
 $BackupSecretName = 'backup-object-store'
 $assetsDir = Join-Path $repoRoot 'infra/azurelocal/object-store'
 
-function New-RandomKey([int]$Bytes) {
-    $buffer = [byte[]]::new($Bytes)
-    [Security.Cryptography.RandomNumberGenerator]::Fill($buffer)
-    # Letters and digits only, which every S3 client accepts.
-    -join ($buffer | ForEach-Object { 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'[$_ % 62] })
-}
-
 # Reads a namespace's keys from its Secret, or generates them the first time. Labels the namespace
 # so the network policy lets its clients in.
 function Get-Keys([string]$TargetNamespace, [string]$SecretName, [string]$IdKey, [string]$SecretKey, [string]$ClientLabel) {
@@ -103,7 +97,7 @@ function Get-Keys([string]$TargetNamespace, [string]$SecretName, [string]$IdKey,
     $keys = Get-OmsSecretData $KubeContext $TargetNamespace $SecretName
     if (-not $keys[$IdKey] -or -not $keys[$SecretKey]) {
         Write-Host "    generated keys for $TargetNamespace/$SecretName" -ForegroundColor DarkGray
-        return @{ $IdKey = (New-RandomKey 20); $SecretKey = (New-RandomKey 40) }
+        return @{ $IdKey = (New-OmsAccessKey 20); $SecretKey = (New-OmsAccessKey 40) }
     }
     $keys
 }
@@ -167,13 +161,14 @@ if ($BackupNamespaces) { Write-Host "==> Backup identities for $($BackupNamespac
 foreach ($backupNamespace in $BackupNamespaces) {
     $bucket = "postgres-$backupNamespace"
     $keys = Get-Keys $backupNamespace $BackupSecretName 'ACCESS_KEY_ID' 'ACCESS_SECRET_KEY' 'object-store/backups'
-    # ca.crt is what the databases verify the store's certificate against.
+    # ca.crt is what the databases verify the store's certificate against. With the cnpg.io/reload
+    # label, the PostgreSQL clusters pick up changed keys without a restart.
     Set-OmsSecret $KubeContext $backupNamespace $BackupSecretName @{
         ACCESS_KEY_ID     = $keys['ACCESS_KEY_ID']
         ACCESS_SECRET_KEY = $keys['ACCESS_SECRET_KEY']
         BUCKET            = $bucket
         'ca.crt'          = $caPem
-    }
+    } -Labels @{ 'cnpg.io/reload' = 'true' }
     $identities.Add([ordered]@{
             name        = $bucket
             credentials = @(@{ accessKey = $keys['ACCESS_KEY_ID']; secretKey = $keys['ACCESS_SECRET_KEY'] })

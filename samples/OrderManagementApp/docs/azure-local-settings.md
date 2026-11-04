@@ -9,7 +9,7 @@ every `<...>` placeholder. Leave the other values as they are. Git ignores `sett
 | Setting | What to put |
 |---|---|
 | `Common.SubscriptionId` | The subscription your Azure Local instance is registered in: `az account show --query id -o tsv` |
-| `Common.ResourceGroup` | A new resource group for the cluster, its registry and the Key Vault, for example `bcd-azurelocal` |
+| `Common.ResourceGroup` | A new resource group for the cluster, its registry and the Key Vault (for secrets that already live in Azure), for example `bcd-azurelocal` |
 | `Common.ClusterName` | A name for the AKS cluster, for example `bcd-aksarc` |
 | `Common.KubeContext` | The kubectl context the scripts create for it; usually the cluster's name |
 | `Common.RegistryName` | A new, globally unique name for the container registry the scripts create: 5–50 lowercase letters and digits |

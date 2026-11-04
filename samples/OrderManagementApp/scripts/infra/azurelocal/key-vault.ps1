@@ -1,27 +1,20 @@
 <#
 .SYNOPSIS
-    Keeps the Azure Local site's database passwords in Azure Key Vault and syncs them into the
-    cluster, so they keep working when the site loses its link to Azure.
+    Sets up Azure Key Vault and the Key Vault Secret Store extension, the path for secrets and
+    certificates that already live in Azure and must reach the Azure Local site.
 
 .DESCRIPTION
-    Each service signs in to its database as its own least-privilege user; the database setup job
-    and the database containers use the administrator accounts. All of their passwords live in Key
-    Vault, which operations own: they change a password there, and the Key Vault Secret Store
-    extension copies the new version into the cluster while the site is connected. With the link
-    down, the last copies keep working.
+    For example an existing certificate or a partner's API key: it is kept in Key Vault, and the
+    Secret Store extension copies it into a Kubernetes Secret while the site is connected. With the
+    link down, the last copy keeps working. Nothing in the sample goes through it by default: its
+    database passwords and object store keys are generated on site.
 
     The Azure resources are declared in infra/azurelocal/key-vault.bicep: Key Vault, the identity
     the extension reads it with (federated with the cluster's OIDC issuer, so the cluster must have
     been created with workload identity), and the Secret Store extension, which needs the
-    Certificate Management extension the cluster gets when it's created. The sync itself is
-    infra/azurelocal/key-vault-sync.yaml.
-
-    The script deploys the template, sets each password that isn't in Key Vault yet to a generated
-    value, applies the sync and waits until the passwords are in the cluster.
-
-    To change a password, set a new version in Key Vault. Once the extension has synced it into
-    Secret oms-db-passwords, ./scripts/deploy.ps1 sets it in the database and hands it to the
-    service. No service reads oms-db-passwords itself.
+    Certificate Management extension the cluster gets when it's created. This script deploys the
+    template and creates the service account the extension reads the vault as.
+    infra/azurelocal/key-vault-sync.yaml shows how to sync a secret.
 
 .EXAMPLE
     # Usually run by setup-platform.ps1 with the Common and KeyVault sections of scripts/settings.json. On its own:
@@ -36,25 +29,19 @@ param(
     # Globally unique; empty derives one from the subscription and resource group.
     [string]$KeyVaultName,
     [string]$Location,
+    # The namespace synced secrets go to, and the service account the extension reads the vault as there.
     [string]$ApplicationNamespace = 'oms-azurelocal',
     [string]$ServiceAccountName = 'secret-sync',
 
     # Object IDs allowed to set the secrets, besides whoever runs this script.
     [string[]]$SecretsOfficerObjectIds = @(),
-    [int]$RotationPollIntervalInSeconds = 3600,
-
-    # The Secret the sync writes, which this script waits for.
-    [string]$SyncedSecretName = 'oms-db-passwords',
-    [int]$SyncTimeoutMinutes = 10
+    [int]$RotationPollIntervalInSeconds = 3600
 )
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
 . (Join-Path $repoRoot 'scripts/lib/cluster.ps1')
 . (Join-Path $repoRoot 'scripts/lib/azure.ps1')
-
-# The passwords this sample keeps in Key Vault.
-$secretNames = @('sql-admin-password', 'postgres-admin-password', 'sql-api-password', 'sql-processor-password', 'postgres-inventory-password')
 
 function Invoke-Checked {
     param(
@@ -66,14 +53,6 @@ function Invoke-Checked {
     if ($LASTEXITCODE -ne 0) {
         throw "$What failed with exit code $LASTEXITCODE."
     }
-}
-
-# Meets SQL Server's and PostgreSQL's complexity rules, and has no character that needs quoting
-# in a connection string.
-function New-DatabasePassword {
-    $bytes = [byte[]]::new(24)
-    [Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
-    'Oms1-' + [Convert]::ToBase64String($bytes).Replace('+', 'A').Replace('/', 'b').TrimEnd('=')
 }
 
 $account = Invoke-Checked 'az account show' { az account show --output json } | ConvertFrom-Json
@@ -118,35 +97,7 @@ try {
 }
 finally { Remove-Item $parametersFile -ErrorAction SilentlyContinue }
 
-# Role assignments take a few minutes to apply, so the first writes may be refused.
-Write-Host "==> Setting the passwords that aren't in Key Vault yet" -ForegroundColor Cyan
-foreach ($name in $secretNames) {
-    # A password is generated only for a secret Key Vault says doesn't exist. Any other failure,
-    # such as access not granted yet, is retried, then stops the script: overwriting a secret it
-    # couldn't read would change a database password nobody asked to change.
-    $state = 'unknown'
-    for ($attempt = 1; $attempt -le 20; $attempt++) {
-        $errorText = az keyvault secret show --vault-name $KeyVaultName --name $name --query id --output tsv 2>&1 | Out-String
-        if ($LASTEXITCODE -eq 0) { $state = 'exists'; break }
-        if ($LASTEXITCODE -eq 3 -or $errorText -match 'SecretNotFound') { $state = 'missing'; break }
-        Start-Sleep -Seconds 15
-    }
-    if ($state -eq 'unknown') { throw "Could not read Key Vault secret '$name', so it was left as it is: $($errorText.Trim())" }
-    if ($state -eq 'exists') { Write-Host "    $name (kept)" -ForegroundColor DarkGray; continue }
-
-    # The value goes to az in a file only this user can read, never on a command line.
-    $valueFile = New-TemporaryFile
-    try {
-        [IO.File]::WriteAllText($valueFile, (New-DatabasePassword), [Text.UTF8Encoding]::new($false))
-        Invoke-Checked "az keyvault secret set $name" {
-            az keyvault secret set --vault-name $KeyVaultName --name $name --file $valueFile --encoding utf-8 --output none
-        }
-    }
-    finally { Remove-Item $valueFile -ErrorAction SilentlyContinue }
-    Write-Host "    $name (generated)" -ForegroundColor DarkGray
-}
-
-Write-Host "==> Syncing passwords from Key Vault '$($outputs.keyVaultName.value)' into '$ApplicationNamespace'" -ForegroundColor Cyan
+Write-Host "==> Service account '$ServiceAccountName' in '$ApplicationNamespace' for the Secret Store extension" -ForegroundColor Cyan
 Set-OmsNamespace $KubeContext $ApplicationNamespace
 $manifest = (Get-Content (Join-Path $repoRoot 'infra/azurelocal/key-vault-sync.yaml') -Raw).
     Replace('${NAMESPACE}', $ApplicationNamespace).
@@ -155,16 +106,6 @@ $manifest = (Get-Content (Join-Path $repoRoot 'infra/azurelocal/key-vault-sync.y
     Replace('${CLIENT_ID}', $outputs.syncClientId.value).
     Replace('${TENANT_ID}', $outputs.tenantId.value)
 $manifest | kubectl apply --context $KubeContext -f - | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'Applying infra/azurelocal/key-vault-sync.yaml failed. Is the Secret Store extension running?' }
-
-kubectl wait "secret/$SyncedSecretName" --for=create --namespace $ApplicationNamespace --context $KubeContext `
-    --timeout="$($SyncTimeoutMinutes)m" | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    $status = Invoke-Checked 'kubectl get secretsync' {
-        kubectl get secretsync --namespace $ApplicationNamespace --context $KubeContext -o json
-    } | ConvertFrom-Json
-    $reasons = $status.items | ForEach-Object { "$($_.metadata.name): $(($_.status.conditions | Select-Object -Last 1).message)" }
-    throw "Secret '$SyncedSecretName' not synced within $SyncTimeoutMinutes minutes.`n$($reasons -join "`n")"
-}
-Write-Host "    synced into Secret '$SyncedSecretName'" -ForegroundColor DarkGray
+if ($LASTEXITCODE -ne 0) { throw 'Applying infra/azurelocal/key-vault-sync.yaml failed.' }
 Write-Host "`nKey Vault ready: $($outputs.keyVaultUri.value)" -ForegroundColor Green
+Write-Host "To sync a secret from it, see infra/azurelocal/key-vault-sync.yaml (clientID $($outputs.syncClientId.value), tenantID $($outputs.tenantId.value))."
