@@ -141,5 +141,7 @@ output result object = {
     queueName: queueName
     endpoint: '${namespaceName}.servicebus.windows.net'
     tls: 'required'
+    // Deliveries of a message before it is dead-lettered.
+    maxDeliveryCount: maxDeliveryCount
   }
 }

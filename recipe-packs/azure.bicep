@@ -12,8 +12,8 @@ extension radius
 @description('OCI registry holding the published Recipe modules, for example myregistry.azurecr.io.')
 param registry string
 
-@description('Tag applied to the published Recipe modules.')
-param tag string = 'latest'
+@description('Version (tag) of the Recipes published from this repository, for example 1.4.0. The same tag publish-recipes.ps1 published them under.')
+param tag string
 
 @description('Service account each container runs as; {resource} is the container resource name. Must match the federated credential subjects.')
 param serviceAccountName string = '{resource}'
@@ -62,8 +62,8 @@ param postgresLocation string = location
 @description('Registry path holding the stock Radius Kubernetes Recipes, used for secrets.')
 param radiusRecipeRegistry string = 'ghcr.io/radius-project/kube-recipes'
 
-@description('Tag of the stock Radius Recipes.')
-param radiusRecipeTag string = 'latest'
+@description('Release of the stock Radius Recipes.')
+param radiusRecipeTag string = '0.61.0'
 
 @description('Ingress class that publishes the application\'s routes.')
 param ingressClassName string = 'webapprouting.kubernetes.azure.com'

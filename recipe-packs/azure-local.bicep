@@ -10,13 +10,18 @@
 //   * The connected registry always serves HTTPS with a private CA. Give that CA to the Radius
 //     control plane and leave plainHttp false.
 //
-// Identity: an identity provider on site (Keycloak in the samples) trusts the cluster's own
-// ServiceAccount issuer, so token exchange never leaves the site. Each service runs as its own
-// service account and authenticates as its own client: {resource} in serviceAccountName and
-// oauthClientId is the container resource name.
+// Identity: an identity provider on site (Keycloak in the samples), a required part of the platform,
+// trusts the cluster's own ServiceAccount issuer, so token exchange never leaves the site. Each
+// service runs as its own service account and authenticates as its own client: {resource} in
+// serviceAccountName and oauthClientId is the container resource name. The queue accepts only those
+// tokens from workloads; its administrator, from an existing Secret, serves the operators and the
+// management interface.
 //
 // Credentials that can't come from that identity, such as each service's database password, are
 // synced into the cluster from Azure Key Vault and reach the service through containerEnvFromSecrets.
+//
+// Images and Recipes are pinned to exact versions, so a restarted pod or a redeployment never picks
+// up a different one. The tags here must match what infra/azurelocal/images.txt mirrors.
 //
 // Availability picks how the queue and PostgreSQL run. Both settings return the same connection
 // values, so the application is the same either way:
@@ -46,8 +51,8 @@ every container image, synced from the cloud ACR while the link is up.
 ''')
 param registry string
 
-@description('Tag applied to the Recipes published from this repository.')
-param tag string = 'latest'
+@description('Version (tag) of the Recipes published from this repository, for example 1.4.0. The same tag publish-recipes.ps1 published them under.')
+param tag string
 
 @description('''
 Registry path holding Radius's stock Kubernetes Recipes, used for secrets. On Azure Local they are
@@ -55,8 +60,8 @@ mirrored from ghcr.io into the cloud ACR and synced into the cluster like every 
 ''')
 param radiusRecipeRegistry string = '${registry}/radius-project/kube-recipes'
 
-@description('Tag of the stock Radius Recipes.')
-param radiusRecipeTag string = 'latest'
+@description('Release of the stock Radius Recipes.')
+param radiusRecipeTag string = '0.61.0'
 
 @description('Set true only for a registry that does not serve HTTPS.')
 param plainHttp bool = false
@@ -67,14 +72,22 @@ param rabbitMqTag string = '4.3.7-management-alpine'
 @description('RabbitMQ nodes when availability is \'high\'. Three keeps the queues available, with no message lost, when one node fails.')
 param rabbitMqReplicas int = 3
 
-@description('Tag of the SQL Server image mirrored into the registry.')
-param sqlServerTag string = '2022-latest'
+@description('''
+Existing Secret in the application namespace with the RabbitMQ administrator's credentials, keys
+`username`, `password` and `default_user.conf` ("default_user = <username>" and
+"default_pass = <password>" lines). The administrator serves the management interface and the
+operators only; workloads authenticate with their identity provider token.
+''')
+param rabbitMqAdminCredentialsSecretName string
 
-@description('Tag of the CloudNativePG PostgreSQL image mirrored into the registry, used when availability is \'high\'.')
-param cloudNativePgTag string = '17.11-standard-trixie'
+@description('Tag of the SQL Server image mirrored into the registry: a specific cumulative update.')
+param sqlServerTag string = '2022-CU27-GDR1-ubuntu-22.04'
 
-@description('Tag of the official PostgreSQL image mirrored into the registry, used when availability is \'standard\'.')
-param postgresTag string = '17-alpine'
+@description('Tag of the CloudNativePG PostgreSQL image mirrored into the registry, used when availability is \'high\'. The same PostgreSQL version as postgresTag.')
+param cloudNativePgTag string = '17.11-202611020810-standard-trixie'
+
+@description('Tag of the official PostgreSQL image mirrored into the registry, used when availability is \'standard\'. The same PostgreSQL version as cloudNativePgTag.')
+param postgresTag string = '17.11-alpine3.24'
 
 @description('PostgreSQL instances per database when availability is \'high\': one primary, the rest replicas that take over if it fails.')
 param postgresInstances int = 3
@@ -97,13 +110,18 @@ param objectStoreEndpoint string = ''
 @description('Secret in the application namespace with that namespace\'s keys to the store, ACCESSKEYID and SECRETACCESSKEY. Only containers connected to object storage get them.')
 param objectStoreCredentialsSecretName string = ''
 
-@description('SQL Server edition, or a product key. Developer is free but not licensed for production use.')
-param sqlServerEdition string = 'Developer'
+@description('''
+SQL Server edition, or a product key. Required: the licence is the site's choice. Express is free for
+production use within its limits (4 cores, 1410 MB of buffer pool, 10 GB per database); Standard and
+Enterprise need licences for sqlServerCpuLimit cores; Developer is free but not licensed for
+production use.
+''')
+param sqlServerEdition string
 
 @description('CPU cores SQL Server may use. Per-core editions (Standard, Enterprise) are licensed for the cores a container can use, so this also sets how many to license.')
 param sqlServerCpuLimit string = '2'
 
-@description('cert-manager ClusterIssuer, a CA issuer, that issues certificates for in-cluster services: the queue and PostgreSQL. Empty serves them without TLS.')
+@description('cert-manager ClusterIssuer, a CA issuer, that issues certificates for in-cluster services: the queue, SQL Server and PostgreSQL. Empty serves them without TLS.')
 param certificateIssuer string = ''
 
 @description('Existing Secret in the application namespace with that issuer\'s CA certificate under `ca.crt`. Every container gets it, so clients verify those services.')
@@ -121,8 +139,11 @@ param otlpEndpoint string = ''
 @description('Existing image pull secret in the application namespace for the connected registry.')
 param imagePullSecretName string = ''
 
-@description('Issuer URL of the on-site identity provider, for example a Keycloak realm. Setting this gives every pod a token for it and switches the queue to token authentication.')
-param oauthIssuer string = ''
+@description('''
+Issuer URL of the on-site identity provider, for example a Keycloak realm. Required: every pod gets a
+token for it, and the queue accepts only that token from workloads.
+''')
+param oauthIssuer string
 
 @description('Token endpoint of that identity provider, published to pods as IDENTITY_TOKEN_ENDPOINT. Empty uses the Keycloak path under oauthIssuer.')
 param oauthTokenEndpoint string = ''
@@ -131,10 +152,10 @@ param oauthTokenEndpoint string = ''
 param oauthCaSecretName string = ''
 
 @description('Client at the identity provider each workload authenticates as, published to pods as IDENTITY_CLIENT_ID. May contain {resource}.')
-param oauthClientId string = ''
+param oauthClientId string
 
 @description('Kubernetes service account each workload runs as; the identity provider trusts it for that client. May contain {resource}.')
-param serviceAccountName string = ''
+param serviceAccountName string = '{resource}'
 
 @description('Ingress class that publishes the application\'s routes on the site network.')
 param ingressClassName string = 'nginx'
@@ -143,18 +164,17 @@ param ingressClassName string = 'nginx'
 param ingressTlsSecretName string = ''
 
 // Each platform scenario below is expressed as plain Kubernetes volumes, mounts and environment
-// variables for the generic container Recipe. A site that doesn't use a scenario leaves its
-// parameters empty, and the containers get nothing extra.
+// variables for the generic container Recipe. Identity is always on; a site that doesn't use one of
+// the other scenarios leaves its parameters empty, and the containers get nothing extra.
 
 // Identity provider (for example Keycloak): every container runs as the trusted service account,
 // gets a ServiceAccount token minted for the issuer, and trusts the issuer's CA. The IDENTITY_*
 // variables tell the application where to exchange that token, the way Entra Workload ID's
 // AZURE_* variables do on Azure. Identity belongs to the pod, so the queue and any other service
 // that accepts the issuer's tokens use the same one.
-var useIdentityProvider = !empty(oauthIssuer)
 var identityTokenPath = '/var/run/secrets/identity/token'
 var identityTokenEndpoint = empty(oauthTokenEndpoint) ? '${oauthIssuer}/protocol/openid-connect/token' : oauthTokenEndpoint
-var identityProviderVolumes = !useIdentityProvider ? [] : concat([
+var identityProviderVolumes = concat([
   {
     name: 'identity-token'
     projected: {
@@ -175,12 +195,12 @@ var identityProviderVolumes = !useIdentityProvider ? [] : concat([
     secret: { secretName: oauthCaSecretName }
   }
 ])
-var identityProviderMounts = !useIdentityProvider ? [] : concat([
+var identityProviderMounts = concat([
   { name: 'identity-token', mountPath: '/var/run/secrets/identity', readOnly: true }
 ], empty(oauthCaSecretName) ? [] : [
   { name: 'identity-ca', mountPath: '/etc/identity-ca', readOnly: true }
 ])
-var identityProviderEnv = !useIdentityProvider ? [] : [
+var identityProviderEnv = [
   { name: 'IDENTITY_TOKEN_FILE', value: identityTokenPath }
   { name: 'IDENTITY_CLIENT_ID', value: oauthClientId }
   { name: 'IDENTITY_TOKEN_ENDPOINT', value: identityTokenEndpoint }
@@ -191,8 +211,8 @@ var telemetryEnv = empty(otlpEndpoint) ? [] : [
 ]
 
 // Site CA: every container trusts the CA that signs the in-cluster services' certificates: the
-// queue, the object store, PostgreSQL and the identity provider. .NET and most runtimes read
-// SSL_CERT_FILE as the CAs they trust, so clients verify those services with no code; PostgreSQL
+// queue, the object store, SQL Server, PostgreSQL and the identity provider. .NET and most runtimes
+// read SSL_CERT_FILE as the CAs they trust, so clients verify those services with no code; PostgreSQL
 // clients (Npgsql, libpq) read PGSSLROOTCERT instead. Without a site CA, the identity provider's CA
 // is the one trusted.
 var useSiteCa = !empty(siteCaSecretName)
@@ -208,7 +228,7 @@ var siteCaMounts = !useSiteCa ? [] : [
 var siteCaEnv = useSiteCa ? [
   { name: 'SSL_CERT_FILE', value: '/etc/site-ca/ca.crt' }
   { name: 'PGSSLROOTCERT', value: '/etc/site-ca/ca.crt' }
-] : (useIdentityProvider && !empty(oauthCaSecretName) ? [
+] : (!empty(oauthCaSecretName) ? [
   { name: 'SSL_CERT_FILE', value: '/etc/identity-ca/ca.crt' }
 ] : [])
 
@@ -222,9 +242,9 @@ var connectionParameters = empty(objectStoreCredentialsSecretName) ? {} : {
 }
 
 var containerPlatformParameters = union(
-  useIdentityProvider ? { serviceAccountName: serviceAccountName } : {},
   connectionParameters,
   {
+    serviceAccountName: serviceAccountName
     platformPodVolumes: concat(identityProviderVolumes, siteCaVolumes)
     containerVolumeMounts: concat(identityProviderMounts, siteCaMounts)
     containerEnv: concat(identityProviderEnv, telemetryEnv, siteCaEnv)
@@ -232,15 +252,10 @@ var containerPlatformParameters = union(
   }
 )
 
-// The broker only needs to know which issuer to trust; workloads get their identity from the pod.
-var queueOAuthParameters = empty(oauthIssuer) ? {} : {
-  oauthIssuer: oauthIssuer
-  oauthCaSecretName: oauthCaSecretName
-}
-
 // The queue and PostgreSQL Recipes for the availability, each given only the parameters it declares.
 var highAvailability = availability == 'high'
 
+// The broker only needs to know which issuer to trust; workloads get their identity from the pod.
 var queueRecipe = highAvailability ? 'rabbitmq-cluster-operator/rabbitmq-queue' : 'rabbitmq/rabbitmq-queue'
 var queueParameters = union({
   imageRegistry: registry
@@ -248,7 +263,10 @@ var queueParameters = union({
   tag: rabbitMqTag
   imagePullSecretName: imagePullSecretName
   certificateIssuer: certificateIssuer
-}, highAvailability ? { replicas: rabbitMqReplicas } : {}, queueOAuthParameters)
+  oauthIssuer: oauthIssuer
+  oauthCaSecretName: oauthCaSecretName
+  adminCredentialsSecretName: rabbitMqAdminCredentialsSecretName
+}, highAvailability ? { replicas: rabbitMqReplicas } : {})
 
 var postgresRecipe = highAvailability ? 'cloudnative-pg/postgres-database' : 'postgres/postgres-database'
 var postgresParameters = highAvailability ? {
@@ -299,6 +317,7 @@ resource azureLocalRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
           edition: sqlServerEdition
           cpuLimit: sqlServerCpuLimit
           imagePullSecretName: imagePullSecretName
+          certificateIssuer: certificateIssuer
         }
       }
       'Radius.Data/postgreSqlDatabases': {

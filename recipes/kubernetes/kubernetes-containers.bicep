@@ -53,6 +53,26 @@ param connectionSecretNames object = {}
 @description('Pod labels, by Resource Type, for pods connected to a resource of that type, so the platform\'s network policies can let them in.')
 param connectionPodLabels object = {}
 
+@description('''
+Pod security context of every pod. The default meets the Kubernetes "restricted" Pod Security
+Standard: the image must run as a numeric non-root user. A resource can replace it through
+platformOptions.podSecurityContext.
+''')
+param podSecurityContext object = {
+  runAsNonRoot: true
+  seccompProfile: { type: 'RuntimeDefault' }
+}
+
+@description('''
+Security context of every container. The default meets the "restricted" Pod Security Standard. Add
+readOnlyRootFilesystem where the images allow it. A resource can replace it through
+platformOptions.containerSecurityContext.
+''')
+param containerSecurityContext object = {
+  allowPrivilegeEscalation: false
+  capabilities: { drop: [ 'ALL' ] }
+}
+
 extension kubernetes with {
   kubeConfig: ''
   namespace: context.runtime.kubernetes.namespace
@@ -88,6 +108,8 @@ var labels = {
 //     serviceAccountName: 'my-service-account'
 //     podLabels: { 'azure.workload.identity/use': 'true' }
 //     imagePullSecrets: [ { name: 'my-registry' } ]
+//     podSecurityContext: { runAsNonRoot: true, runAsUser: 1000, seccompProfile: { type: 'RuntimeDefault' } }
+//     containerSecurityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ 'ALL' ] } }
 //   }
 //
 // The service account fixes the `sub` claim of the projected token an identity provider matches
@@ -105,6 +127,9 @@ var createServiceAccount = !contains(platformOptions, 'serviceAccountName') && c
 var platformImagePullSecrets = platformOptions.?imagePullSecrets ?? (empty(imagePullSecretName) ? [] : [
   { name: imagePullSecretName }
 ])
+// LOCAL ADDITION. Every pod and container runs without privileges unless the resource says otherwise.
+var platformPodSecurityContext = platformOptions.?podSecurityContext ?? podSecurityContext
+var platformContainerSecurityContext = platformOptions.?containerSecurityContext ?? containerSecurityContext
 
 // Extra volumes, mounts and environment from the Recipe Pack, added to every pod and container.
 var platformVolumes = platformPodVolumes
@@ -278,6 +303,7 @@ var containerSpecs = reduce(containerItems, [], (acc, item) => concat(acc, [{
     {
       name: toLower(item.key)
       image: item.value.image
+      securityContext: platformContainerSecurityContext
     },
     // Add ports if they exist
     contains(item.value, 'ports') ? {
@@ -500,6 +526,21 @@ resource deployment 'apps/Deployment@v1' = {
           // which can override app-defined env vars that developers explicitly set.
           // DNS-based service discovery (the modern K8s approach) is unaffected by this setting.
           enableServiceLinks: false
+          // LOCAL ADDITION. No privileges, and replicas spread across nodes where there are enough
+          // of them, so a node drain or failure takes only some of them.
+          securityContext: platformPodSecurityContext
+          topologySpreadConstraints: [
+            {
+              maxSkew: 1
+              topologyKey: 'kubernetes.io/hostname'
+              whenUnsatisfiable: 'ScheduleAnyway'
+              labelSelector: {
+                matchLabels: {
+                  'radapp.io/resource': resourceName
+                }
+              }
+            }
+          ]
         },
         length(podInitContainers) > 0 ? { initContainers: podInitContainers } : {},
         length(concat(podVolumes, platformVolumes)) > 0 ? { volumes: concat(podVolumes, platformVolumes) } : {},
@@ -597,19 +638,43 @@ resource hpa 'autoscaling/HorizontalPodAutoscaler@v2' = if (hasAutoScaling) {
       kind: 'Deployment'
       name: normalizedName
     }
-    minReplicas: hasAutoScaling && contains(autoScaling, 'minReplicas') ? int(autoScaling.minReplicas) : replicaCount
+    minReplicas: minReplicas
     maxReplicas: hasAutoScaling && contains(autoScaling, 'maxReplicas') ? int(autoScaling.maxReplicas) : 10
     metrics: hpaMetrics
+  }
+}
+
+// LOCAL ADDITION. With more than one replica, a node drain or upgrade takes them down one at a
+// time, so the service stays up. With one, a budget would only block the drain.
+var minReplicas = hasAutoScaling && contains(autoScaling, 'minReplicas') ? int(autoScaling.minReplicas) : replicaCount
+var useDisruptionBudget = minReplicas > 1
+
+resource disruptionBudget 'policy/PodDisruptionBudget@v1' = if (useDisruptionBudget) {
+  metadata: {
+    name: normalizedName
+    namespace: namespace
+    labels: labels
+  }
+  spec: {
+    // Kubernetes IntOrString: a count must be an integer, so the Bicep type warning is a false positive.
+    #disable-next-line BCP036
+    maxUnavailable: 1
+    selector: {
+      matchLabels: {
+        'radapp.io/resource': resourceName
+      }
+    }
   }
 }
 
 var deploymentResource = '/planes/kubernetes/local/namespaces/${namespace}/providers/apps/Deployment/${normalizedName}'
 var serviceResources = reduce(servicesConfig, [], (acc, svc) => concat(acc, ['/planes/kubernetes/local/namespaces/${namespace}/providers/core/Service/${normalizedName}-${svc.normalizedContainerName}']))
 var hpaResource = hasAutoScaling ? ['/planes/kubernetes/local/namespaces/${namespace}/providers/autoscaling/HorizontalPodAutoscaler/${normalizedName}'] : []
+var disruptionBudgetResource = useDisruptionBudget ? ['/planes/kubernetes/local/namespaces/${namespace}/providers/policy/PodDisruptionBudget/${normalizedName}'] : []
 
 var serviceAccountResource = createServiceAccount ? ['/planes/kubernetes/local/namespaces/${namespace}/providers/core/ServiceAccount/${platformServiceAccountName}'] : []
 
-var allResources = concat([deploymentResource], serviceResources, hpaResource, serviceAccountResource)
+var allResources = concat([deploymentResource], serviceResources, hpaResource, disruptionBudgetResource, serviceAccountResource)
 
 // Publish each port-exposing container's in-cluster Service DNS host as a read-only
 // output so peers can address it by reference instead of hardcoding a Service name.

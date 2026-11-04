@@ -27,8 +27,14 @@ param tenantId string = subscription().tenantId
 param skuTier string = 'Burstable'
 param skuName string = 'Standard_B1ms'
 
-@description('PostgreSQL major version.')
-param version string = '16'
+@description('PostgreSQL major version: the same as the Azure Local Recipes.')
+param version string = '17'
+
+@description('''
+Collation and character classification of the database. Azure creates databases with the C
+library's locales only; the Azure Local Recipes order text with the matching ICU locale (en-US).
+''')
+param collation string = 'en_US.utf8'
 
 @description('Storage size in GB.')
 param storageSizeGB int = 32
@@ -43,7 +49,7 @@ var database = context.resource.properties.?database ?? 'postgres_db'
 // every deployment, and a name is bound to the region of its first creation attempt.
 var serverName = take('psql-${uniqueString(resourceGroup().id, context.resource.id, location)}', 63)
 
-resource server 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
+resource server 'Microsoft.DBforPostgreSQL/flexibleServers@2025-08-01' = {
   name: serverName
   location: location
   sku: {
@@ -79,7 +85,7 @@ resource server 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
   }
 }
 
-resource administrator 'Microsoft.DBforPostgreSQL/flexibleServers/administrators@2024-08-01' = {
+resource administrator 'Microsoft.DBforPostgreSQL/flexibleServers/administrators@2025-08-01' = {
   parent: server
   name: administratorPrincipalId
   properties: {
@@ -89,19 +95,19 @@ resource administrator 'Microsoft.DBforPostgreSQL/flexibleServers/administrators
   }
 }
 
-resource postgresDatabase 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2024-08-01' = {
+resource postgresDatabase 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2025-08-01' = {
   parent: server
   name: database
   dependsOn: [ administrator ]
   properties: {
     charset: 'UTF8'
-    collation: 'en_US.utf8'
+    collation: collation
   }
 }
 
 // Allows other Azure services, including the AKS cluster's egress, to reach the server.
 // Replace with private access (VNet integration or a Private Endpoint) for production.
-resource allowAzureServices 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2024-08-01' = {
+resource allowAzureServices 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2025-08-01' = {
   parent: server
   name: 'AllowAllAzureServicesAndResourcesWithinAzureIps'
   dependsOn: [ postgresDatabase ]

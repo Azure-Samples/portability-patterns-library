@@ -113,5 +113,7 @@ output result object = {
     host: sqlServer.properties.fullyQualifiedDomainName
     port: 1433
     database: database
+    // Azure SQL only accepts encrypted connections, with a certificate from a public CA.
+    tls: 'required'
   }
 }
