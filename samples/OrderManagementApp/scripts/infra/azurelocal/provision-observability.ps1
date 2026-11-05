@@ -17,8 +17,9 @@
          people in through Keycloak's 'grafana' client only, and trusts the site CA to reach it.
       2. Loki and Tempo, one process each, storing on their own volume.
       3. The OpenTelemetry Collector, as Service otel-collector: OTLP in on 4317 (gRPC) and 4318
-         (HTTP); traces out to Tempo, logs to Loki, metrics for Prometheus to scrape. The app gets
-         OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector.observability.svc.cluster.local:4317.
+         (HTTP), over TLS with a site CA certificate; traces out to Tempo, logs to Loki, metrics
+         for Prometheus to scrape. The app gets
+         OTEL_EXPORTER_OTLP_ENDPOINT=https://otel-collector.observability.svc.cluster.local:4317.
       4. infra/azurelocal/observability/monitoring: scraping of RabbitMQ and cert-manager, the
          app's alerts and its Grafana dashboard.
     Alertmanager emails alerts when -SmtpHost is set, and otherwise only shows them.
@@ -60,6 +61,8 @@ param(
     [string]$ApplicationNamespace = 'oms-azurelocal',
     # Secret with the site CA, from provision-ingress.ps1.
     [string]$SiteCaSecretName = 'oms-site-ca',
+    # The site CA's ClusterIssuer, from provision-ingress.ps1. Issues the collector's certificate.
+    [string]$CertificateIssuer = 'site-ca',
     [string]$IngressClassName = 'nginx',
 
     [string]$CollectorChartVersion = '0.178.0',
@@ -334,6 +337,23 @@ try {
     # 5. The OpenTelemetry Collector the app sends to
     # ------------------------------------------------------------------------------------------
     Write-Host "==> Installing the OpenTelemetry Collector $CollectorChartVersion" -ForegroundColor Cyan
+    # The receivers' certificate, for the Service name the app sends to; the app trusts the site CA.
+    $collectorCertificate = @{
+        apiVersion = 'cert-manager.io/v1'; kind = 'Certificate'
+        metadata   = @{ name = 'otel-collector-tls'; namespace = $Namespace }
+        spec       = @{
+            secretName  = 'otel-collector-tls'
+            dnsNames    = @('otel-collector', "otel-collector.$Namespace", "otel-collector.$Namespace.svc", "otel-collector.$Namespace.svc.cluster.local")
+            usages      = @('server auth')
+            duration    = '2160h'
+            renewBefore = '720h'
+            privateKey  = @{ algorithm = 'ECDSA'; size = 256; rotationPolicy = 'Always' }
+            issuerRef   = @{ kind = 'ClusterIssuer'; name = $CertificateIssuer }
+        }
+    }
+    $collectorCertificate | ConvertTo-Json -Depth 10 | kubectl apply --context $KubeContext -f - | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Creating the collector''s certificate failed.' }
+    Wait-OmsCertificate $KubeContext $Namespace 'otel-collector-tls'
     $collectorSite = @(
         '--set', "image.repository=$PullRegistry/otel/opentelemetry-collector-contrib",
         '--set', "imagePullSecrets[0].name=$PullSecretName"
@@ -374,7 +394,7 @@ try {
     $alertsTo = if ($SmtpHost) { "email to $AlertEmailTo through $SmtpHost" } else { 'Grafana and Alertmanager only (no SMTP server set)' }
     Write-Host "`nObservability ready in namespace '$Namespace'" -ForegroundColor Green
     Write-Host "Grafana          : $GrafanaUrl/  (Keycloak sign-in; members of oms-operators only)"
-    Write-Host "OTLP endpoint    : http://otel-collector.$Namespace.svc.cluster.local:4317 (gRPC), :4318 (HTTP)"
+    Write-Host "OTLP endpoint    : https://otel-collector.$Namespace.svc.cluster.local:4317 (gRPC), :4318 (HTTP), site CA certificate"
     Write-Host "Retention        : metrics $PrometheusRetention, logs $LokiRetention, traces $TempoRetention"
     Write-Host "Alerts           : $alertsTo"
 }

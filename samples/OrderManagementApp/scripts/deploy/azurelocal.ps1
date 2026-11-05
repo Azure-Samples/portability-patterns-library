@@ -109,10 +109,11 @@ param(
     [string]$ObjectStoreCredentialsSecretName = 'object-store-credentials',
     [string]$BackupCredentialsSecretName = 'backup-object-store',
 
-    # On-site telemetry: the OpenTelemetry collector the services send to and the namespace that
-    # scrapes the backing services' metrics. Not used when the collector isn't installed.
+    # On-site telemetry: the OpenTelemetry collector the services send to, over TLS with a site CA
+    # certificate, and the namespace that scrapes the backing services' metrics. Not used when the
+    # collector isn't installed.
     [string]$MonitoringNamespace = 'observability',
-    [string]$OtlpEndpoint = 'http://otel-collector.observability.svc.cluster.local:4317',
+    [string]$OtlpEndpoint = 'https://otel-collector.observability.svc.cluster.local:4317',
 
     # How long to wait for the application's Deployments to become available after 'rad deploy'.
     [int]$RolloutTimeoutSeconds = 900,
@@ -494,7 +495,8 @@ try {
     if ($ingressAddress) { Write-Host "    publishing through ingress '$IngressClassName' at https://$ingressAddress" -ForegroundColor DarkGray }
     $useCollector = $false
     if ($OtlpEndpoint) {
-        $collectorService, $collectorNamespace = ([uri]$OtlpEndpoint).Host -split '\.'
+        # <service>.<namespace>.svc.cluster.local
+        $collectorService, $collectorNamespace, $null = ([uri]$OtlpEndpoint).Host -split '\.', 3
         $useCollector = Test-OmsResource $KubeContext $collectorNamespace 'service' $collectorService
         if (-not $useCollector) { Write-Host "    no OpenTelemetry collector at $OtlpEndpoint; the services send no telemetry" -ForegroundColor Yellow }
     }

@@ -1,6 +1,6 @@
 # Helm values for the OpenTelemetry Collector chart on Azure Local: the one OTLP address the app's
-# services send traces, metrics and logs to, on the site:
-#   http://otel-collector.observability.svc.cluster.local:4317 (gRPC), :4318 (HTTP)
+# services send traces, metrics and logs to, on the site, over TLS with a site CA certificate:
+#   https://otel-collector.observability.svc.cluster.local:4317 (gRPC), :4318 (HTTP)
 # It forwards traces to Tempo and logs to Loki, and serves metrics for Prometheus to scrape.
 # Install with:
 #
@@ -10,7 +10,8 @@
 #     --values infra/azurelocal/observability/opentelemetry-collector/values.yaml
 #
 # Change the marked values for your site first; provision-observability.ps1 sets them for you.
-# It also creates the otel-collector-queue volume claim this mounts.
+# It also creates the otel-collector-queue volume claim this mounts, and the otel-collector-tls
+# certificate the receivers serve.
 
 mode: deployment
 # The Service and Deployment are named otel-collector, which the app's OTLP endpoint uses.
@@ -56,9 +57,15 @@ extraVolumes:
   - name: queue
     persistentVolumeClaim:
       claimName: otel-collector-queue
+  - name: tls
+    secret:
+      secretName: otel-collector-tls
 extraVolumeMounts:
   - name: queue
     mountPath: /var/lib/otelcol/queue
+  - name: tls
+    mountPath: /etc/otelcol/tls
+    readOnly: true
 
 ports:
   otlp:
@@ -91,7 +98,8 @@ config:
       directory: /var/lib/otelcol/queue
       create_directory: true
   receivers:
-    # Only OTLP; null removes the chart's other receivers.
+    # Only OTLP; null removes the chart's other receivers. TLS on both protocols; the certificate is
+    # read again every day, so a renewed one is served without a restart.
     jaeger: null
     zipkin: null
     prometheus: null
@@ -99,8 +107,16 @@ config:
       protocols:
         grpc:
           endpoint: ${env:MY_POD_IP}:4317
+          tls:
+            cert_file: /etc/otelcol/tls/tls.crt
+            key_file: /etc/otelcol/tls/tls.key
+            reload_interval: 24h
         http:
           endpoint: ${env:MY_POD_IP}:4318
+          tls:
+            cert_file: /etc/otelcol/tls/tls.crt
+            key_file: /etc/otelcol/tls/tls.key
+            reload_interval: 24h
   processors:
     batch:
       send_batch_size: 1024
