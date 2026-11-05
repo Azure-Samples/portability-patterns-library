@@ -1,0 +1,30 @@
+# Opens PRs for new versions of the sample's .NET base images and NuGet packages, and of the
+# workflows' actions, so security patches such as a new .NET runtime are picked up.
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /samples/OrderManagementApp/docker
+    schedule:
+      interval: weekly
+    # Stay on the .NET version the projects target; move to the next one deliberately.
+    ignore:
+      - dependency-name: "dotnet/*"
+        update-types: ["version-update:semver-major"]
+    # The SDK and the runtimes ship together.
+    groups:
+      dotnet:
+        patterns: ["dotnet/*"]
+
+  - package-ecosystem: nuget
+    directory: /samples/OrderManagementApp
+    schedule:
+      interval: weekly
+    groups:
+      nuget:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

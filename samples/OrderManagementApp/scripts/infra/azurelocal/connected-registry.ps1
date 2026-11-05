@@ -74,9 +74,8 @@ param(
     [ValidateSet('high', 'standard')]
     [string]$Availability = 'high',
 
-    # Repositories synced into the cluster, besides the Recipes. Base build images (dotnet/*) are
-    # deliberately absent: builds run against the cloud registry, only runtime images are needed on
-    # site. oras is what deploy/azurelocal.ps1 checks the sync with.
+    # Repositories synced into the cluster, besides the Recipes: only what runs on site. oras is what
+    # deploy/azurelocal.ps1 checks the sync with.
     [string[]]$Repositories = @(
         'ucpd', 'controller', 'applications-rp', 'dynamic-rp', 'deployment-engine', 'bicep', 'pre-upgrade',
         'rabbitmq', 'mssql/server', 'postgres',

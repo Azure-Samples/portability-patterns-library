@@ -77,9 +77,3 @@ quay.io/kiwigrid/k8s-sidecar:2.14.1                                           ki
 #   loki 20.0.3 and tempo 3.2.1 (grafana-community charts)
 docker.io/grafana/loki:3.7.9                                                  grafana/loki:3.7.9
 docker.io/grafana/tempo:3.1.1                                                 grafana/tempo:3.1.1
-
-# Base images for building the app's images (BASE_REGISTRY in docker/Dockerfile.*). Only needed where
-# the build runs; the connected registry doesn't sync them. The SDK 9.0.320 builds for runtime 9.0.22.
-mcr.microsoft.com/dotnet/sdk:9.0.320                           dotnet/sdk:9.0.320
-mcr.microsoft.com/dotnet/runtime:9.0.22                        dotnet/runtime:9.0.22
-mcr.microsoft.com/dotnet/aspnet:9.0.22                         dotnet/aspnet:9.0.22

@@ -352,9 +352,9 @@ try {
         foreach ($component in $components) {
             $image = "$pushRegistry/oms/${component}:$ImageTag"
             if ($containerTool) {
-                Write-Host "==> Building $component with $containerTool against base images in $pushRegistry" -ForegroundColor Cyan
+                Write-Host "==> Building $component with $containerTool" -ForegroundColor Cyan
                 Invoke-Checked "$containerTool build $component" {
-                    & $containerTool build --build-arg "BASE_REGISTRY=$pushRegistry" -f "docker/Dockerfile.$component" -t $image .
+                    & $containerTool build -f "docker/Dockerfile.$component" -t $image .
                 }
                 Invoke-Checked "$containerTool push $component" { & $containerTool push $image }
             }
@@ -363,7 +363,7 @@ try {
                 Write-Host "==> Building $component in $RegistryName (az acr build)" -ForegroundColor Cyan
                 Invoke-Checked "az acr build $component" {
                     az acr build --registry $RegistryName --resource-group $ResourceGroup `
-                        --image "oms/${component}:$ImageTag" --build-arg "BASE_REGISTRY=$pushRegistry" `
+                        --image "oms/${component}:$ImageTag" `
                         --file "docker/Dockerfile.$component" --platform linux/amd64 . --output none
                 }
             }
