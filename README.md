@@ -1,28 +1,42 @@
 # Portability Patterns Library
-The portability patterns library provides reusable application patterns, reference implementations, and guidance for building workloads that can operate consistently across Azure cloud, sovereign environments, and Azure Local. It supports business continuity by helping teams design adaptive applications that can be deployed, moved, or recovered across environments while minimizing dependencies on location-specific services.
 
-Note: These resources are provided solely as reference and sample implementations and should not be used for production workloads.
+The portability patterns library helps you build workloads that run on Azure, in sovereign environments and on Azure Local. For each Azure service, it shows what carries over, what changes and which alternatives to use on Azure Local. Sample applications show the same application definition and container images running on Azure and on Azure Local, so a workload can move or recover across environments with as few location-specific dependencies as possible.
 
-## Samples
+> **Disclaimer**
+>
+> The sample applications and portability patterns ("Reference Materials") are provided for reference only, on an "as is" basis, and without warranties of any kind. Customers are solely responsible for validating the Reference Materials in their environment and for their final implementation and configuration. Microsoft assumes no responsibility or liability for any use of, reliance on, or results arising from the Reference Materials.
 
-| Sample | What it shows |
-|---|---|
-| [Order Management](./samples/OrderManagementApp/README.md) | One Radius application definition and one set of container images deployed unchanged to AKS with Azure PaaS services and to Azure Local (AKS enabled by Arc), where it keeps running when the site loses its link to Azure. Users sign in with MSAL.js against Entra ID in Azure or Keycloak federated to Active Directory on Azure Local, and place orders that flow through a queue into object storage and SQL Server. |
+## How the repository is organized
 
-## Recipes and Recipe Packs
-
-Samples share the Radius Recipes and Recipe Packs at the repository root:
+```text
+portability-patterns-library/
+├── README.md
+├── resources/                                # One folder per Azure resource
+│   └── <slug>/                               # e.g. service-bus, blob-storage, postgresql
+│       ├── README.md                         # Guide
+│       ├── alternatives/                     # One page per alternative
+│       └── examples/                         # Smallest single-resource deployment per target
+├── targets/                                  # One page per target environment
+├── recipes/                                  # <capability>/<platform>/<implementation>
+│   └── object-storage/azure-local/azurite/   # Recipe source, README, test app
+├── recipe-packs/                             # One pack per environment, e.g. azure-local
+└── samples/                                  # End-to-end apps, e.g. OrderManagementApp
+```
 
 | Folder | What it holds |
 |---|---|
-| [`recipes/`](./recipes) | One Recipe per resource and platform, as `<capability>/<platform>/<implementation>/`: for example `message-queue/azure/service-bus` and `message-queue/azure-local/rabbitmq`. `recipes/kubernetes/` holds the container Recipe both platforms use, adapted from the Radius Kubernetes Recipe. |
-| [`recipe-packs/`](./recipe-packs) | One Recipe Pack per platform (`azure.bicep`, `azure-local.bicep`), choosing the Recipe for each resource type. |
+| [`resources/`](./resources) | One guide per Azure resource: what carries over to Azure Local, what you change, and the alternatives, with their limitations. |
+| [`recipes/`](./recipes) | [Radius](https://docs.radapp.io/concepts/) Recipes: how each platform provides a resource, for example Azure Service Bus on Azure and RabbitMQ on Azure Local. |
+| [`recipe-packs/`](./recipe-packs) | One Recipe Pack per platform, choosing the Recipe for each resource. |
+| [`samples/`](./samples) | End-to-end applications that use the Recipes and Recipe Packs on Azure and on Azure Local. |
+
+Some folders, such as `targets/` and `examples/`, are planned and not there yet. [Repository structure](./docs/repository-structure.md) explains each building block, the guide format and the labels the guides use.
 
 ## Getting started
 
-Start with the [Order Management App](./samples/OrderManagementApp/README.md): what it does, and how
-to run it on your machine, on Azure and on Azure Local. Its commands are relative to
-[`samples/OrderManagementApp`](./samples/OrderManagementApp).
+1. **Run a sample.** Start with the [Order Management sample](./samples/OrderManagementApp/README.md). It runs one application definition and one set of container images on AKS with Azure services, and on AKS on Azure Local, where it keeps running when the site loses its link to Azure. Its README shows how to run it on your machine, on Azure and on Azure Local.
+2. **Reuse the Recipes and Recipe Packs.** [Recipes and Recipe Packs](./docs/recipes-and-recipe-packs.md) explains how an application uses them, how the sample does it, and how to use the ones in this repository for your own app.
+3. **Check the guide for each Azure service your app uses.** The [resource guides](./resources) say what carries over to Azure Local, what you change and which alternative to use.
 
 ## Contributing and support
 
