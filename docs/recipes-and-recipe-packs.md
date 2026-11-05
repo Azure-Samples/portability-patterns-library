@@ -12,19 +12,31 @@ This repository uses [Radius](https://docs.radapp.io/concepts/) so the same appl
 | **Environment** | Where an application is deployed; it points to one Recipe Pack | Platform team | [Environments](https://docs.radapp.io/concepts/environments/) |
 | **Application** | The resources the app declares and the containers that use them | App team | [Applications](https://docs.radapp.io/concepts/applications/) |
 
-```text
-Application (app.bicep)          declares: queue, object storage, SQL database, containers
-        │  deployed to
-        ▼
-Environment                      Azure                 Azure Local
-        │  uses
-        ▼
-Recipe Pack                      azure.bicep           azure-local.bicep
-        │  maps each Resource Type to a Recipe
-        ▼
-Recipes                          Service Bus           RabbitMQ
-                                 Blob Storage          object store in the cluster
-                                 Azure SQL             SQL Server container
+```mermaid
+%%{init: {"flowchart": {"wrappingWidth": 400}}}%%
+flowchart TB
+    app["Application: app.bicep<br/>Queue, object storage,<br/>SQL database, containers"]
+
+    subgraph azure["Azure"]
+        direction TB
+        azureEnv["Environment"]
+        azurePack["Recipe Pack<br/>azure.bicep"]
+        azureRecipes["Recipes<br/>Service Bus<br/>Blob Storage<br/>Azure SQL"]
+        azureEnv -- uses --> azurePack
+        azurePack -- "maps each type to" --> azureRecipes
+    end
+
+    subgraph local["Azure Local"]
+        direction TB
+        localEnv["Environment"]
+        localPack["Recipe Pack<br/>azure-local.bicep"]
+        localRecipes["Recipes<br/>RabbitMQ<br/>In-cluster object store<br/>SQL Server container"]
+        localEnv -- uses --> localPack
+        localPack -- "maps each type to" --> localRecipes
+    end
+
+    app -- "deployed to" --> azureEnv
+    app -- "deployed to" --> localEnv
 ```
 
 ## How an application uses them
