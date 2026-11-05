@@ -124,6 +124,26 @@ One table per application, each row linked to a guide:
 | Blob Storage | `Azure.Storage.Blobs` | SeaweedFS (S3) | Adapter required | Storage adapter, S3 keys | Storage account guide |
 | Cosmos DB | `Microsoft.Azure.Cosmos` | No guide yet | Gap | Needs a person | None |
 
+## Why not just point a model at the library?
+
+A customer can already open their repository in VS Code, pick a model and give it this library as
+input. The assistant doesn't replace that model: it runs on whichever model the customer picks.
+What it adds is packaging and guardrails:
+
+| | Model with the library as input | Portability assistant |
+|---|---|---|
+| Finding the right guide | Reads or searches the whole library; may miss a guide or fall back on general knowledge | Guide metadata maps SDK packages and resource types straight to the right guide |
+| Workflow | Depends on the prompt; each person asks differently | Same steps every time, with a stop for review after the plan |
+| Grounding | May mix our patterns with its own ideas | Cites a guide for every finding; reports a gap instead of guessing |
+| Output | Free-form, hard to compare across applications | Fixed report format; one pull request per service |
+| Code changes | Works out the pattern from a whole sample app | Copies small, tested code patterns |
+| Improvements | Every customer writes their own prompts | Fixed once in the agent and skills, for everyone |
+
+Most of the value is in the knowledge, not the agent. Guide metadata and code patterns help both
+ways of working. The agent adds consistency, guardrails and less effort for the customer. If a
+model with a well-structured library gets close to the assistant's results, the agent should stay
+a thin layer. The proof of concept measures this.
+
 ## How a customer would use it
 
 1. **Open their repository** in VS Code (or the Copilot CLI) and add the portability assistant
@@ -148,13 +168,20 @@ Run the assistant on **one existing application** that wasn't written with this 
   [AKS Store Demo](https://github.com/Azure-Samples/aks-store-demo) is a candidate.
 - **Build:** the custom agent, the assess and change skills, metadata for the guides the
   application needs, and code patterns for those services.
-- **Measure:**
+- **Compare two ways of working** on the same application and the same model:
+  1. **Baseline:** the model with this library as input and a plain prompt, such as "Port this
+     application to Azure Local using this library."
+  2. **Assistant:** the custom agent and skills.
+- **Measure, for both:**
   - Assessment: did it find every Azure dependency, and link the right guide? Any false findings?
   - Changes: do they build, do the tests pass, does the application run on Azure and on Azure
     Local? How much did a person have to fix?
-  - Effort: time to port with the assistant compared with by hand.
-- **Decide:** whether the guides are good enough to ground an assistant, what's missing, and
-  whether to grow it.
+  - Consistency: how much do the results differ between runs?
+  - Effort: time to port, compared with by hand.
+- **Decide:**
+  - whether the guides are good enough to ground an assistant, and what's missing;
+  - whether the agent adds enough over the baseline to grow it, or whether to invest mainly in
+    guide metadata and code patterns.
 
 ## Risks and open questions
 
