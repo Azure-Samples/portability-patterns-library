@@ -246,19 +246,10 @@ function renderCatalog() {
   renderInventory();
 }
 
-// While the inventory service is down, the API answers with the last stock it fetched, and says when.
-// The page then checks again every 30 seconds until it's back.
-let stockRetry = null;
 async function loadProducts() {
   const response = await send("GET", "/api/products");
   products = (response ? await response.json() : null) ?? [];
-  const asOf = response?.headers.get("X-Products-As-Of");
-  $("stock-banner").textContent = asOf
-    ? `Stock as of ${dateTime.format(new Date(asOf))}: the inventory service is unavailable. You can still order; stock is confirmed when the order is processed.`
-    : "";
-  $("stock-banner").hidden = !asOf;
-  clearTimeout(stockRetry);
-  stockRetry = asOf ? setTimeout(() => loadProducts().catch(() => {}), 30000) : null;
+  $("stock-banner").hidden = true;
   renderCatalog();
 }
 
