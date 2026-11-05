@@ -111,6 +111,12 @@ param(
     [string]$IngressCertIssuer = 'letsencrypt',
     [string]$IngressNamespace = 'app-routing-system',
 
+    # The CA provision-ingress.ps1 keeps in the cluster. It issues certificates to the app's services
+    # that callers in the cluster reach over HTTPS; its certificate is copied into -AppNamespace as
+    # -ServiceCaSecretName, which every container trusts.
+    [string]$ServiceCertificateIssuer = 'bcd-private-ca',
+    [string]$ServiceCaSecretName = 'oms-service-ca',
+
     # Lifetime of the read-only registry token minted for Recipe pulls when no -RegistryUsername is given.
     [int]$RecipeTokenDays = 7,
     # The tag the images are built and the Recipes published with. Images are deployed by digest.
@@ -128,6 +134,7 @@ if (-not $ImageTag) {
     if ($LASTEXITCODE -ne 0 -or -not $ImageTag) { throw 'Pass -ImageTag: this folder is not a git checkout to take the commit from.' }
 }
 . (Join-Path $repoRoot 'scripts/lib/recipes.ps1')
+. (Join-Path $repoRoot 'scripts/lib/cluster.ps1')
 . (Join-Path $repoRoot 'scripts/lib/database.ps1')
 . (Join-Path $repoRoot 'scripts/lib/azure.ps1')
 if (-not $AppInfraResourceGroup) { $AppInfraResourceGroup = $ResourceGroup }
@@ -326,6 +333,12 @@ try {
     }
     $ingressHost = if ($dnsLabel) { "$dnsLabel.$Location.cloudapp.azure.com" } else { '' }
     if ($ingressHost) { Write-Host "    publishing through the managed ingress at https://$ingressHost" -ForegroundColor DarkGray }
+
+    # The CA is public; it lives with its key in cert-manager's namespace, which the app can't read.
+    $serviceCa = Get-OmsSecretValue -KubeContext $KubeContext -Namespace 'cert-manager' -Name $ServiceCertificateIssuer -Key 'ca.crt'
+    if (-not $serviceCa) { throw "No CA '$ServiceCertificateIssuer' in namespace cert-manager. Run scripts/infra/azure/provision-ingress.ps1." }
+    Set-OmsNamespace $KubeContext $AppNamespace
+    Set-OmsSecret -KubeContext $KubeContext -Namespace $AppNamespace -Name $ServiceCaSecretName -Data @{ 'ca.crt' = $serviceCa }
     # Which service gets which access is the app's knowledge, so it's decided here; the Recipe Pack
     # only applies it.
     $recipePackParameters = New-ParameterFile @{
@@ -348,6 +361,8 @@ try {
         ingressClassName                    = $IngressClassName
         ingressHost                         = $ingressHost
         ingressCertIssuer                   = $(if ($ingressHost) { $IngressCertIssuer } else { '' })
+        serviceCertificateIssuer            = $ServiceCertificateIssuer
+        serviceCaSecretName                 = $ServiceCaSecretName
     }
     $temporaryFiles += $recipePackParameters
     Invoke-Checked 'rad deploy recipe pack' {

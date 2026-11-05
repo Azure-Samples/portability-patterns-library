@@ -121,7 +121,7 @@ param sqlServerEdition string
 @description('CPU cores SQL Server may use. Per-core editions (Standard, Enterprise) are licensed for the cores a container can use, so this also sets how many to license.')
 param sqlServerCpuLimit string = '2'
 
-@description('cert-manager ClusterIssuer, a CA issuer, that issues certificates for in-cluster services: the queue, SQL Server and PostgreSQL. Empty serves them without TLS.')
+@description('cert-manager ClusterIssuer, a CA issuer, that issues certificates for in-cluster services: the queue, SQL Server, PostgreSQL and the app\'s own services that declare an `https` port. Empty serves them without TLS.')
 param certificateIssuer string = ''
 
 @description('Existing Secret in the application namespace with that issuer\'s CA certificate under `ca.crt`. Every container gets it, so clients verify those services.')
@@ -245,6 +245,7 @@ var containerPlatformParameters = union(
   connectionParameters,
   {
     serviceAccountName: serviceAccountName
+    serviceCertificateIssuer: certificateIssuer
     platformPodVolumes: concat(identityProviderVolumes, siteCaVolumes)
     containerVolumeMounts: concat(identityProviderMounts, siteCaMounts)
     containerEnv: concat(identityProviderEnv, telemetryEnv, siteCaEnv)

@@ -9,10 +9,12 @@
     ingress (see recipe-packs/azure.bicep at the repository root), so deploy/app.bicep is the same as on Azure Local.
 
       1. Gives the managed ingress's public IP the DNS name <DnsLabel>.<region>.cloudapp.azure.com.
-      2. Installs cert-manager and a ClusterIssuer: Let's Encrypt with HTTP-01 challenges answered
-         through the same ingress, or with -PrivateCa a CA kept in the cluster. Use -PrivateCa where
-         policy blocks inbound internet traffic (Let's Encrypt cannot reach the challenge); trust the
-         CA printed at the end on the machines that open the app.
+      2. Installs cert-manager and a ClusterIssuer for the ingress: Let's Encrypt with HTTP-01
+         challenges answered through the same ingress, or with -PrivateCa a CA kept in the cluster.
+         Use -PrivateCa where policy blocks inbound internet traffic (Let's Encrypt cannot reach the
+         challenge); trust the CA printed at the end on the machines that open the app.
+      3. Creates that CA in the cluster either way: it issues the certificates of the app's own
+         services, which only callers in the cluster reach.
 
     Idempotent. Run after scripts/infra/azure/provision-infra.ps1.
 
@@ -110,9 +112,8 @@ spec:
 "@ | kubectl apply --context $KubeContext -f - | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Creating the ClusterIssuer failed.' }
 
-if ($PrivateCa) {
-    Write-Host "==> ClusterIssuer '$PrivateIssuerName' (CA '$PrivateCaCommonName' kept in the cluster)" -ForegroundColor Cyan
-    @"
+Write-Host "==> ClusterIssuer '$PrivateIssuerName' (CA '$PrivateCaCommonName' kept in the cluster)" -ForegroundColor Cyan
+@"
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
@@ -145,10 +146,12 @@ spec:
   ca:
     secretName: $PrivateIssuerName
 "@ | kubectl apply --context $KubeContext -f - | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Creating the private CA failed.' }
-    Invoke-Checked 'wait for the private CA' {
-        kubectl wait certificate/$PrivateIssuerName -n cert-manager --for=condition=Ready --timeout=120s --context $KubeContext | Out-Null
-    }
+if ($LASTEXITCODE -ne 0) { throw 'Creating the private CA failed.' }
+Invoke-Checked 'wait for the private CA' {
+    kubectl wait certificate/$PrivateIssuerName -n cert-manager --for=condition=Ready --timeout=120s --context $KubeContext | Out-Null
+}
+
+if ($PrivateCa) {
     $caPem = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((Invoke-Checked 'reading the private CA' {
                     kubectl get secret $PrivateIssuerName -n cert-manager --context $KubeContext -o 'jsonpath={.data.ca\.crt}'
                 })))

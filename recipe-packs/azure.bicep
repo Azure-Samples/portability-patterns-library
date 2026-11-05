@@ -80,15 +80,34 @@ param ingressCertIssuer string = ''
 @description('TLS Secret the ingress serves; cert-manager writes the certificate into it.')
 param ingressTlsSecretName string = 'app-tls'
 
+@description('cert-manager ClusterIssuer, a CA kept in the cluster, that issues certificates for the app\'s services that declare an `https` port. Empty issues none.')
+param serviceCertificateIssuer string = ''
+
+@description('Existing Secret in the application namespace with that issuer\'s CA certificate under `ca.crt`. Every container trusts it as well as the public CAs.')
+param serviceCaSecretName string = ''
+
+// In-cluster CA: .NET and OpenSSL trust every certificate in the SSL_CERT_DIR directories, so callers
+// verify the app's own services; the system directory stays listed, so Azure's public endpoints verify too.
+var useServiceCa = !empty(serviceCaSecretName)
+
 // Every container runs as its own service account with the Workload Identity label, so the
 // webhook gives it its own AZURE_CLIENT_ID and federated token. The application declares none of this.
 var containerIdentityParameters = {
   serviceAccountName: serviceAccountName
   azureWorkloadIdentity: true
   workloadClientIds: workloadClientIds
-  containerEnv: empty(applicationInsightsConnectionString) ? [] : [
+  serviceCertificateIssuer: serviceCertificateIssuer
+  platformPodVolumes: useServiceCa ? [
+    { name: 'service-ca', secret: { secretName: serviceCaSecretName } }
+  ] : []
+  containerVolumeMounts: useServiceCa ? [
+    { name: 'service-ca', mountPath: '/etc/service-ca', readOnly: true }
+  ] : []
+  containerEnv: concat(empty(applicationInsightsConnectionString) ? [] : [
     { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: applicationInsightsConnectionString }
-  ]
+  ], useServiceCa ? [
+    { name: 'SSL_CERT_DIR', value: '/etc/ssl/certs:/etc/service-ca' }
+  ] : [])
 }
 
 var routeIngressParameters = {

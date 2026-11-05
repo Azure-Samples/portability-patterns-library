@@ -7,6 +7,19 @@ using OrderManagement.Shared.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Where the platform issues this service a certificate, callers use HTTPS on 8443; HTTP on 8080 stays
+// for the kubelet's probes. Kestrel reloads the certificate when cert-manager renews it.
+if (builder.Configuration["TLS_CERT_FILE"] is { Length: > 0 } certificateFile)
+{
+    builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+    {
+        ["Kestrel:Endpoints:Http:Url"] = "http://*:8080",
+        ["Kestrel:Endpoints:Https:Url"] = "https://*:8443",
+        ["Kestrel:Endpoints:Https:Certificate:Path"] = certificateFile,
+        ["Kestrel:Endpoints:Https:Certificate:KeyPath"] = builder.Configuration["TLS_KEY_FILE"],
+    });
+}
+
 builder.AddOrderManagementTelemetry(
     tracing => tracing.AddAspNetCoreInstrumentation(options =>
         options.Filter = context => !context.Request.Path.StartsWithSegments("/healthz")),

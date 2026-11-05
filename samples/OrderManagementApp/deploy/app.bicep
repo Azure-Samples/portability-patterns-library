@@ -191,9 +191,14 @@ resource inventory 'Radius.Compute/containers@2025-08-01-preview' = {
     containers: {
       inventory: {
         image: inventoryImage
+        // Callers use https, with a certificate the platform issues for the service's name; the
+        // kubelet's probes use http.
         ports: {
           http: {
             containerPort: 8080
+          }
+          https: {
+            containerPort: 8443
           }
         }
         readinessProbe: {
@@ -235,7 +240,7 @@ resource inventory 'Radius.Compute/containers@2025-08-01-preview' = {
 }
 
 var inventoryClientEnv = {
-  Inventory__BaseUrl: { value: 'http://${inventory.properties.hosts.inventory}:8080' }
+  Inventory__BaseUrl: { value: 'https://${inventory.properties.hosts.inventory}:8443' }
   Inventory__Scope: { value: inventoryScope }
 }
 

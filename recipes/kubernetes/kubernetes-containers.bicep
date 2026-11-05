@@ -54,6 +54,14 @@ param connectionSecretNames object = {}
 param connectionPodLabels object = {}
 
 @description('''
+cert-manager ClusterIssuer that gives every container declaring a port named `https` a certificate
+for its Service's DNS names, so callers in the cluster reach it over TLS and can verify it. The
+certificate and key are mounted at /etc/service-tls, and TLS_CERT_FILE and TLS_KEY_FILE point to
+them. Empty issues none.
+''')
+param serviceCertificateIssuer string = ''
+
+@description('''
 Pod security context of every pod. The default meets the Kubernetes "restricted" Pod Security
 Standard: the image must run as a numeric non-root user. A resource can replace it through
 platformOptions.podSecurityContext.
@@ -142,6 +150,15 @@ var platformEnvFrom = map(containerEnvFromSecrets, secretName => {
     name: replace(string(secretName), '{resource}', normalizedName)
     optional: true
   }
+})
+
+// LOCAL ADDITION. Service TLS: containers that declare an `https` port, and the certificate each
+// gets for its Service. The Secret has the same name as the Certificate.
+var serviceTlsDir = '/etc/service-tls'
+var serviceTlsContainers = empty(serviceCertificateIssuer) ? [] : filter(containerItems, item => contains(item.value.?ports ?? {}, 'https'))
+var serviceTlsVolumes = map(serviceTlsContainers, item => {
+  name: 'service-tls-${toLower(item.key)}'
+  secret: { secretName: '${normalizedName}-${toLower(item.key)}-tls' }
 })
 // Extract connection data from linked resources (merged with resource properties)
 var resourceConnections = context.resource.?connections ?? {}
@@ -315,7 +332,7 @@ var containerSpecs = reduce(containerItems, [], (acc, item) => concat(acc, [{
     } : {},
     // Add environment variables from container definition and connections
     // Connection environment variables are automatically added from output values
-    (contains(item.value, 'env') || length(connectionEnvVars) > 0 || length(validatedSecretConnectionEnvVars) > 0 || length(platformEnvVars) > 0) ? {
+    (contains(item.value, 'env') || length(connectionEnvVars) > 0 || length(validatedSecretConnectionEnvVars) > 0 || length(platformEnvVars) > 0 || (!empty(serviceCertificateIssuer) && contains(item.value.?ports ?? {}, 'https'))) ? {
       // Kubelet expands $(VAR) in an env var's value ONLY against env vars defined
       // earlier in this container's ordered env list. Emit secret/valueFrom env vars
       // FIRST so plain value env vars can compose them via $(VAR) without leaking
@@ -348,7 +365,12 @@ var containerSpecs = reduce(containerItems, [], (acc, item) => concat(acc, [{
         // 4. Ordinary connection values, unless an explicit variable uses the same name.
         filter(connectionEnvVars, envVar => !contains(item.value.?env ?? {}, envVar.name)),
         // 5. Platform variables from the Recipe Pack, unless an explicit variable uses the same name.
-        filter(platformEnvVars, envVar => !contains(item.value.?env ?? {}, envVar.name))
+        filter(platformEnvVars, envVar => !contains(item.value.?env ?? {}, envVar.name)),
+        // 6. LOCAL ADDITION. Where the service's own certificate is, when it has one.
+        (!empty(serviceCertificateIssuer) && contains(item.value.?ports ?? {}, 'https')) ? [
+          { name: 'TLS_CERT_FILE', value: '${serviceTlsDir}/tls.crt' }
+          { name: 'TLS_KEY_FILE', value: '${serviceTlsDir}/tls.key' }
+        ] : []
       )
     } : {},
     // Connections that surface secretName still inject that Kubernetes Secret via envFrom, followed
@@ -356,14 +378,17 @@ var containerSpecs = reduce(containerItems, [], (acc, item) => concat(acc, [{
     length(concat(secretNameEnvFrom, platformConnectionEnvFrom, platformEnvFrom)) > 0 ? {
       envFrom: concat(secretNameEnvFrom, platformConnectionEnvFrom, platformEnvFrom)
     } : {},
-    // Add volume mounts, plus the platform's mounts
-    (contains(item.value, 'volumeMounts') || length(platformVolumeMounts) > 0) ? {
+    // Add volume mounts, plus the platform's mounts and the service's own certificate
+    (contains(item.value, 'volumeMounts') || length(platformVolumeMounts) > 0 || (!empty(serviceCertificateIssuer) && contains(item.value.?ports ?? {}, 'https'))) ? {
       volumeMounts: concat(
         reduce(item.value.?volumeMounts ?? [], [], (vmAcc, vm) => concat(vmAcc, [{
           name: toLower(vm.volumeName)
           mountPath: vm.mountPath
         }])),
-        platformVolumeMounts
+        platformVolumeMounts,
+        (!empty(serviceCertificateIssuer) && contains(item.value.?ports ?? {}, 'https')) ? [
+          { name: 'service-tls-${toLower(item.key)}', mountPath: serviceTlsDir, readOnly: true }
+        ] : []
       )
     } : {},
     // Add command if specified
@@ -543,7 +568,7 @@ resource deployment 'apps/Deployment@v1' = {
           ]
         },
         length(podInitContainers) > 0 ? { initContainers: podInitContainers } : {},
-        length(concat(podVolumes, platformVolumes)) > 0 ? { volumes: concat(podVolumes, platformVolumes) } : {},
+        length(concat(podVolumes, platformVolumes, serviceTlsVolumes)) > 0 ? { volumes: concat(podVolumes, platformVolumes, serviceTlsVolumes) } : {},
         contains(resourceProperties, 'restartPolicy') ? { restartPolicy: resourceProperties.restartPolicy } : {},
         // Binds the pod to the annotated ServiceAccount so Kubernetes mints a token whose `sub`
         // claim matches the federated identity credential.
@@ -584,6 +609,38 @@ resource services 'core/Service@v1' = [for svc in servicesConfig: {
       'radapp.io/resource': resourceName
     }
     ports: svc.ports
+  }
+}]
+
+// LOCAL ADDITION. The certificate of each container with an `https` port, for every name its
+// Service answers to. cert-manager renews it a month before it expires.
+#disable-next-line BCP081
+resource serviceCertificates 'cert-manager.io/Certificate@v1' = [for item in serviceTlsContainers: {
+  metadata: {
+    name: '${normalizedName}-${toLower(item.key)}-tls'
+    namespace: namespace
+    labels: labels
+  }
+  spec: {
+    secretName: '${normalizedName}-${toLower(item.key)}-tls'
+    dnsNames: [
+      '${normalizedName}-${toLower(item.key)}'
+      '${normalizedName}-${toLower(item.key)}.${namespace}'
+      '${normalizedName}-${toLower(item.key)}.${namespace}.svc'
+      '${normalizedName}-${toLower(item.key)}.${namespace}.svc.cluster.local'
+    ]
+    usages: [ 'server auth' ]
+    duration: '2160h'
+    renewBefore: '720h'
+    privateKey: {
+      algorithm: 'ECDSA'
+      size: 256
+      rotationPolicy: 'Always'
+    }
+    issuerRef: {
+      kind: 'ClusterIssuer'
+      name: serviceCertificateIssuer
+    }
   }
 }]
 
@@ -674,7 +731,12 @@ var disruptionBudgetResource = useDisruptionBudget ? ['/planes/kubernetes/local/
 
 var serviceAccountResource = createServiceAccount ? ['/planes/kubernetes/local/namespaces/${namespace}/providers/core/ServiceAccount/${platformServiceAccountName}'] : []
 
-var allResources = concat([deploymentResource], serviceResources, hpaResource, disruptionBudgetResource, serviceAccountResource)
+var serviceTlsResources = reduce(serviceTlsContainers, [], (acc, item) => concat(acc, [
+  '/planes/kubernetes/local/namespaces/${namespace}/providers/cert-manager.io/Certificate/${normalizedName}-${toLower(item.key)}-tls'
+  '/planes/kubernetes/local/namespaces/${namespace}/providers/core/Secret/${normalizedName}-${toLower(item.key)}-tls'
+]))
+
+var allResources = concat([deploymentResource], serviceResources, hpaResource, disruptionBudgetResource, serviceAccountResource, serviceTlsResources)
 
 // Publish each port-exposing container's in-cluster Service DNS host as a read-only
 // output so peers can address it by reference instead of hardcoding a Service name.
