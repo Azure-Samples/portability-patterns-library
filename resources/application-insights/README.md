@@ -19,7 +19,7 @@ Application Insights and the Log Analytics workspace behind it run in Azure. A w
 
 1. **Use OpenTelemetry in the application.** On Azure, export with the [Azure Monitor OpenTelemetry exporter or Distro](https://learn.microsoft.com/azure/azure-monitor/app/opentelemetry-enable). If the application still uses the classic Application Insights SDK (`TelemetryClient`), move it to OpenTelemetry first.
 2. **Choose the exporter at startup** from configuration: Azure Monitor when an Application Insights connection string is set, OTLP to a collector when an [`OTEL_EXPORTER_OTLP_ENDPOINT`](https://opentelemetry.io/docs/specs/otel/configuration/sdk-environment-variables/) is set. Not with build flags or separate images.
-3. **Propagate trace context through the queue**, so one order shows as one trace from the API to the processor on both targets.
+3. **Carry trace context through the queue**, so one order shows as one trace from the API to the processor on both targets. Recent RabbitMQ and Service Bus clients do it themselves; subscribe to their activity sources (the Service Bus SDK's is still an opt-in).
 4. **Rebuild dashboards, alerts and queries.** Workbooks and KQL alert rules don't carry over. Grafana uses PromQL for metrics, LogQL for logs and TraceQL for traces.
 5. **Run and operate the stack** in the cluster: storage, retention, upgrades and access control are yours to set up.
 

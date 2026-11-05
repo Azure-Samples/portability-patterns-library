@@ -41,7 +41,7 @@ RabbitMQ 4.0 and later also speak [AMQP 1.0](https://www.rabbitmq.com/docs/amqp)
 The sample keeps one codebase and one set of images for both targets by putting the broker behind an adapter:
 
 ```text
-API and processor  ──►  IMessagePublisher / IMessageSubscriber
+API and processor  ──►  IMessageQueue
                                │  chosen at startup from `provider`
                 ┌──────────────┴──────────────┐
       ServiceBusMessageBroker          RabbitMqMessageBroker
@@ -50,9 +50,9 @@ API and processor  ──►  IMessagePublisher / IMessageSubscriber
 
 | Step | In the sample |
 |---|---|
-| Interfaces the application codes against | [Messaging](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Messaging/): `IMessagePublisher`, `IMessageSubscriber` |
+| Interfaces the application codes against | [IMessageQueue.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Messaging/IMessageQueue.cs): publish, and run a handler per message; returning acknowledges, throwing hands the message back |
 | One adapter per broker | [ServiceBusMessageBroker.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Messaging/ServiceBusMessageBroker.cs), [RabbitMqMessageBroker.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Messaging/RabbitMqMessageBroker.cs): publisher confirms, acknowledge, requeue, one recovering connection, no more prefetched than handled at once. The queues are the platform's: the Recipes declare them, the application doesn't. |
-| Riding out a dependency outage | [ProcessorOptions.cs](../../../samples/OrderManagementApp/src/OrderManagement.Processor/ProcessorOptions.cs): the processor retries transient failures in place, with backoff, for up to 5 minutes, so a restart or failover doesn't use up the message's deliveries |
+| Riding out a dependency outage | [ProcessorOptions.cs](../../../samples/OrderManagementApp/src/OrderManagement.Processor/ProcessorOptions.cs): the processor retries transient failures in place, 5 times with exponential backoff and jitter (about a minute), before the broker redelivers, so a restart or failover doesn't use up the message's deliveries |
 | Choosing the adapter at startup | [QueueOptions.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Configuration/QueueOptions.cs) and [ServiceCollectionExtensions.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/DependencyInjection/ServiceCollectionExtensions.cs) read `provider` (`servicebus` or `rabbitmq`) and `tls` |
 | Same deployment definition on both targets | The app declares a portable queue type, [`Portability.Messaging/messageQueues`](../../../recipes/message-queue/messageQueues.yaml). Each target's Radius Recipe creates the broker and returns `provider`, `endpoint` and `tls`: [Service Bus](../../../recipes/message-queue/azure/service-bus/servicebus-queue.bicep), and on Azure Local the [RabbitMQ operator Recipe](../../../recipes/message-queue/azure-local/rabbitmq-cluster-operator/rabbitmq-queue.bicep) (availability `high`, the default) or the [single broker Recipe](../../../recipes/message-queue/azure-local/rabbitmq/rabbitmq-queue.bicep) (`standard`), chosen by the [Recipe Pack](../../../recipe-packs/azure-local.bicep). |
 | The operators | Installed once per cluster by [provision-operators.ps1](../../../samples/OrderManagementApp/scripts/infra/azurelocal/provision-operators.ps1). See the [operators README](../../../samples/OrderManagementApp/infra/azurelocal/operators/README.md). |
@@ -60,7 +60,7 @@ API and processor  ──►  IMessagePublisher / IMessageSubscriber
 | Idempotent handling | [SqlOrderStore.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Persistence/SqlOrderStore.cs) writes with `MERGE`, and the inventory service keys reservations by order ID, so a redelivered order isn't stored or reserved twice |
 | Encryption | AMQPS only, with a certificate from the site CA that the client verifies; the nodes replicate over mutual TLS with certificates from the cert-manager CSI driver |
 | Token instead of a password | Required on Azure Local: each service exchanges its own service account token at Keycloak ([WorkloadIdentity.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Identity/WorkloadIdentity.cs), with Duende.AccessTokenManagement), and [KeycloakCredentialsProvider.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Messaging/KeycloakCredentialsProvider.cs) gives the token to RabbitMQ and refreshes it on the open connection. See the [workload identity guide](../../workload-identity/README.md). |
-| One trace per order | [MessagingTelemetry.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Diagnostics/MessagingTelemetry.cs) carries the trace context in RabbitMQ headers and Service Bus application properties |
+| One trace per order | The RabbitMQ client and the Service Bus SDK carry the trace context in the message themselves; [TelemetryExtensions.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Diagnostics/TelemetryExtensions.cs) collects their spans |
 | Monitoring | Alerts on dead-lettered messages and a stalled processor, on both targets |
 
 The sample doesn't use Radius's [`Radius.Messaging/rabbitMQ`](https://github.com/radius-project/resource-types-contrib/tree/main/Messaging/rabbitMQ) type. That type is RabbitMQ-specific, so Service Bus can't back it, and it supports passwords only.
