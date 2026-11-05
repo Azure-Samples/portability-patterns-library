@@ -19,11 +19,10 @@ public sealed class DbSetupOptions
     public int ConnectRetries { get; set; } = 10;
 
     /// <summary>
-    /// Retries opening the first connection while the failure is transient, with backoff. Azure SQL
-    /// also refuses the Entra administrator's login (18456) for up to a minute after the server's
-    /// administrator is written, which its Recipe does on every deployment, so that's retried too; a
-    /// wrong credential then fails once the retries run out. Other failures, such as a missing
-    /// permission, fail at once.
+    /// Retries opening the first connection while the failure is transient, with backoff. A login
+    /// failure (18456) on Azure SQL is retried too, since a newly set Entra administrator can take a
+    /// moment to take effect; a wrong credential still fails once the retries run out. Other
+    /// failures, such as a missing permission, fail at once.
     /// </summary>
     public ResiliencePipeline CreateConnectPipeline(string target, ILogger logger) =>
         new ResiliencePipelineBuilder()
