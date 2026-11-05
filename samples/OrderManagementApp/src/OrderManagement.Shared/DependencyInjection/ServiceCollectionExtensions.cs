@@ -117,22 +117,27 @@ public static class ServiceCollectionExtensions
 
     /// <summary>
     /// Object storage: a blob container with the workload identity, or an S3 bucket with the keys the
-    /// platform issued. The S3 bucket is created once at startup when it doesn't exist.
+    /// platform issued, as the environment's <c>Archive__Provider</c> says. The S3 bucket is created
+    /// once at startup when it doesn't exist.
     /// </summary>
     public static IServiceCollection AddOrderArchive(this IServiceCollection services, IConfiguration configuration)
     {
         services.AddWorkloadIdentity(configuration);
         ArchiveOptions.Add(services);
 
-        if (new ConnectionValues(configuration, ArchiveOptions.ConnectionName).Get("accessKeyId") is not null)
+        switch (configuration.GetValue<ArchiveProvider?>($"{ArchiveOptions.SectionName}:Provider"))
         {
-            services.AddSingleton<S3ArchiveStore>();
-            services.AddSingleton<IArchiveStore>(sp => sp.GetRequiredService<S3ArchiveStore>());
-            services.AddHostedService<S3BucketInitializer>();
-        }
-        else
-        {
-            services.AddSingleton<IArchiveStore, BlobArchiveStore>();
+            case ArchiveProvider.S3:
+                services.AddSingleton<S3ArchiveStore>();
+                services.AddSingleton<IArchiveStore>(sp => sp.GetRequiredService<S3ArchiveStore>());
+                services.AddHostedService<S3BucketInitializer>();
+                break;
+            case ArchiveProvider.AzureBlob:
+                services.AddSingleton<IArchiveStore, BlobArchiveStore>();
+                break;
+            default:
+                throw new InvalidOperationException(
+                    $"Set {ArchiveOptions.SectionName}__Provider to AzureBlob or S3: which object store backs the archive connection is the environment's choice.");
         }
 
         return services;

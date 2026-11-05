@@ -56,7 +56,8 @@ x-connections: &connections
   CONNECTION_QUEUE_MAXDELIVERYCOUNT: "10"
   CONNECTION_QUEUE_USERNAME: oms
   CONNECTION_QUEUE_PASSWORD: ${LOCAL_PASSWORD:?Set LOCAL_PASSWORD, see compose.yaml}
-  # Object storage: Radius.Storage/objectStorage, an S3 bucket.
+  # Object storage: Radius.Storage/objectStorage, an S3 bucket, as on Azure Local.
+  Archive__Provider: S3
   CONNECTION_ARCHIVE_ENDPOINT: http://seaweedfs:8333
   CONNECTION_ARCHIVE_CONTAINERNAME: orders
   CONNECTION_ARCHIVE_ACCESSKEYID: oms

@@ -13,16 +13,21 @@ public enum ArchiveProvider
 
 /// <summary>
 /// The <c>archive</c> connection, backed by the built-in <c>Radius.Storage/objectStorage</c> Resource
-/// Type, and the client's tunables from the <c>Archive</c> section.
+/// Type, and the client's settings from the <c>Archive</c> section.
 ///
-/// On Azure this is a blob container in a storage account, reached with the workload identity. On
-/// Azure Local it is a bucket in the site's S3-compatible object store (SeaweedFS), reached with the
-/// S3 keys the platform issues to the services connected to it.
+/// Which store backs it is the environment's choice, set by its Recipe Pack as
+/// <c>Archive__Provider</c>: <c>AzureBlob</c> on Azure, a blob container reached with the workload
+/// identity; <c>S3</c> on Azure Local, a bucket in the site's object store (SeaweedFS), reached with
+/// the S3 keys the platform issues to the services connected to it.
 /// </summary>
 public sealed class ArchiveOptions
 {
     public const string ConnectionName = "archive";
     public const string SectionName = "Archive";
+
+    /// <summary><c>Archive__Provider</c>: which client to use. Required; the environment sets it.</summary>
+    [Required]
+    public ArchiveProvider? Provider { get; set; }
 
     /// <summary>The blob container, or on S3 the bucket.</summary>
     [Required]
@@ -35,7 +40,7 @@ public sealed class ArchiveOptions
     [Required]
     public Uri? Endpoint { get; set; }
 
-    /// <summary>S3 access key ID. Present only on S3, where it selects that provider.</summary>
+    /// <summary>S3 access key ID, from the platform. Used only with the S3 provider.</summary>
     public string? AccessKeyId { get; set; }
 
     public string? SecretAccessKey { get; set; }
@@ -55,10 +60,7 @@ public sealed class ArchiveOptions
     /// <summary>How long one request may take.</summary>
     public TimeSpan RequestTimeout { get; set; } = TimeSpan.FromSeconds(100);
 
-    public ArchiveProvider Provider => AccessKeyId is null ? ArchiveProvider.AzureBlob : ArchiveProvider.S3;
-
-    public static OptionsBuilder<ArchiveOptions> Add(IServiceCollection services) =>
-        services.AddConnectionOptions<ArchiveOptions>(ConnectionName, SectionName, (options, values) =>
+    public static OptionsBuilder<ArchiveOptions> Add(IServiceCollection services) =>        services.AddConnectionOptions<ArchiveOptions>(ConnectionName, SectionName, (options, values) =>
             {
                 options.ContainerName = values.Get("containerName");
                 options.Endpoint = values.Get("endpoint") is { } endpoint
@@ -69,7 +71,7 @@ public sealed class ArchiveOptions
                 options.AccessKeyId = values.Get("accessKeyId");
                 options.SecretAccessKey = values.Get("secretAccessKey");
             })
-            .Validate(options => options.AccessKeyId is null || options.SecretAccessKey is not null,
+            .Validate(options => options.Provider != ArchiveProvider.S3 || (options.AccessKeyId is not null && options.SecretAccessKey is not null),
                 "S3 object storage needs both keys: CONNECTION_ARCHIVE_ACCESSKEYID and CONNECTION_ARCHIVE_SECRETACCESSKEY.")
             .Validate<WorkloadIdentity>(
                 (options, identity) => options.Provider != ArchiveProvider.AzureBlob || identity.Entra is not null,
