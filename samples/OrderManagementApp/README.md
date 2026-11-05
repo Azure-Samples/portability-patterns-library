@@ -10,7 +10,8 @@ Use it as a template for moving your own app: [Move your app in five steps](./do
 
 Users sign in to a browser app and place orders. The **API** prices them from the **inventory**
 service and publishes each order to a **queue**; the **processor** reserves stock, archives the
-order as JSON in **object storage** and records it in **SQL**.
+order as JSON in **object storage** and records it in **SQL**. Every service sends its traces,
+metrics and logs to **monitoring**.
 
 ```mermaid
 flowchart LR
@@ -23,6 +24,7 @@ flowchart LR
     storage[("Object storage<br/>order JSON")]
     sql[("SQL<br/>orders")]
     pg[("PostgreSQL<br/>stock")]
+    monitoring["Monitoring<br/>Application Insights on Azure<br/>Prometheus, Grafana, Loki, Tempo on Azure Local"]
 
     user -- "1. sign in" --> idp
     idp -- "2. access token" --> user
@@ -35,6 +37,7 @@ flowchart LR
     api -. "products, restock" .-> inventory
     api -. "my orders" .-> sql
     inventory --> pg
+    api & processor & inventory -. "traces, metrics, logs" .-> monitoring
 ```
 
 | Dependency | On Azure | On Azure Local |
