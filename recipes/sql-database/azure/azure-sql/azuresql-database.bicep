@@ -12,8 +12,8 @@ param context object
 @description('Azure region for the SQL logical server. Defaults to the resource group location.')
 param location string = resourceGroup().location
 
-@description('Object ID of the database-administrator managed identity, set as the Entra ID administrator of the server.')
-param administratorPrincipalId string
+@description('Client ID of the database-administrator managed identity, set as the Entra ID administrator of the server. Azure SQL identifies an application or managed identity by its client ID, not its object ID.')
+param administratorClientId string
 
 @description('Name of that managed identity.')
 param administratorName string
@@ -59,7 +59,7 @@ resource sqlServer 'Microsoft.Sql/servers@2023-08-01-preview' = {
         administratorType: 'ActiveDirectory'
         principalType: 'Application'
         login: administratorName
-        sid: administratorPrincipalId
+        sid: administratorClientId
         tenantId: tenantId
         azureADOnlyAuthentication: azureAdOnlyAuthentication
       }

@@ -336,6 +336,7 @@ try {
         queueReceiverPrincipalIds           = @($identities['processor'].principalId)
         storageContributorPrincipalIds      = @($identities['processor'].principalId)
         databaseAdministratorPrincipalId    = $identities['db-admin'].principalId
+        databaseAdministratorClientId       = $identities['db-admin'].clientId
         databaseAdministratorName           = $identities['db-admin'].name
         applicationInsightsConnectionString = [string]$applicationInsightsConnectionString
         alertActionGroupId                  = [string]$alertActionGroupId

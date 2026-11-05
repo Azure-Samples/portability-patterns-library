@@ -30,8 +30,11 @@ param queueReceiverPrincipalIds array = []
 @description('Principal IDs of the identities allowed to read and write object storage.')
 param storageContributorPrincipalIds array = []
 
-@description('Object ID of the database-administrator identity, the Entra administrator of SQL and PostgreSQL servers.')
+@description('Object ID of the database-administrator identity, the Entra administrator of PostgreSQL servers.')
 param databaseAdministratorPrincipalId string
+
+@description('Client ID of the same identity, which Azure SQL uses to identify its Entra administrator.')
+param databaseAdministratorClientId string
 
 @description('Name of that identity.')
 param databaseAdministratorName string
@@ -144,7 +147,7 @@ resource azureRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
         source: '${registry}/recipes/azure-sql/azuresql-database:${tag}'
         parameters: {
           location: sqlLocation
-          administratorPrincipalId: databaseAdministratorPrincipalId
+          administratorClientId: databaseAdministratorClientId
           administratorName: databaseAdministratorName
           skuName: 'S0'
         }
