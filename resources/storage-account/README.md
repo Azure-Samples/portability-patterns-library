@@ -17,16 +17,16 @@ Azure Storage isn't available on Azure Local. This guide covers two of its servi
 - **The data model:** containers become buckets, blobs become objects, with the same names, prefixes, content types and user metadata.
 - **The payloads and the application logic** behind your own storage interface.
 - **Common features under other names:** versioning, immutability (S3 Object Lock), lifecycle rules, tags, and shared access signatures as presigned URLs.
-- **Access without a stored key**, if the store accepts tokens: SeaweedFS can exchange OpenID Connect or Kubernetes service account tokens for temporary credentials. The sample uses S3 keys the platform issues per namespace instead.
+- **Access without a stored key**, if the store accepts tokens. SeaweedFS can exchange a token for temporary keys. The sample uses ordinary S3 keys instead.
 
 ### What you need to change
 
-1. **Hide the store behind your own interface.** Move the Blob SDK calls into one implementation of it.
-2. **Add an S3 implementation** behind the same interface, using an S3 client such as the [AWS SDK for .NET](https://aws.amazon.com/sdk-for-net/) pointed at the on-site endpoint.
-3. **Choose the implementation at startup** from configuration, not with build flags or separate images.
-4. **Switch the credential:** Entra ID role assignments become S3 credentials, either access keys or temporary credentials from tokens.
-5. **Replace Blob-only features you use:** [access tiers](https://learn.microsoft.com/azure/storage/blobs/access-tiers-overview), append and page blobs, change feed and Event Grid events have no direct equivalent.
-6. **Run and operate the store** in the cluster: capacity, replication, TLS, backups and upgrades are yours.
+1. **Put storage behind your own interface.** Move the Blob SDK calls into one class that implements it.
+2. **Add an S3 version of that class.** Use an S3 client, such as the [AWS SDK for .NET](https://aws.amazon.com/sdk-for-net/), pointed at the on-site endpoint.
+3. **Pick the class at startup** from configuration. Use the same image on both targets.
+4. **Change how the app signs in.** Entra ID role assignments become S3 access keys, or temporary keys exchanged for a token.
+5. **Replace Blob-only features you use.** [Access tiers](https://learn.microsoft.com/azure/storage/blobs/access-tiers-overview), append and page blobs, change feed and Event Grid events have no direct equivalent.
+6. **Run the store yourself.** You handle capacity, replication, TLS, backups and upgrades.
 
 How Blob storage maps to SeaweedFS, and what to watch on Azure Local: [SeaweedFS as an alternative](./alternatives/seaweedfs.md).
 
@@ -35,7 +35,7 @@ How Blob storage maps to SeaweedFS, and what to watch on Azure Local: [SeaweedFS
 | Pattern | Limitation for this resource |
 |---|---|
 | [Data store](https://learn.microsoft.com/azure/architecture/guide/technology-choices/data-store-overview) | Not the Blob API, so the Blob SDK doesn't work against it. Objects and buckets carry over; access tiers, append and page blobs, change feed and Event Grid events don't. |
-| [Workload identity](https://learn.microsoft.com/entra/workload-id/workload-identities-overview) | No Entra ID role assignments. Use S3 access keys, or temporary credentials from the site's identity provider or the cluster's service account tokens. The sample uses keys the platform generates per namespace, limited to that namespace's buckets. |
+| [Workload identity](https://learn.microsoft.com/entra/workload-id/workload-identities-overview) | No Entra ID role assignments. Use S3 access keys, or temporary keys exchanged for a token. The sample gives each namespace its own keys, limited to its own buckets. |
 | [Reliability](https://learn.microsoft.com/azure/well-architected/reliability/) | You host, size, back up and scale the store. There's no [geo-redundant storage](https://learn.microsoft.com/azure/storage/common/storage-redundancy); copying to a second site is yours to set up. Azure Local's Storage Spaces Direct already keeps copies of the cluster's disks, so size the store's own replication with that in mind. |
 
 **Data:** blobs don't move by themselves. Copy them with a tool that speaks both APIs, such as [rclone](https://rclone.org/).
@@ -57,12 +57,12 @@ Other options for specific uses: Samba (GPL-3.0) for SMB shares from Linux; Ceph
 
 ### What you need to change
 
-1. **Provision the file server:** a Windows Server [VM on the Azure Local instance](https://learn.microsoft.com/azure/azure-local/manage/create-arc-virtual-machines), joined to Active Directory, with SMB or [NFS](https://learn.microsoft.com/windows-server/storage/nfs/nfs-overview) shares.
-2. **Change the share paths:** `\\<account>.file.core.windows.net\<share>` becomes `\\<server>\<share>`.
-3. **Switch the sign-in:** storage account keys and Microsoft Entra Kerberos for cloud-only identities aren't available; users and apps sign in with Active Directory accounts.
-4. **For pods,** replace the [Azure Files CSI driver](https://learn.microsoft.com/azure/aks/azure-files-csi) with the [SMB or NFS CSI driver on AKS on Azure Local](https://learn.microsoft.com/azure/aks/aksarc/container-storage-interface-files). Shares are created in advance, not per volume, and the SMB credentials go in a Kubernetes Secret.
-5. **For apps that use the [Azure Files REST API](https://learn.microsoft.com/rest/api/storageservices/file-service-rest-api) or SDK,** mount the share instead, or add an adapter: no on-site store offers that API.
-6. **Replace data protection:** [share snapshots](https://learn.microsoft.com/azure/storage/files/storage-snapshots-files), soft delete and Azure Backup become [Volume Shadow Copies](https://learn.microsoft.com/windows-server/storage/file-server/volume-shadow-copy-service) and your own backup.
+1. **Set up a file server.** Create a Windows Server [VM on the Azure Local instance](https://learn.microsoft.com/azure/azure-local/manage/create-arc-virtual-machines), join it to Active Directory, and create SMB or [NFS](https://learn.microsoft.com/windows-server/storage/nfs/nfs-overview) shares.
+2. **Change the share paths.** `\\<account>.file.core.windows.net\<share>` becomes `\\<server>\<share>`.
+3. **Sign in with Active Directory accounts.** Storage account keys and Microsoft Entra Kerberos aren't available.
+4. **For pods, change the CSI driver.** Replace the [Azure Files CSI driver](https://learn.microsoft.com/azure/aks/azure-files-csi) with the [SMB or NFS CSI driver on AKS on Azure Local](https://learn.microsoft.com/azure/aks/aksarc/container-storage-interface-files). Create the shares in advance, and keep the SMB credentials in a Kubernetes Secret.
+5. **If the app uses the [Azure Files REST API](https://learn.microsoft.com/rest/api/storageservices/file-service-rest-api) or SDK, mount the share instead.** No on-site store offers that API.
+6. **Replace data protection.** Use [Volume Shadow Copies](https://learn.microsoft.com/windows-server/storage/file-server/volume-shadow-copy-service) and your own backups instead of [share snapshots](https://learn.microsoft.com/azure/storage/files/storage-snapshots-files), soft delete and Azure Backup.
 
 ### Observed limitations
 

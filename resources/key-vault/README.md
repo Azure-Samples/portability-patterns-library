@@ -16,11 +16,11 @@ Azure Key Vault runs in Azure. A workload on Azure Local that has to keep workin
 
 ## What you need to change
 
-1. **Read secrets from files or environment variables, not the Key Vault SDK.** On Azure Local the application reads a Kubernetes Secret; it doesn't call Key Vault. Reading mounted secrets on AKS too keeps one code path.
-2. **Declare which secrets to copy.** A `SecretProviderClass` and a `SecretSync` per Kubernetes Secret, in the application's namespace.
-3. **Give the extension, not the application, access to Key Vault:** a managed identity with the Key Vault Secrets User role, federated with the extension's service account.
-4. **Pick up rotated values.** A secret changed in Key Vault reaches the cluster on the extension's next poll. Environment variables are read only when a container starts, so the service has to restart, or reread a mounted file, to use it. A database password also has to be changed in the database itself.
-5. **Plan for keys.** Cryptographic operations with Key Vault keys (sign, encrypt, wrap) need Key Vault itself. They don't work while the site is offline.
+1. **Read secrets from files or environment variables.** On Azure Local the app reads a Kubernetes Secret and never calls Key Vault. Do the same on AKS to keep one code path.
+2. **List the secrets to copy.** Create a `SecretProviderClass` and a `SecretSync` for each Kubernetes Secret, in the app's namespace.
+3. **Give Key Vault access to the extension, not the app.** Create a managed identity with the Key Vault Secrets User role, and federate it with the extension's service account.
+4. **Pick up changed secrets.** A new value reaches the cluster on the extension's next check. Restart the service, or have it reread the file. A database password must also be changed in the database.
+5. **Plan for keys.** Signing, encryption and key wrapping with Key Vault keys need Key Vault itself, so they don't work offline.
 
 How the extension maps to Key Vault on AKS, and how the sample uses it: [Key Vault with the Secret Store extension](./alternatives/secret-store-extension.md).
 
@@ -29,12 +29,12 @@ How the extension maps to Key Vault on AKS, and how the sample uses it: [Key Vau
 | Pattern | Limitation for this resource |
 |---|---|
 | [Application secrets](https://learn.microsoft.com/azure/well-architected/security/application-secrets) | Secrets are copied into the cluster, so Kubernetes RBAC on the namespace becomes the boundary that protects them. Access isn't audited by Key Vault after the copy. |
-| [Workload identity](https://learn.microsoft.com/entra/workload-id/workload-identities-overview) | The extension needs workload identity federation on the cluster. On AKS on Azure Local it's in preview and can only be turned on when the cluster is created. It gives the cluster's service account tokens a public issuer URL hosted in Azure, so on-site services that verify those tokens, such as Keycloak, have to fetch the signing keys from the cluster's API server to keep working offline. |
+| [Workload identity](https://learn.microsoft.com/entra/workload-id/workload-identities-overview) | The extension needs workload identity on the cluster. On AKS on Azure Local this is in preview, and you can only turn it on when you create the cluster. It also moves the cluster's token issuer to an Azure address. On-site services that check those tokens, such as Keycloak, must then fetch the signing keys from the cluster's API server to keep working offline. |
 | [Reliability](https://learn.microsoft.com/azure/well-architected/reliability/) | Secrets already copied keep working offline. New and rotated secrets wait until the link to Azure returns. Arc-enabled Kubernetes expects the link back [within 90 days](https://learn.microsoft.com/azure/azure-arc/kubernetes/conceptual-connectivity-modes), and doesn't support fully disconnected sites. |
 
 **Data:** secrets stay in Key Vault. Nothing moves; the cluster holds copies.
 
-**When to use it on Azure Local:** Key Vault adds a copy outside the cluster and central rotation and audit, at the cost of rotating only while the link to Azure is up. Use it for secrets and certificates that already live in Azure and must reach the site, such as a partner's API key. Secrets that only matter inside the site, such as database passwords or keys for a store that runs in the same cluster, can stay as Kubernetes Secrets generated on site; a rebuilt cluster gets new ones.
+**When to use it on Azure Local:** use Key Vault for secrets and certificates that already live in Azure and must reach the site, such as a partner's API key. It keeps a copy outside the cluster and gives you central rotation and audit, but rotation only works while the site is connected. Secrets that only matter on site, such as database passwords, can be Kubernetes Secrets generated on site. A rebuilt cluster gets new ones.
 
 ## Rotating secrets on site
 
@@ -50,4 +50,4 @@ Secrets without a plugin, such as S3 keys or partner API keys, need their own ro
 
 ## Sample
 
-The [Order Management sample](../../samples/OrderManagementApp/README.md) on Azure Local sets up Key Vault and the Secret Store extension as the path for secrets that already live in Azure, and shows how to sync one. Nothing goes through it by default: the sample's database passwords and object store keys are born on site, so it generates them in the cluster and changes them with a rotation script. On Azure it needs no secrets: every service signs in with workload identity. [Key Vault with the Secret Store extension](./alternatives/secret-store-extension.md#how-the-order-management-sample-does-it) points to the code.
+The [Order Management sample](../../samples/OrderManagementApp/README.md) on Azure Local sets up Key Vault and the Secret Store extension for secrets that already live in Azure, and shows how to sync one. Nothing is synced by default. The sample's own passwords and keys are generated on site and changed with a rotation script. On Azure the sample needs no secrets, because every service signs in with workload identity. [Key Vault with the Secret Store extension](./alternatives/secret-store-extension.md#how-the-order-management-sample-does-it) points to the code.

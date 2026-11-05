@@ -20,12 +20,12 @@ Azure Database for PostgreSQL flexible server isn't available on Azure Local. Th
 
 ## What you need to change
 
-1. **Choose the credential at startup** from configuration: an Entra access token on Azure, a password on Azure Local. Not with build flags or separate images.
-2. **Create the database roles on each target.** On Azure, a role mapped to each service's managed identity. On Azure Local, a password role per service. A setup job that runs as the administrator keeps this in one place.
-3. **Store and rotate the passwords** on Azure Local, and get them to the service without putting them in the image or the deployment definition.
-4. **Trust the site's CA** in the client, so it verifies the in-cluster server's certificate.
-5. **Check your extensions.** Flexible server allows a [listed set of extensions](https://learn.microsoft.com/azure/postgresql/flexible-server/concepts-extensions); the images ship the standard ones.
-6. **Run and operate PostgreSQL** in the cluster: replicas, backups, upgrades and monitoring are yours, or the operator's.
+1. **Pick the sign-in method at startup** from configuration: an Entra token on Azure, a password on Azure Local. Use the same image on both targets.
+2. **Create a database role for each service** on each target. On Azure, map the role to the service's managed identity. On Azure Local, give it a password.
+3. **Store and rotate the passwords on Azure Local.** Keep them out of the image and the deployment files.
+4. **Trust the site's certificate authority** in the app, so it can check the database server's certificate.
+5. **Check your extensions.** Flexible server allows a [fixed list of extensions](https://learn.microsoft.com/azure/postgresql/flexible-server/concepts-extensions). The PostgreSQL images include the standard ones.
+6. **Run PostgreSQL yourself.** You, or an operator, handle replicas, backups, upgrades and monitoring.
 
 How flexible server maps to each alternative, and how the sample does each step: [CloudNativePG](./alternatives/cloudnative-pg.md), [PostgreSQL container](./alternatives/postgresql-container.md).
 
@@ -49,10 +49,10 @@ Password-free options on Azure Local exist but aren't used by the sample, which 
 |---|---|
 | [Data store](https://learn.microsoft.com/azure/architecture/guide/technology-choices/data-store-overview) | Same engine, so queries and data carry over. Server parameters, extensions and connection pooling are configured on the cluster, not through Azure. |
 | [Workload identity](https://learn.microsoft.com/entra/workload-id/workload-identities-overview) | Entra ID isn't available. The sample uses a password per role, stored as a Kubernetes Secret. Client certificates would remove the stored password. |
-| [Reliability](https://learn.microsoft.com/azure/well-architected/reliability/) | You run the database. CloudNativePG provides failover, synchronous replicas and point-in-time restore, but the sample's backups go to an object store in the same cluster, so copy them off site. A single container has none of these. |
+| [Reliability](https://learn.microsoft.com/azure/well-architected/reliability/) | You run the database. CloudNativePG gives you failover, synchronous replicas and point-in-time restore. The sample's backups stay in the same cluster, so copy them off site. A single container has none of these. |
 
 **Data:** data in flexible server doesn't move by itself. Dump and restore it during a planned switch.
 
 ## Sample
 
-The inventory service in the [Order Management sample](../../samples/OrderManagementApp/README.md) keeps products and stock in PostgreSQL: flexible server on Azure, and on Azure Local CloudNativePG (the default, availability `high`) or a single container (availability `standard`). The application is the same in all three.
+The inventory service in the [Order Management sample](../../samples/OrderManagementApp/README.md) keeps products and stock in PostgreSQL. On Azure that's flexible server. On Azure Local it's CloudNativePG by default, or a single container. The app is the same in all three.

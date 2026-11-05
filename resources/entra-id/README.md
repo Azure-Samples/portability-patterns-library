@@ -16,13 +16,13 @@ On Azure, users sign in to web apps and APIs through Microsoft Entra ID: app reg
 
 ## What you need to change
 
-1. **Run an identity provider on site** and operate it: database, TLS, backups, high availability.
-2. **Connect it to Active Directory** over LDAPS, with a read-only account limited to the users and groups the app needs.
-3. **Recreate each app registration as a client:** the browser app as a public client with PKCE and its redirect URIs, the API as a client that tokens are issued for, its delegated scope as a client scope.
-4. **Recreate app roles as roles** in the identity provider, granted to Active Directory groups, in place of Entra app role assignments to users and groups.
-5. **Shape the tokens like Entra's:** `aud`, `scp`, `roles` and `oid`. Claims the app reads that only Entra issues, such as `tid`, need a replacement or a code change.
-6. **Configure the libraries per target:** the authority and metadata address for Microsoft.Identity.Web, and the known authorities for MSAL so it doesn't expect `login.microsoftonline.com`. Deliver them from the deployment, not the build.
-7. **Replace the Entra features the app relies on**, such as Microsoft Graph, Conditional Access, guest users or admin consent. Check what the app uses before choosing.
+1. **Run an identity provider on site.** You handle its database, TLS, backups and high availability.
+2. **Connect it to Active Directory** over LDAPS. Use a read-only account that can see only the users and groups the app needs.
+3. **Recreate each app registration as a client.** The browser app becomes a public client with PKCE and its redirect URIs. The API becomes a client that tokens are issued for, and its scope becomes a client scope.
+4. **Recreate app roles** in the identity provider, and grant them to Active Directory groups.
+5. **Issue tokens with the same claims as Entra:** `aud`, `scp`, `roles` and `oid`. If the app reads a claim only Entra issues, such as `tid`, replace it or change the code.
+6. **Configure the sign-in libraries for each target** from the deployment, not the build. Microsoft.Identity.Web needs the authority and metadata address. MSAL needs the identity provider's host in its known authorities.
+7. **Replace any Entra features the app uses,** such as Microsoft Graph, Conditional Access, guest users or admin consent.
 
 How Entra concepts map to Keycloak, and how the sample does each step: [Keycloak with Active Directory](./alternatives/keycloak.md).
 

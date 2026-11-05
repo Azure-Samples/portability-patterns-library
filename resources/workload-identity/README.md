@@ -1,6 +1,6 @@
 # Microsoft Entra Workload ID → Azure Local
 
-On Azure, Microsoft Entra Workload ID lets a pod swap its Kubernetes service account token for a Microsoft Entra token, so the workload holds no secret. The trust is a federated identity credential on a managed identity. This guide shows how to keep that pattern on Azure Local with an identity provider on site in place of Entra ID, so workloads keep authenticating when the link to Azure is down.
+On Azure, Microsoft Entra Workload ID lets a pod exchange its Kubernetes service account token for an Entra token, so the workload stores no secret. This guide shows how to keep that pattern on Azure Local, with an identity provider on site instead of Entra ID. Workloads then keep signing in when the link to Azure is down.
 
 | Target | Alternative | Portability class | Availability | Summary |
 |---|---|---|---|---|
@@ -8,19 +8,19 @@ On Azure, Microsoft Entra Workload ID lets a pod swap its Kubernetes service acc
 
 ## What carries over
 
-- **The pattern:** the cluster signs a short-lived service account token, the identity provider trusts the cluster's issuer for one service account, and the pod exchanges the token for an access token. No secret is stored.
+- **The pattern:** the cluster issues a short-lived token to the pod. The identity provider trusts that token for one service account and exchanges it for an access token. No secret is stored.
 - **The Kubernetes side:** the service account, the projected token, and the subject `system:serviceaccount:<namespace>:<service account>`.
 - **The standards:** OIDC discovery for the cluster's signing keys, and the OAuth 2.0 client credentials grant with a JWT client assertion.
 - **Calls between your own services:** the called service checks the token's audience and `roles` claim, with the same code on both targets. The roles themselves are defined like a user-facing app's; see the [Microsoft Entra ID guide](../entra-id/README.md).
 
 ## What you need to change
 
-1. **Run an identity provider on site** that can validate Kubernetes service account tokens, and operate it: database, TLS, backups, high availability.
-2. **Let it read the cluster's signing keys from inside the site.** It has to accept the cluster's issuer URL in the tokens, and fetch the keys from the cluster's API server. If the cluster also has Entra workload identity on, its issuer URL is hosted in Azure, so don't let the identity provider fetch keys from that address.
-3. **Recreate each federated identity credential** as a client in the identity provider, bound to the same service account subject. One identity per service, as on Azure.
-4. **Project the token into pods yourself.** There's no Entra webhook: add a projected service account token volume whose audience is the identity provider, and run the pods as that service account.
-5. **Replace the Azure SDK credential** with an OAuth 2.0 token client: read the token file, request an access token with it as the client assertion, cache it and refresh it before it expires. A library such as Duende.AccessTokenManagement does the caching and refreshing.
-6. **Replace Azure role assignments** with claims in the access token that each service checks.
+1. **Run an identity provider on site** that accepts Kubernetes service account tokens. You handle its database, TLS, backups and high availability.
+2. **Let it check tokens without Azure.** It must fetch the cluster's signing keys from the cluster's API server. If the cluster also uses Entra workload identity, the token issuer is an Azure address; don't fetch keys from there.
+3. **Recreate each federated identity credential as a client** in the identity provider, bound to the same service account. Keep one identity per service.
+4. **Add the token to each pod yourself.** There's no webhook to do it. Mount a projected service account token for the identity provider, and run the pod as that service account.
+5. **Replace the Azure SDK credential with an OAuth 2.0 client.** It sends the token file to the identity provider and gets an access token back. Cache that token and refresh it before it expires.
+6. **Replace Azure role assignments** with claims in the access token, which each service checks.
 
 How Entra concepts map to Keycloak, and how the sample does each step: [Keycloak as an alternative](./alternatives/keycloak.md).
 
@@ -28,7 +28,7 @@ How Entra concepts map to Keycloak, and how the sample does each step: [Keycloak
 
 | Pattern | Limitation for this resource |
 |---|---|
-| [Workload identity](https://learn.microsoft.com/entra/workload-id/workload-identities-overview) | Only services that accept OAuth 2.0 tokens from your identity provider can use it. In the sample RabbitMQ and the inventory service do; SQL Server and PostgreSQL use a password per service, stored as a Kubernetes Secret, and the object store S3 keys per namespace, although SeaweedFS can also accept service account tokens. |
+| [Workload identity](https://learn.microsoft.com/entra/workload-id/workload-identities-overview) | It only works with services that accept OAuth 2.0 tokens from your identity provider. In the sample, RabbitMQ and the inventory service do. The databases and the object store use passwords and keys. |
 | [Reliability](https://learn.microsoft.com/azure/well-architected/reliability/) | The identity provider becomes a critical dependency on site. If it's down, pods can't get new tokens once their current ones expire. |
 | [Security](https://learn.microsoft.com/azure/well-architected/security/) | You protect the identity provider's administration, signing keys and certificates, which Entra handles for you on Azure. |
 

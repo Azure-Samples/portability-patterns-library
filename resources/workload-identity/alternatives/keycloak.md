@@ -41,7 +41,7 @@ Pod  ──(service account token)──►  Keycloak  ──(access token)─�
 
 The sample's Keycloak setup is sample code. Before production, see [operating Keycloak](../../entra-id/alternatives/keycloak.md#not-covered-by-the-sample) in the Microsoft Entra ID guide; Keycloak serves both user sign-in and workloads.
 
-**Where Keycloak runs:** the sample runs Keycloak in the same cluster as the application, so it can read the cluster's signing keys through the API server with its own service account. Running it outside the cluster, for example on a VM, needs network access to the API server and a credential allowed to read the keys, or an issuer it can reach without Azure. This project hasn't tested running Keycloak outside the cluster.
+**Where Keycloak runs:** the sample runs Keycloak in the same cluster as the app, so it can read the cluster's signing keys from the API server. Running it outside the cluster, for example on a VM, needs network access to the API server and a credential to read the keys. This project hasn't tested that.
 
 ## References
 
