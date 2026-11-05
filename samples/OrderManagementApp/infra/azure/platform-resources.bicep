@@ -48,6 +48,11 @@ param useEntraAuthentication bool
 @description('Tags applied to every resource.')
 param tags object
 
+@description('Day of the weekly window in which AKS applies new node images.')
+param nodeOsUpgradeDay string
+
+@description('Start of that window, HH:mm in UTC. It lasts four hours.')
+param nodeOsUpgradeStartTime string
 // Built-in role definition ID for AcrPull.
 var acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 
@@ -143,6 +148,31 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2025-04-01' = {
       webAppRouting: {
         enabled: true
       }
+    }
+    // Security patches for the nodes' OS arrive as new node images, which AKS applies by itself in
+    // the weekly window below. Kubernetes version upgrades stay manual.
+    autoUpgradeProfile: {
+      nodeOSUpgradeChannel: 'NodeImage'
+    }
+  }
+}
+
+// The weekly window for node image updates, so they land at a known time. AKS needs at least four
+// hours. An urgent fix can still go in sooner: az aks nodepool upgrade --node-image-only.
+resource nodeOsUpgradeSchedule 'Microsoft.ContainerService/managedClusters/maintenanceConfigurations@2025-04-01' = {
+  parent: cluster
+  name: 'aksManagedNodeOSUpgradeSchedule'
+  properties: {
+    maintenanceWindow: {
+      schedule: {
+        weekly: {
+          dayOfWeek: nodeOsUpgradeDay
+          intervalWeeks: 1
+        }
+      }
+      durationHours: 4
+      startTime: nodeOsUpgradeStartTime
+      utcOffset: '+00:00'
     }
   }
 }

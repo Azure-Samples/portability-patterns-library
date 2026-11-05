@@ -105,6 +105,21 @@ param tags object = {
   managedBy: 'radius'
 }
 
+@description('Day of the weekly window in which AKS applies new node images, which carry the nodes\' OS security patches.')
+@allowed([
+  'Monday'
+  'Tuesday'
+  'Wednesday'
+  'Thursday'
+  'Friday'
+  'Saturday'
+  'Sunday'
+])
+param nodeOsUpgradeDay string = 'Sunday'
+
+@description('Start of that window, HH:mm in UTC. It lasts four hours.')
+param nodeOsUpgradeStartTime string = '02:00'
+
 resource platformResourceGroup 'Microsoft.Resources/resourceGroups@2022-09-01' = {
   name: resourceGroupName
   location: location
@@ -131,6 +146,8 @@ module platform 'platform-resources.bicep' = {
     clusterAdminObjectIds: clusterAdminObjectIds
     useEntraAuthentication: useEntraAuthentication
     tags: tags
+    nodeOsUpgradeDay: nodeOsUpgradeDay
+    nodeOsUpgradeStartTime: nodeOsUpgradeStartTime
   }
 }
 

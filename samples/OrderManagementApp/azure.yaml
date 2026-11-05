@@ -14,6 +14,8 @@
 # Optional settings, before azd up:
 #   azd env set DNS_LABEL <label>                    # public name <label>.<region>.cloudapp.azure.com; default oms-<env name>
 #   azd env set AKS_NODE_VM_SIZE <size>              # if Standard_D4s_v7 isn't allowed in your subscription or region
+#   azd env set AKS_NODE_OS_UPGRADE_DAY <day>        # weekly window for node security patches; default Sunday
+#   azd env set AKS_NODE_OS_UPGRADE_START <HH:mm>    # its start in UTC, four hours long; default 02:00
 #   azd env set SQL_LOCATION <region>                # if your subscription can't create Azure SQL in the main region
 #   azd env set POSTGRES_LOCATION <region>           # if your subscription can't create PostgreSQL in the main region
 #   azd env set SERVICE_MANAGEMENT_REFERENCE <id>    # if your Entra tenant requires it on app registrations
