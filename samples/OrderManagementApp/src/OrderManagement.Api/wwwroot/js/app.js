@@ -3,20 +3,22 @@
 const { PublicClientApplication, InteractionRequiredAuthError } = window.msal;
 
 const $ = (id) => document.getElementById(id);
-const showView = (name) => ["loading-view", "signin-view", "orders-view"].forEach((view) => { $(view).hidden = view !== name; });
+const views = ["loading-view", "signin-view", "orders-view"];
+const showView = (name) => views.forEach((view) => { $(view).hidden = view !== name; });
 
 const cfg = await (await fetch("/config.json")).json();
-// Each product and order carries its currency.
-const moneyFormats = new Map();
-const money = (amount, currency) => {
-  if (!moneyFormats.has(currency)) {
-    moneyFormats.set(currency, new Intl.NumberFormat(undefined, { style: "currency", currency }));
-  }
-  return moneyFormats.get(currency).format(amount);
-};
+const money = new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" });
 const dateTime = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
+const relative = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
 
-$("platform").textContent = [cfg.environment, cfg.identityProvider].filter(Boolean).join(" \u00b7 ");
+$("idp-name").textContent = cfg.identityProvider;
+$("footer-text").textContent = `Contoso Field Supply \u00b7 secured by ${cfg.identityProvider}`;
+if (cfg.environment) {
+  $("env-badge").textContent = `${cfg.environment} \u00b7 ${cfg.identityProvider}`;
+  $("env-badge").hidden = false;
+  $("signin-env").textContent = cfg.environment;
+  $("signin-env").hidden = false;
+}
 
 const msalApp = cfg.clientId ? new PublicClientApplication({
   auth: {
@@ -24,9 +26,7 @@ const msalApp = cfg.clientId ? new PublicClientApplication({
     authority: cfg.authority,
     knownAuthorities: cfg.knownAuthorities,
     protocolMode: cfg.protocolMode,
-    // Keycloak issues offline tokens only to clients allowed them, which this one isn't; MSAL asks
-    // for one by default.
-    ...(cfg.protocolMode === "OIDC" ? { OIDCOptions: { defaultScopes: ["openid", "profile"] } } : {}),
+      ...(cfg.protocolMode === "OIDC" ? { OIDCOptions: { defaultScopes: ["openid", "profile"] } } : {}),
     redirectUri: `${window.location.origin}/`,
     postLogoutRedirectUri: `${window.location.origin}/`
   },
@@ -99,108 +99,167 @@ function showSignInError(error) {
   $("signin-error").hidden = false;
 }
 
-function setMessage(text, kind = "") {
-  const message = $("message");
-  message.textContent = text;
-  message.className = kind;
-  message.hidden = !text;
-}
+// ---- Small DOM helpers ------------------------------------------------------------------------
 
-function el(tag, text) {
+const svgNs = "http://www.w3.org/2000/svg";
+
+function el(tag, className, text) {
   const node = document.createElement(tag);
+  if (className) {
+    node.className = className;
+  }
   if (text !== undefined) {
     node.textContent = text;
   }
   return node;
 }
 
-function row(cells) {
-  const tr = el("tr");
-  for (const content of cells) {
-    const td = el("td");
-    if (content instanceof Node) {
-      td.append(content);
-    } else {
-      td.textContent = content;
-    }
-    tr.append(td);
+// Static icon geometry only; never built from data.
+function icon(paths) {
+  const svg = document.createElementNS(svgNs, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  for (const d of paths) {
+    const path = document.createElementNS(svgNs, "path");
+    path.setAttribute("d", d);
+    svg.append(path);
   }
-  return tr;
+  return svg;
 }
 
-// ---- Products and new order -------------------------------------------------------------------
+function toast(text, kind = "") {
+  const item = el("div", `toast ${kind}`, text);
+  item.setAttribute("role", kind === "error" ? "alert" : "status");
+  $("toasts").append(item);
+  setTimeout(() => item.remove(), 5000);
+}
+
+function setMessage(text, kind) {
+  const message = $("order-message");
+  message.textContent = text;
+  message.className = `inline-status ${kind}`;
+  message.hidden = !text;
+}
+
+function cell(content, className) {
+  const td = el("td", className);
+  if (content instanceof Node) {
+    td.append(content);
+  } else {
+    td.textContent = content;
+  }
+  return td;
+}
+
+function initials(name) {
+  const parts = name.split("@")[0].split(/[\s._-]+/).filter(Boolean);
+  return ((parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? parts[0]?.[1] ?? "")).toUpperCase();
+}
+
+function timeAgo(value) {
+  const seconds = Math.round((new Date(value) - Date.now()) / 1000);
+  const steps = [[60, "second"], [60, "minute"], [24, "hour"], [7, "day"]];
+  let amount = seconds;
+  for (const [size, unit] of steps) {
+    if (Math.abs(amount) < size) {
+      return relative.format(amount, unit);
+    }
+    amount = Math.round(amount / size);
+  }
+  return dateTime.format(new Date(value));
+}
+
+// ---- Catalog and new order --------------------------------------------------------------------
+
+const productLook = {
+  GEN: { category: "Power", tone: "power", paths: ["M13 2 4 14h7l-1 8 9-12h-7l1-8Z"] },
+  UPS: { category: "Power", tone: "power", paths: ["M3 7h16a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z", "M23 11v2", "M6 10v4M10 10v4"] },
+  SAT: { category: "Communications", tone: "comms", paths: ["M4 10a8 8 0 0 0 10 10L4 10Z", "M9 15l4-4", "M14 4a6 6 0 0 1 6 6", "M14 8a2 2 0 0 1 2 2"] },
+  RAD: { category: "Communications", tone: "comms", paths: ["M5 8h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2Z", "M7 8 17 3", "M8 12.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Z", "M14 13h4M14 16h4"] },
+  WAT: { category: "Water", tone: "water", paths: ["M12 3C8 9 6 12 6 15a6 6 0 0 0 12 0c0-3-2-6-6-12Z"] }
+};
+const lookFor = (sku) => productLook[sku.split("-")[0]] ?? { category: "Supplies", tone: "", paths: ["M3.5 7.5 12 3l8.5 4.5v9L12 21l-8.5-4.5z"] };
 
 let products = [];
 let canCreate = false;
 let canManageInventory = false;
 
-const stockText = (product) => product.available <= 0 ? "Sold out"
-  : product.available <= product.reorderLevel ? `${product.available} (low)` : String(product.available);
+const maxOrderable = (product) => Math.min(100, Math.max(0, product.available));
+
+function stockLabel(product) {
+  if (product.available <= 0) {
+    return el("span", "stock out", "Sold out");
+  }
+  const low = product.available <= product.reorderLevel;
+  return el("span", `stock${low ? " low" : ""}`, low ? `Only ${product.available} left` : `${product.available} in stock`);
+}
 
 function renderCatalog() {
   // Keep what the user has picked when stock is refreshed underneath them.
   const picked = new Map(selectedItems().map((item) => [item.sku, item.quantity]));
-  const body = $("catalog");
-  body.replaceChildren();
+  const grid = $("catalog");
+  grid.replaceChildren();
   for (const product of products) {
-    const max = Math.min(100, Math.max(0, product.available));
-    const input = el("input");
+    const look = lookFor(product.sku);
+    const soldOut = product.available <= 0;
+    const card = el("article", soldOut ? "product sold-out" : "product");
+    card.dataset.sku = product.sku;
+
+    const top = el("div", "product-top");
+    const badge = el("span", `product-icon ${look.tone}`);
+    badge.append(icon(look.paths));
+    top.append(badge, el("span", "category", look.category));
+
+    const max = maxOrderable(product);
+    const input = el("input", "qty");
     input.type = "number";
     input.min = "0";
     input.max = String(max);
     input.value = String(Math.min(max, picked.get(product.sku) ?? 0));
+    input.inputMode = "numeric";
     input.dataset.sku = product.sku;
     input.setAttribute("aria-label", `Quantity of ${product.name}`);
-    input.disabled = !canCreate || max === 0;
+    input.disabled = !canCreate || soldOut;
     input.addEventListener("input", updateSummary);
 
-    const tr = row([product.name, product.sku, money(product.unitPrice, product.currency), stockText(product), input]);
-    tr.dataset.sku = product.sku;
-    body.append(tr);
+    const step = (delta, label, text) => {
+      const button = el("button", "", text);
+      button.type = "button";
+      button.disabled = !canCreate || soldOut;
+      button.setAttribute("aria-label", `${label} ${product.name}`);
+      button.addEventListener("click", () => {
+        input.value = String(Math.min(max, Math.max(0, (Number.parseInt(input.value, 10) || 0) + delta)));
+        updateSummary();
+      });
+      return button;
+    };
+    const stepper = el("div", "stepper");
+    stepper.append(step(-1, "Remove one", "\u2212"), input, step(1, "Add one", "+"));
+
+    const bottom = el("div", "product-bottom");
+    bottom.append(el("span", "price", money.format(product.unitPrice)), stepper);
+
+    card.append(top, el("div", "product-name", product.name), el("div", "product-sku", product.sku), stockLabel(product), bottom);
+    grid.append(card);
   }
   updateSummary();
   renderInventory();
 }
 
-function selectedItems() {
-  return [...document.querySelectorAll("#catalog input")]
-    .map((input) => ({ sku: input.dataset.sku, quantity: Number.parseInt(input.value, 10) || 0 }))
-    .filter((item) => item.quantity > 0);
-}
-
-function updateSummary() {
-  const items = selectedItems();
-  const total = items.reduce((sum, item) =>
-    sum + item.quantity * (products.find((product) => product.sku === item.sku)?.unitPrice ?? 0), 0);
-  // An order is in one currency; the API refuses a mix.
-  const currency = products.find((product) => product.sku === items[0]?.sku)?.currency ?? products[0]?.currency;
-  $("order-total").textContent = currency ? money(total, currency) : "";
-  $("place-order").disabled = !canCreate || total === 0;
-}
-
+// While the inventory service is down, the API answers with the last stock it fetched, and says when.
+// The page then checks again every 30 seconds until it's back.
+let stockRetry = null;
 async function loadProducts() {
   const response = await send("GET", "/api/products");
   products = (response ? await response.json() : null) ?? [];
-  $("stock-banner").hidden = true;
+  const asOf = response?.headers.get("X-Products-As-Of");
+  $("stock-banner").textContent = asOf
+    ? `Stock as of ${dateTime.format(new Date(asOf))}: the inventory service is unavailable. You can still order; stock is confirmed when the order is processed.`
+    : "";
+  $("stock-banner").hidden = !asOf;
+  clearTimeout(stockRetry);
+  stockRetry = asOf ? setTimeout(() => loadProducts().catch(() => {}), 30000) : null;
   renderCatalog();
-}
-
-async function placeOrder() {
-  $("place-order").disabled = true;
-  try {
-    const accepted = await api("POST", "/api/orders", { items: selectedItems() });
-    pending.set(accepted.orderId, { ...accepted, status: "Submitted" });
-    document.querySelectorAll("#catalog input").forEach((input) => { input.value = "0"; });
-    updateSummary();
-    setMessage(`Order ${accepted.orderId.slice(0, 8)} submitted for ${money(accepted.total, accepted.currency)}.`, "ok");
-    renderOrders();
-    trackOrder(accepted.orderId);
-  } catch (error) {
-    setMessage(error.status === 403
-      ? "You are not allowed to place orders (requires the Orders.Create role)."
-      : `Could not place the order: ${error.message}`, "error");
-    updateSummary();
-  }
 }
 
 // ---- Inventory (restock) ----------------------------------------------------------------------
@@ -213,20 +272,24 @@ function renderInventory() {
   const body = $("inventory");
   body.replaceChildren();
   for (const product of products) {
-    const input = el("input");
+    const input = el("input", "qty");
     input.type = "number";
     input.min = "1";
     input.max = "10000";
     input.value = "10";
+    input.inputMode = "numeric";
     input.setAttribute("aria-label", `Units of ${product.name} to add`);
 
-    const button = el("button", "Restock");
+    const button = el("button", "button secondary", "Restock");
     button.type = "button";
     button.addEventListener("click", () => restock(product, Number.parseInt(input.value, 10) || 0, button));
 
-    const form = el("span");
+    const form = el("div", "restock-form");
     form.append(input, button);
-    body.append(row([product.name, product.sku, stockText(product), String(product.reorderLevel), form]));
+
+    const row = el("tr");
+    row.append(cell(product.name), cell(product.sku, "mono"), cell(stockLabel(product), "num"), cell(String(product.reorderLevel), "num"), cell(form, "num"));
+    body.append(row);
   }
 }
 
@@ -239,35 +302,122 @@ async function restock(product, quantity, button) {
     }
     products = products.map((candidate) => candidate.sku === updated.sku ? updated : candidate);
     renderCatalog();
-    setMessage(`Added ${quantity} \u00d7 ${updated.name}; ${updated.available} available.`, "ok");
+    toast(`Added ${quantity} \u00d7 ${updated.name}; ${updated.available} available.`, "ok");
   } catch (error) {
-    setMessage(error.status === 403
+    toast(error.status === 403
       ? "You are not allowed to restock (requires the Inventory.Manage role)."
       : `Could not restock: ${error.message}`, "error");
     button.disabled = false;
   }
 }
 
-// ---- Orders -----------------------------------------------------------------------------------
+function selectedItems() {
+  return [...document.querySelectorAll("#catalog input.qty")]
+    .map((input) => ({ sku: input.dataset.sku, quantity: Number.parseInt(input.value, 10) || 0 }))
+    .filter((item) => item.quantity > 0);
+}
+
+function updateSummary() {
+  const items = selectedItems();
+  const lines = $("summary-lines");
+  lines.replaceChildren();
+  let total = 0;
+  for (const item of items) {
+    const product = products.find((candidate) => candidate.sku === item.sku);
+    const lineTotal = item.quantity * (product?.unitPrice ?? 0);
+    total += lineTotal;
+    const name = el("span");
+    name.append(el("span", "line-qty", `${item.quantity}\u00d7`), document.createTextNode(product?.name ?? item.sku));
+    const line = el("li");
+    line.append(name, el("span", "", money.format(lineTotal)));
+    lines.append(line);
+  }
+  document.querySelectorAll("#catalog .product").forEach((card) => {
+    card.classList.toggle("selected", items.some((item) => item.sku === card.dataset.sku));
+  });
+  $("summary-empty").hidden = items.length > 0;
+  $("order-total").textContent = money.format(total);
+  $("place-order").disabled = !canCreate || total === 0;
+}
+
+async function placeOrder() {
+  const items = selectedItems();
+  $("place-order").disabled = true;
+  setMessage("Placing order\u2026", "");
+  try {
+    const accepted = await api("POST", "/api/orders", { items });
+    pending.set(accepted.orderId, { ...accepted, status: "Submitted" });
+    document.querySelectorAll("#catalog input.qty").forEach((input) => { input.value = "0"; });
+    updateSummary();
+    const text = `Order ${accepted.orderId.slice(0, 8)} submitted for ${money.format(accepted.total)}.`;
+    setMessage(text, "ok");
+    toast(`${text} We'll update its status here.`, "ok");
+    renderOrders(accepted.orderId);
+    trackOrder(accepted.orderId);
+  } catch (error) {
+    const text = error.status === 403
+      ? "You are not allowed to place orders (requires the Orders.Create role)."
+      : `Could not place the order: ${error.message}`;
+    setMessage(text, "error");
+    toast(text, "error");
+    updateSummary();
+  }
+}
+
+// ---- Orders list ------------------------------------------------------------------------------
 
 const pending = new Map();
 let processed = [];
 
-function renderOrders() {
+function renderSkeleton() {
+  const body = $("orders");
+  body.replaceChildren();
+  for (let i = 0; i < 3; i++) {
+    const row = el("tr", "skeleton");
+    for (let j = 0; j < 5; j++) {
+      const td = el("td");
+      td.append(el("span"));
+      row.append(td);
+    }
+    body.append(row);
+  }
+}
+
+function renderOrders(freshId) {
   const known = new Set(processed.map((order) => order.orderId));
   const inFlight = [...pending.values()].filter((order) => !known.has(order.orderId));
-  const orders = [...inFlight, ...processed].sort((a, b) => new Date(b.placedAt) - new Date(a.placedAt));
+  const rows = [...inFlight, ...processed].sort((a, b) => new Date(b.placedAt) - new Date(a.placedAt));
 
   const body = $("orders");
   body.replaceChildren();
-  for (const order of orders) {
-    const items = order.lines.map((line) => `${line.quantity} \u00d7 ${line.productName}`).join(", ");
-    const status = order.status === "Rejected" && order.statusReason ? `Rejected: ${order.statusReason}` : order.status;
-    const tr = row([order.orderId.slice(0, 8), items, money(order.total, order.currency), status, dateTime.format(new Date(order.placedAt))]);
-    tr.dataset.orderId = order.orderId;
-    body.append(tr);
+  for (const order of rows) {
+    const row = el("tr", order.orderId === freshId ? "fresh" : "");
+    row.dataset.orderId = order.orderId;
+
+    const shown = order.lines.slice(0, 2).map((line) => `${line.quantity} \u00d7 ${line.productName}`).join(", ");
+    const items = el("span", "order-items", shown);
+    if (order.lines.length > 2) {
+      items.append(el("span", "more", ` +${order.lines.length - 2} more`));
+    }
+
+    const statusText = order.status === "Rejected" && order.statusReason ? `Rejected: ${order.statusReason}` : order.status;
+    const status = el("span", `status ${order.status.toLowerCase()}`, statusText);
+    const placed = cell(timeAgo(order.placedAt));
+    placed.title = dateTime.format(new Date(order.placedAt));
+
+    row.append(cell(`#${order.orderId.slice(0, 8)}`, "mono"), cell(items), cell(money.format(order.total), "num"), cell(status), placed);
+    body.append(row);
   }
-  $("orders-empty").hidden = orders.length > 0;
+
+  $("orders-empty").hidden = rows.length > 0;
+  $("history-count").textContent = rows.length === 1 ? "1 order" : `${rows.length} orders`;
+  $("kpi-orders").textContent = String(rows.length);
+  $("kpi-processed").textContent = String(processed.filter((order) => order.status === "Processed").length);
+  $("kpi-progress").textContent = String(inFlight.length);
+  // Rejected orders are not fulfilled, so they add nothing to the value.
+  $("kpi-value").textContent = money.format(rows
+    .filter((order) => order.status !== "Rejected")
+    .reduce((sum, order) => sum + order.total, 0));
 }
 
 async function loadOrders() {
@@ -286,10 +436,12 @@ async function trackOrder(orderId) {
     if (order) {
       pending.delete(orderId);
       processed = [order, ...processed.filter((existing) => existing.orderId !== orderId)];
-      renderOrders();
-      setMessage(order.status === "Rejected"
-        ? `Order ${orderId.slice(0, 8)} was rejected: ${order.statusReason ?? "unknown reason"}.`
-        : `Order ${orderId.slice(0, 8)} has been processed.`, order.status === "Rejected" ? "error" : "ok");
+      renderOrders(orderId);
+      if (order.status === "Rejected") {
+        toast(`Order ${orderId.slice(0, 8)} was rejected: ${order.statusReason ?? "unknown reason"}.`, "error");
+      } else {
+        toast(`Order ${orderId.slice(0, 8)} has been processed.`, "ok");
+      }
       // Stock changed with the order.
       await loadProducts().catch(() => {});
       return;
@@ -307,8 +459,8 @@ $("sign-in").addEventListener("click", () => {
 $("sign-out").addEventListener("click", () => msalApp.logoutRedirect({ account, idTokenHint: account?.idToken }));
 $("place-order").addEventListener("click", placeOrder);
 $("refresh").addEventListener("click", () => Promise.all([loadOrders(), loadProducts()])
-  .then(() => setMessage(""))
-  .catch((error) => setMessage(`Could not refresh: ${error.message}`, "error")));
+  .then(() => toast("Orders and stock refreshed."))
+  .catch((error) => toast(`Could not refresh: ${error.message}`, "error")));
 
 if (!msalApp) {
   $("sign-in").disabled = true;
@@ -322,8 +474,10 @@ if (!msalApp) {
     const me = await api("GET", "/api/me");
     canCreate = me.canCreate;
     canManageInventory = me.canManageInventory === true;
-    const access = canCreate ? "can place orders" : me.canRead ? "read-only" : "no order access";
-    $("user").textContent = `${me.name} (${access}${canManageInventory ? ", inventory manager" : ""})`;
+    $("user-name").textContent = me.name;
+    $("user-avatar").textContent = initials(me.name);
+    const access = canCreate ? "Can place orders" : me.canRead ? "Read-only access" : "No order access";
+    $("user-role").textContent = canManageInventory ? `${access} \u00b7 Inventory manager` : access;
     $("user-area").hidden = false;
 
     if (!me.canRead) {
@@ -338,6 +492,7 @@ if (!msalApp) {
       $("stock-banner").textContent = `Products are unavailable: ${error.message} Your orders are below; try Refresh shortly.`;
       $("stock-banner").hidden = false;
     });
+    renderSkeleton();
     showView("orders-view");
     if (me.canRead) {
       await loadOrders();

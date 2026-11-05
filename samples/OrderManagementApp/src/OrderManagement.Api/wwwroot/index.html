@@ -8,58 +8,143 @@
   <link rel="stylesheet" href="css/site.css">
 </head>
 <body>
-  <header>
-    <strong>Contoso Field Supply</strong>
-    <span id="platform" class="muted"></span>
-    <span id="user-area" hidden>
-      <span id="user"></span>
-      <button id="sign-out" type="button">Sign out</button>
-    </span>
-  </header>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
 
-  <main>
-    <p id="loading-view" class="muted">Loading&hellip;</p>
+  <section id="loading-view" class="loading-view">
+    <div class="spinner" aria-hidden="true"></div>
+    <p class="muted">Loading Contoso Field Supply&hellip;</p>
+  </section>
 
-    <section id="signin-view" hidden>
-      <h1>Sign in</h1>
-      <p>Sign in with your organization account to place and track supply orders.</p>
-      <button id="sign-in" type="button" class="primary">Sign in</button>
-      <p id="signin-error" class="alert error" role="alert" hidden></p>
-    </section>
-
-    <div id="orders-view" hidden>
-      <p id="role-banner" class="alert" role="status" hidden></p>
-      <p id="stock-banner" class="alert" role="status" hidden></p>
-      <p id="message" role="status" hidden></p>
-
-      <section>
-        <h2>New order</h2>
-        <table>
-          <thead><tr><th>Product</th><th>SKU</th><th>Price</th><th>In stock</th><th>Quantity</th></tr></thead>
-          <tbody id="catalog"></tbody>
-        </table>
-        <p>Total <strong id="order-total">$0.00</strong>
-          <button id="place-order" type="button" class="primary" disabled>Place order</button></p>
-      </section>
-
-      <section>
-        <h2>Your orders <button id="refresh" type="button">Refresh</button></h2>
-        <table>
-          <thead><tr><th>Order</th><th>Items</th><th>Total</th><th>Status</th><th>Placed</th></tr></thead>
-          <tbody id="orders"></tbody>
-        </table>
-        <p id="orders-empty" class="muted" hidden>No orders yet.</p>
-      </section>
-
-      <section id="inventory-panel" hidden>
-        <h2>Inventory</h2>
-        <table>
-          <thead><tr><th>Product</th><th>SKU</th><th>Available</th><th>Reorder level</th><th>Restock</th></tr></thead>
-          <tbody id="inventory"></tbody>
-        </table>
-      </section>
+  <section id="signin-view" class="signin-layout" hidden>
+    <div class="signin-hero">
+      <div class="brand brand-light">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#ffffff" fill-opacity="0.16"/><path d="M9 21.5 16 9l7 12.5H9Z" fill="none" stroke="#ffffff" stroke-width="2.2" stroke-linejoin="round"/><path d="M16 15v3.2" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round"/></svg>
+        <span>Contoso Field Supply</span>
+      </div>
+      <div class="hero-copy">
+        <h1>Emergency supplies, ordered in minutes.</h1>
+        <p>Order power, communications and water equipment for any site, and follow every order until it is fulfilled.</p>
+        <ul class="hero-points">
+          <li>Sign in once with your organization account</li>
+          <li>Live status from submitted to processed</li>
+          <li>Runs in Azure and on site on Azure Local</li>
+        </ul>
+      </div>
+      <p class="hero-foot">&copy; Contoso Ltd. &middot; Demo application</p>
     </div>
-  </main>
+    <div class="signin-panel">
+      <div class="signin-card">
+        <span id="signin-env" class="chip" hidden></span>
+        <h2>Welcome back</h2>
+        <p class="muted">Sign in to place and track supply orders.</p>
+        <button id="sign-in" type="button" class="button primary large wide">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></svg>
+          <span>Sign in with your organization account</span>
+        </button>
+        <p id="signin-error" class="alert error" role="alert" hidden></p>
+        <p class="fine-print">Secured by <strong id="idp-name"></strong>. Your password is never seen by this app.</p>
+      </div>
+    </div>
+  </section>
+
+  <div id="orders-view" class="app" hidden>
+    <header class="topbar">
+      <div class="brand">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#0f6cbd"/><path d="M9 21.5 16 9l7 12.5H9Z" fill="none" stroke="#ffffff" stroke-width="2.2" stroke-linejoin="round"/><path d="M16 15v3.2" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round"/></svg>
+        <span>Contoso Field Supply</span>
+      </div>
+      <nav class="nav" aria-label="Main"><span class="nav-link active" aria-current="page">Orders</span></nav>
+      <span id="env-badge" class="env-badge" hidden></span>
+      <div id="user-area" class="user-area" hidden>
+        <span id="user-avatar" class="avatar" aria-hidden="true"></span>
+        <span class="user-meta">
+          <span id="user-name" class="user-name"></span>
+          <span id="user-role" class="user-role"></span>
+        </span>
+        <button id="sign-out" type="button" class="button ghost">Sign out</button>
+      </div>
+    </header>
+
+    <main class="content">
+      <div class="page-header">
+        <div>
+          <h1>Orders</h1>
+          <p class="muted">Place emergency supply orders and follow them through fulfilment.</p>
+        </div>
+        <button id="refresh" type="button" class="button secondary">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>
+          <span>Refresh</span>
+        </button>
+      </div>
+
+      <p id="role-banner" class="alert warning" role="status" hidden></p>
+      <p id="stock-banner" class="alert warning" role="status" hidden></p>
+
+      <section class="kpis" aria-label="Order statistics">
+        <div class="kpi"><span class="kpi-label">Orders</span><span id="kpi-orders" class="kpi-value">0</span></div>
+        <div class="kpi"><span class="kpi-label">Processed</span><span id="kpi-processed" class="kpi-value ok">0</span></div>
+        <div class="kpi"><span class="kpi-label">In progress</span><span id="kpi-progress" class="kpi-value pending">0</span></div>
+        <div class="kpi"><span class="kpi-label">Total value</span><span id="kpi-value" class="kpi-value">$0.00</span></div>
+      </section>
+
+      <div class="workspace">
+        <section class="panel" aria-labelledby="catalog-title">
+          <div class="panel-header">
+            <h2 id="catalog-title">New order</h2>
+            <span class="muted small">Prices set by Contoso &middot; USD</span>
+          </div>
+          <div id="catalog" class="product-grid"></div>
+        </section>
+
+        <aside class="panel summary" aria-labelledby="summary-title">
+          <h2 id="summary-title">Order summary</h2>
+          <ul id="summary-lines" class="summary-lines"></ul>
+          <p id="summary-empty" class="muted small">Add products to start an order.</p>
+          <div class="summary-total"><span>Total</span><strong id="order-total">$0.00</strong></div>
+          <button id="place-order" type="button" class="button primary large wide" disabled>Place order</button>
+          <p id="order-message" class="inline-status" role="status" hidden></p>
+          <p class="fine-print">Orders are queued instantly and processed in the background.</p>
+        </aside>
+      </div>
+
+      <section class="panel" aria-labelledby="history-title">
+        <div class="panel-header">
+          <h2 id="history-title">Order history</h2>
+          <span id="history-count" class="muted small"></span>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr><th>Order</th><th>Items</th><th class="num">Total</th><th>Status</th><th>Placed</th></tr>
+            </thead>
+            <tbody id="orders"></tbody>
+          </table>
+        </div>
+        <div id="orders-empty" class="empty" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5 12 3l8.5 4.5v9L12 21l-8.5-4.5z"/><path d="M3.5 7.5 12 12l8.5-4.5M12 12v9"/></svg>
+          <strong>No orders yet</strong>
+          <span class="muted">Orders you place will appear here with their live status.</span>
+        </div>
+      </section>
+
+      <section id="inventory-panel" class="panel" aria-labelledby="inventory-title" hidden>
+        <div class="panel-header">
+          <h2 id="inventory-title">Inventory</h2>
+          <span class="muted small">Restock products &middot; requires Inventory.Manage</span>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr><th>Product</th><th>SKU</th><th class="num">Available</th><th class="num">Reorder level</th><th class="num">Restock</th></tr>
+            </thead>
+            <tbody id="inventory"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer"><span id="footer-text"></span></footer>
+  </div>
 
   <script src="lib/msal-browser/msal-browser.min.js"></script>
   <script type="module" src="js/app.js"></script>
