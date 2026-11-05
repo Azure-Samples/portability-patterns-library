@@ -45,6 +45,9 @@ jobs:
           curl -fsSLo "$HOME/.local/bin/bicep" "https://github.com/Azure/bicep/releases/download/$BICEP_VERSION/bicep-linux-x64"
           printf '%s  %s\n' "$RADIUS_SHA256" "$HOME/.local/bin/rad" "$BICEP_SHA256" "$HOME/.local/bin/bicep" | sha256sum --check --strict
           chmod +x "$HOME/.local/bin/rad" "$HOME/.local/bin/bicep"
+          # rad runs Bicep from its own folder, where its install script would have put it.
+          mkdir -p "$HOME/.rad/bin"
+          ln -s "$HOME/.local/bin/bicep" "$HOME/.rad/bin/bicep"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       # The app and Recipes use the Portability.Messaging/messageQueues type through this extension.
