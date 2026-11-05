@@ -8,6 +8,9 @@ Use it as a template for moving your own app: [Move your app in five steps](./do
 
 ## Architecture
 
+For the design, its key decisions and what needs Azure, open
+[architecture.html](./docs/architecture.html) in a browser.
+
 Users place orders in a browser app. The **API** prices them from the **inventory** service and
 publishes them to a **queue**. The **processor** reserves stock, archives each order to **object
 storage** and records it in **SQL**.

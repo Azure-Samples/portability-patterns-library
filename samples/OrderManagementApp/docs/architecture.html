@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Order Management: architecture and key decisions</title>
+<style>
+  :root { --ink:#1b1f24; --muted:#57606a; --line:#d0d7de; --bg:#f6f8fa; --azure:#0a5fbf; --local:#2f7d32; --accent:#8250df; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.55 "Segoe UI", system-ui, -apple-system, sans-serif; color: var(--ink); background: #fff; }
+  main { max-width: 1080px; margin: 0 auto; padding: 32px 24px 64px; }
+  h1 { font-size: 2rem; margin: 0 0 4px; }
+  h2 { font-size: 1.35rem; margin: 48px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+  p.lead { font-size: 1.1rem; color: var(--muted); margin: 0 0 20px; }
+  .tag { display: inline-block; font-size: .78rem; font-weight: 600; padding: 2px 8px; border-radius: 10px; color: #fff; }
+  .az { background: var(--azure); } .al { background: var(--local); }
+  .summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .card { border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; background: #fff; }
+  .card h3 { margin: 0 0 6px; font-size: 1rem; }
+  .card p { margin: 0; color: var(--muted); font-size: .95rem; }
+  figure { margin: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); padding: 12px; }
+  figcaption { color: var(--muted); font-size: .9rem; margin-top: 6px; }
+  svg { width: 100%; height: auto; display: block; }
+  .layers { display: grid; grid-template-columns: 1fr 40px 1fr; align-items: stretch; gap: 0; }
+  .layer { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; background: #fff; }
+  .layer h3 { margin: 0 0 4px; font-size: 1rem; }
+  .layer ul { margin: 6px 0 0; padding-left: 18px; }
+  .arrow { display: flex; align-items: center; justify-content: center; font-size: 1.5rem; color: var(--muted); }
+  .packs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .pack-az { border-top: 4px solid var(--azure); } .pack-al { border-top: 4px solid var(--local); }
+  table { width: 100%; border-collapse: collapse; font-size: .95rem; }
+  th, td { border-bottom: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
+  thead th { background: var(--bg); }
+  tbody th { font-weight: 600; white-space: nowrap; }
+  ol.flow { counter-reset: s; list-style: none; padding: 0; margin: 0; }
+  ol.flow li { counter-increment: s; position: relative; padding: 6px 0 6px 40px; }
+  ol.flow li::before { content: counter(s); position: absolute; left: 0; top: 5px; width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: #fff; font-weight: 600; font-size: .85rem; display: flex; align-items: center; justify-content: center; }
+  .decisions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .decision { border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 6px; padding: 12px 14px; }
+  .decision h3 { margin: 0 0 6px; font-size: 1rem; }
+  .decision p { margin: 4px 0; font-size: .93rem; }
+  .decision .why { color: var(--ink); }
+  .decision .cost { color: var(--muted); }
+  .k { font-weight: 600; }
+  code { font-family: Consolas, "Cascadia Code", monospace; font-size: .9em; background: var(--bg); padding: 1px 4px; border-radius: 4px; }
+  .note { border-left: 4px solid #bf8700; background: #fff8c5; padding: 10px 14px; border-radius: 4px; }
+  @media (max-width: 800px) { .summary, .decisions, .packs { grid-template-columns: 1fr; } .layers { grid-template-columns: 1fr; } .arrow { transform: rotate(90deg); } }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Order Management</h1>
+<p class="lead">One app, written for Azure, that runs on <span class="tag az">Azure</span> with PaaS services and on
+<span class="tag al">Azure Local</span> with everything on site, and keeps running there when the link to Azure drops.</p>
+
+<div class="summary">
+  <div class="card"><h3>Same app on both</h3><p>One app definition and the same container images. Only the platform's Recipe Pack differs.</p></div>
+  <div class="card"><h3>Works offline on site</h3><p>Sign-in, images, certificates, credentials and monitoring stay on site.</p></div>
+  <div class="card"><h3>Production patterns</h3><p>Scoped service identities, TLS-protected backing services, replicated services, backups, retries and dead-lettering.</p></div>
+</div>
+
+<h2>1. Architecture</h2>
+<figure>
+<svg viewBox="0 0 980 440" role="img" aria-labelledby="archTitle">
+  <title id="archTitle">Users sign in, the API publishes orders to a queue, the processor reserves stock with inventory, archives the order and records it in SQL.</title>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#57606a"/></marker>
+    <style>
+      .box { fill:#fff; stroke:#8c959f; stroke-width:1.2; rx:8; }
+      .svc { fill:#f3eefc; stroke:#8250df; }
+      .data { fill:#eef6ff; stroke:#0a5fbf; }
+      .t { font: 600 15px "Segoe UI", sans-serif; fill:#1b1f24; text-anchor:middle; }
+      .s { font: 12px "Segoe UI", sans-serif; text-anchor:middle; }
+      .az { fill:#0a5fbf; } .al { fill:#2f7d32; }
+      .ln { stroke:#57606a; stroke-width:1.6; fill:none; marker-end:url(#a); }
+      .dash { stroke-dasharray:5 4; }
+      .lb { font: 12px "Segoe UI", sans-serif; fill:#57606a; }
+      .n { font: 700 11px "Segoe UI", sans-serif; fill:#fff; text-anchor:middle; }
+    </style>
+  </defs>
+
+  <rect class="box" x="20" y="30" width="200" height="70"/>
+  <text class="t" x="120" y="57">Identity provider</text>
+  <text class="s az" x="120" y="76">Entra ID</text>
+  <text class="s al" x="120" y="92">Keycloak + Active Directory</text>
+
+  <rect class="box" x="40" y="190" width="160" height="60"/>
+  <text class="t" x="120" y="218">Browser app</text>
+  <text class="s" x="120" y="236" fill="#57606a">users, inventory admins</text>
+
+  <rect class="box svc" x="260" y="185" width="150" height="70"/>
+  <text class="t" x="335" y="214">API</text>
+  <text class="s" x="335" y="234" fill="#57606a">prices, publishes orders</text>
+
+  <rect class="box data" x="460" y="185" width="150" height="70"/>
+  <text class="t" x="535" y="210">Queue</text>
+  <text class="s az" x="535" y="228">Service Bus</text>
+  <text class="s al" x="535" y="244">RabbitMQ (3 nodes)</text>
+
+  <rect class="box svc" x="660" y="185" width="140" height="70"/>
+  <text class="t" x="730" y="214">Processor</text>
+  <text class="s" x="730" y="234" fill="#57606a">reserve, archive, record</text>
+
+  <rect class="box data" x="830" y="90" width="140" height="70"/>
+  <text class="t" x="900" y="115">Object storage</text>
+  <text class="s az" x="900" y="133">Blob Storage</text>
+  <text class="s al" x="900" y="149">SeaweedFS (S3)</text>
+
+  <rect class="box data" x="830" y="290" width="140" height="70"/>
+  <text class="t" x="900" y="315">SQL: orders</text>
+  <text class="s az" x="900" y="333">Azure SQL</text>
+  <text class="s al" x="900" y="349">SQL Server</text>
+
+  <rect class="box svc" x="460" y="345" width="150" height="70"/>
+  <text class="t" x="535" y="374">Inventory</text>
+  <text class="s" x="535" y="394" fill="#57606a">owns stock</text>
+
+  <rect class="box data" x="225" y="345" width="185" height="70"/>
+  <text class="t" x="317" y="370">PostgreSQL: stock</text>
+  <text class="s az" x="317" y="388">Azure Database for PostgreSQL</text>
+  <text class="s al" x="317" y="404">CloudNativePG (3 instances)</text>
+
+  <path class="ln" d="M120,190 L120,102"/>
+  <circle cx="108" cy="146" r="9" fill="#8250df"/><text class="n" x="108" y="150">1</text>
+  <text class="lb" x="128" y="150">sign in</text>
+
+  <path class="ln" d="M200,220 L258,220"/>
+  <circle cx="229" cy="205" r="9" fill="#8250df"/><text class="n" x="229" y="209">2</text>
+
+  <path class="ln" d="M410,220 L458,220"/>
+  <circle cx="434" cy="205" r="9" fill="#8250df"/><text class="n" x="434" y="209">3</text>
+
+  <path class="ln" d="M610,220 L658,220"/>
+  <circle cx="634" cy="205" r="9" fill="#8250df"/><text class="n" x="634" y="209">4</text>
+
+  <path class="ln" d="M700,255 L585,343"/>
+  <circle cx="655" cy="300" r="9" fill="#8250df"/><text class="n" x="655" y="304">5</text>
+  <text class="lb" x="668" y="304">reserve stock</text>
+
+  <path class="ln" d="M800,205 L828,140"/>
+  <circle cx="800" cy="170" r="9" fill="#8250df"/><text class="n" x="800" y="174">6</text>
+
+  <path class="ln" d="M800,240 L828,300"/>
+  <circle cx="800" cy="275" r="9" fill="#8250df"/><text class="n" x="800" y="279">7</text>
+
+  <path class="ln dash" d="M360,255 L480,343"/>
+  <text class="lb" x="330" y="300" text-anchor="end">prices, restock</text>
+
+  <path class="ln" d="M460,380 L412,380"/>
+</svg>
+<figcaption>Blue: Azure. Green: Azure Local. Purple: the app's own services, the same images on both.</figcaption>
+</figure>
+
+<h2>2. How one app runs on two platforms</h2>
+<div class="layers">
+  <div class="layer">
+    <h3>The app definition, the same everywhere</h3>
+    <p><code>deploy/app.bicep</code> declares what the app needs, not how it's provided:</p>
+    <ul>
+      <li>three containers: API, processor, inventory</li>
+      <li>a queue, object storage, a SQL and a PostgreSQL database</li>
+      <li>connections between them, and one HTTPS route</li>
+    </ul>
+  </div>
+  <div class="arrow" aria-hidden="true">&#8594;</div>
+  <div class="packs">
+    <div class="layer pack-az">
+      <h3><span class="tag az">Azure</span> Recipe Pack</h3>
+      <ul><li>Service Bus, Blob, Azure SQL, PostgreSQL flexible server</li><li>Entra Workload ID</li><li>App routing ingress</li></ul>
+    </div>
+    <div class="layer pack-al">
+      <h3><span class="tag al">Azure Local</span> Recipe Pack</h3>
+      <ul><li>RabbitMQ, SeaweedFS, SQL Server, CloudNativePG</li><li>Keycloak tokens</li><li>NGINX ingress, site CA</li></ul>
+    </div>
+  </div>
+</div>
+<p>Radius applies the pack's Recipes when the app is deployed and passes each service its connection values, such as
+the endpoint and TLS setting, as environment variables. The services read them and use the matching client, so the
+business logic has no platform switch.</p>
+
+<table>
+  <thead><tr><th>Capability</th><th><span class="tag az">Azure</span></th><th><span class="tag al">Azure Local</span></th></tr></thead>
+  <tbody>
+    <tr><th>Kubernetes</th><td>AKS</td><td>AKS enabled by Arc</td></tr>
+    <tr><th>Queue</th><td>Azure Service Bus</td><td>RabbitMQ, quorum queues on 3 nodes</td></tr>
+    <tr><th>Order archive</th><td>Azure Blob Storage</td><td>SeaweedFS, S3 API, 2 copies of every object</td></tr>
+    <tr><th>Orders database</th><td>Azure SQL Database</td><td>SQL Server container (Express)</td></tr>
+    <tr><th>Stock database</th><td>Azure Database for PostgreSQL</td><td>CloudNativePG: primary + 2 replicas, backed up on site</td></tr>
+    <tr><th>User sign-in</th><td>Microsoft Entra ID</td><td>Keycloak, federated to Active Directory</td></tr>
+    <tr><th>Service identity</th><td>Entra Workload ID, no secrets</td><td>Kubernetes service account tokens exchanged with Keycloak</td></tr>
+    <tr><th>Certificates</th><td>Let's Encrypt, or a private CA</td><td>Site CA, renewed by cert-manager in the cluster</td></tr>
+    <tr><th>Cloud secrets (optional)</th><td>Azure Key Vault as the source</td><td>Secret Store extension syncs selected values into Kubernetes Secrets</td></tr>
+    <tr><th>Monitoring</th><td>Application Insights, alerts</td><td>Prometheus, Grafana, Loki, Tempo, alerts</td></tr>
+    <tr><th>Images</th><td>Azure Container Registry</td><td>ACR connected registry inside the cluster</td></tr>
+  </tbody>
+</table>
+
+<h2>3. How an order is processed</h2>
+<ol class="flow">
+  <li>The user signs in and gets an access token with their roles (for example <code>Orders.Create</code>).</li>
+  <li>The API checks the role, prices the order from the inventory service and returns <em>202 Accepted</em>.</li>
+  <li>The API publishes the order; the broker confirms it has it.</li>
+  <li>The queue delivers the order to one of the processor's replicas.</li>
+  <li>The processor reserves the stock with the inventory service, using its own token, not the user's.</li>
+  <li>It archives the order as JSON in object storage.</li>
+  <li>It records the order in SQL as <strong>Processed</strong>, or <strong>Rejected</strong> when stock ran out.</li>
+</ol>
+<p>A failure partway is retried 5 times with backoff, then the queue redelivers the order. After 10 deliveries it moves
+to a dead-letter queue, and its stock is released unless the order was already recorded.</p>
+
+<h2>4. Key decisions</h2>
+<div class="decisions">
+  <div class="decision">
+    <h3>Declare capabilities, bind them per platform</h3>
+    <p class="why"><span class="k">Why:</span> the same .NET containers run on AKS on both targets. The app says
+      "a queue" and "a SQL database"; Radius Recipe Packs decide Service Bus or RabbitMQ. Moving platforms changes
+      the pack, not the code.</p>
+    <p class="cost"><span class="k">Trade-off:</span> each capability needs one Recipe per platform, kept to the same
+      outputs.</p>
+  </div>
+  <div class="decision">
+    <h3>Operators run the stateful services on site</h3>
+    <p class="why"><span class="k">Why:</span> CloudNativePG and the RabbitMQ Cluster Operator replicate, fail over and
+      back up, the job Azure PaaS does in the cloud. On the test site a PostgreSQL failover took about 26 seconds with no committed write lost.</p>
+    <p class="cost"><span class="k">Trade-off:</span> operators to install and upgrade. <code>Availability: standard</code>
+      runs one container of each instead, on smaller workers, with no backups.</p>
+  </div>
+  <div class="decision">
+    <h3>Service Bus in Azure, RabbitMQ on site</h3>
+    <p class="why"><span class="k">Why:</span> a durable broker separates order acceptance from processing.
+      Azure manages Service Bus; RabbitMQ provides the local broker, with quorum queues in the default
+      high-availability profile. Both sit behind <code>IMessageQueue</code>.</p>
+    <p class="cost"><span class="k">Trade-off:</span> the app must handle redelivery and dead-lettered messages.
+      Broker-specific features are not automatically portable.</p>
+  </div>
+  <div class="decision">
+    <h3>SQL for orders, PostgreSQL for stock</h3>
+    <p class="why"><span class="k">Why:</span> Azure SQL and local SQL Server keep the orders' SQL contract.
+      Inventory owns its PostgreSQL schema, keeping stock updates and reservations behind one service.</p>
+    <p class="cost"><span class="k">Trade-off:</span> two database engines to operate. Local SQL Server Express is
+      a single instance without configured backups; PostgreSQL replication does not make SQL Server highly available.</p>
+  </div>
+  <div class="decision">
+    <h3>Blob Storage or a local S3 archive</h3>
+    <p class="why"><span class="k">Why:</span> the processor writes order JSON through <code>IArchiveStore</code>:
+      Azure Blob Storage in the cloud, SeaweedFS's S3 API on site. The local object store also holds PostgreSQL backups.</p>
+    <p class="cost"><span class="k">Trade-off:</span> object replication protects against a server failure, not losing
+      the whole cluster. Copy archives and backups off site; the archive is not an immutable audit store.</p>
+  </div>
+  <div class="decision">
+    <h3>Nothing at run time depends on Azure</h3>
+    <p class="why"><span class="k">Why:</span> a site must keep serving users when its link drops. Images, sign-in,
+      certificates, credentials and monitoring remain available on site, including the local Active Directory.</p>
+    <p class="cost"><span class="k">Trade-off:</span> more to run on site; installs and upgrades still need the link.</p>
+  </div>
+  <div class="decision">
+    <h3>Keycloak plays Entra's role on site</h3>
+    <p class="why"><span class="k">Why:</span> users sign in with their Active Directory accounts; services exchange
+      their Kubernetes token for a Keycloak token, the same pattern as Entra Workload ID. No stored secrets for the queue
+      or service-to-service calls.</p>
+    <p class="cost"><span class="k">Trade-off:</span> two identity providers, so a user's history doesn't move between
+      platforms.</p>
+  </div>
+  <div class="decision">
+    <h3>Least privilege for every service</h3>
+    <p class="why"><span class="k">Why:</span> the API may only send, the processor only receive; only the inventory
+      service touches stock; a one-off setup job is the only database administrator. Network policies let in only the
+      traffic each service needs.</p>
+    <p class="cost"><span class="k">Trade-off:</span> more identities and grants to set up; the scripts do it.</p>
+  </div>
+  <div class="decision">
+    <h3>Designed for retries, not exactly-once</h3>
+    <p class="why"><span class="k">Why:</span> reserving, archiving and recording are idempotent per order, so a
+      redelivered order is safe. Failures retry, then dead-letter; stock is released only when the order store
+      confirms the order was not recorded.</p>
+    <p class="cost"><span class="k">Trade-off:</span> an order is accepted before it's processed; the browser polls for
+      the outcome. An uncertain final outcome needs operator reconciliation.</p>
+  </div>
+  <div class="decision">
+    <h3>Verified TLS and a site-owned certificate authority</h3>
+    <p class="why"><span class="k">Why:</span> local broker, database and object-store connections use site-CA TLS
+      with certificate verification, including replication traffic. The services call inventory over HTTPS and send
+      telemetry to the collector over TLS, with certificates cert-manager issues for each Service name and renews on
+      site; Keycloak connects to Active Directory over LDAPS.</p>
+    <p class="cost"><span class="k">Trade-off:</span> distribute CA trust, protect its private key and monitor expiry.
+      Kubelet health probes and traffic inside the monitoring stack stay plain HTTP within the cluster.</p>
+  </div>
+  <div class="decision">
+    <h3>Ingress is the application's entry point</h3>
+    <p class="why"><span class="k">Why:</span> the app declares one web route, not a platform-specific load balancer.
+      AKS app routing or the site's NGINX ingress publishes the API and browser app over HTTPS; inventory and the
+      processor remain internal services.</p>
+    <p class="cost"><span class="k">Trade-off:</span> DNS, ingress availability and certificate trust are platform
+      responsibilities. Calls between services carry their own TLS, from a CA the platform keeps in the cluster.</p>
+  </div>
+  <div class="decision">
+    <h3>Credentials made and rotated on site</h3>
+    <p class="why"><span class="k">Why:</span> local database passwords and S3 keys are generated on site and stored
+      in Kubernetes Secrets, not fetched from Azure at run time. <code>rotate-credentials.ps1</code> changes them
+      using the cluster.</p>
+    <p class="cost"><span class="k">Trade-off:</span> rotation is run by hand; restrict Secret access and back up the
+      cluster's Secrets. Kubernetes Secrets are not, by themselves, a complete vault or rotation service.</p>
+  </div>
+  <div class="decision">
+    <h3>Key Vault imports cloud secrets, not core credentials</h3>
+    <p class="why"><span class="k">Why:</span> keep secrets already owned in Azure in Key Vault. The Secret Store
+      extension uses a federated reader identity to sync selected values into Kubernetes Secrets, which consumers
+      can read locally. Nothing is synced by default; the sample's database passwords and S3 keys stay site-generated.</p>
+    <p class="cost"><span class="k">Trade-off:</span> refresh needs connectivity. During a disconnection only the last
+      synced copy is available; cloud rotations and revocations do not propagate until the site reconnects.</p>
+  </div>
+  <div class="decision">
+    <h3>A connected registry keeps images and Recipes local</h3>
+    <p class="why"><span class="k">Why:</span> ACR remains the publishing source. Its read-only connected registry
+      syncs selected images and OCI Recipes into the cluster, so kubelet and Radius can pull cached artifacts when
+      the Azure link is down, rather than relying on a node's image cache.</p>
+    <p class="cost"><span class="k">Trade-off:</span> provision local storage and sync every required repository before
+      disconnecting. New versions and uncached artifacts still require connectivity.</p>
+  </div>
+  <div class="decision">
+    <h3>Pinned versions, patched by PR</h3>
+    <p class="why"><span class="k">Why:</span> every image and chart is pinned, so a restart never pulls something new.
+      Dependabot raises a PR for each .NET and package security patch.</p>
+    <p class="cost"><span class="k">Trade-off:</span> patches have to be merged and redeployed.</p>
+  </div>
+  <div class="decision">
+    <h3>Monitoring on site, same signals</h3>
+    <p class="why"><span class="k">Why:</span> the app emits OpenTelemetry once. On Azure it goes to Application Insights;
+      locally Prometheus holds metrics, Loki logs and Tempo traces, with Grafana for investigation and alerts.
+      Trace context follows an order across the services.</p>
+    <p class="cost"><span class="k">Trade-off:</span> size storage and retention on site. Restrict Grafana to the
+      operators' group because telemetry includes customer order details.</p>
+  </div>
+</div>
+
+<h2>5. What needs Azure</h2>
+<table>
+  <thead><tr><th></th><th>Needs Azure?</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><th>Running the app</th><td>No</td><td>The sample's runtime dependencies stay on site.</td></tr>
+    <tr><th>Restarting or moving pods</th><td>No</td><td>Images come from the connected registry in the cluster.</td></tr>
+    <tr><th>Sign-in, certificates, local credential rotation</th><td>No</td><td>Keycloak + local AD, cert-manager and the site CA, Secrets in the cluster.</td></tr>
+    <tr><th>Refreshing imported Key Vault secrets</th><td>Yes</td><td>Sync needs Azure connectivity; local consumers retain the last synced copy while disconnected. Nothing is synced by default.</td></tr>
+    <tr><th>Creating the cluster, installing, upgrading</th><td>Yes</td><td>ARM through the Arc resource bridge, Helm charts and new images.</td></tr>
+    <tr><th>Azure Local itself</th><td>Every 30 days</td><td>Past that, running VMs keep running but nothing can be created or changed.</td></tr>
+  </tbody>
+</table>
+
+<h2>6. Scope</h2>
+<div class="note">
+  <p><strong>Two deployments, not a migration.</strong> Each platform starts with its own data. Moving a running
+    workload between them (orders, stock, archives, users' history across Entra ID and Keycloak) is the next iteration.</p>
+</div>
+<ul>
+  <li><strong>Not yet highly available:</strong> SQL Server on Azure Local is a single instance with no backups configured.</li>
+  <li><strong>Backups stay in the cluster:</strong> copy them off site for protection against losing the cluster.</li>
+  <li><strong>A reference sample:</strong> size, secure and test it for your own workload.</li>
+</ul>
+
+<h2>Read more</h2>
+<ul>
+  <li><a href="../README.md">README: run locally, deploy to Azure and Azure Local</a></li>
+  <li><a href="./move-your-app.md">Move your app in five steps</a></li>
+  <li><a href="./authentication.md">How authentication works</a></li>
+  <li><a href="./run-on-azure-local.md">Running on Azure Local: offline, credentials, production checklist</a></li>
+  <li><a href="../infra/azurelocal/operators/README.md">Operators on Azure Local</a></li>
+  <li><a href="../infra/azurelocal/key-vault-sync.yaml">Optional Key Vault sync: configuration example</a></li>
+  <li><a href="../scripts/infra/azurelocal/provision-ingress.ps1">Local ingress and site CA setup</a></li>
+  <li><a href="../infra/azurelocal/object-store/README.md">Object storage, replication and off-site copies</a></li>
+  <li><a href="../infra/azurelocal/observability/README.md">Local monitoring and operator access</a></li>
+</ul>
+
+</main>
+</body>
+</html>
