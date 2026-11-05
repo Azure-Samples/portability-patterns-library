@@ -1,0 +1,3 @@
+# GitHub counts files under samples/ as documentation and leaves them out of the repository's
+# languages, so CodeQL's default setup can't scan the sample's C# and JavaScript. They are code.
+samples/** linguist-documentation=false
