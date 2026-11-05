@@ -117,16 +117,15 @@ public static class ServiceCollectionExtensions
 
     /// <summary>
     /// Object storage: a blob container with the workload identity, or an S3 bucket with the keys the
-    /// platform issued, as the store's Recipe says in <c>CONNECTION_ARCHIVE_PROVIDER</c>. The S3 bucket
-    /// is created once at startup when it doesn't exist.
+    /// platform issued, as the environment's <c>Archive__Provider</c> says. The S3 bucket is created
+    /// once at startup when it doesn't exist.
     /// </summary>
     public static IServiceCollection AddOrderArchive(this IServiceCollection services, IConfiguration configuration)
     {
         services.AddWorkloadIdentity(configuration);
         ArchiveOptions.Add(services);
 
-        var connection = new ConnectionValues(configuration, ArchiveOptions.ConnectionName);
-        switch (ArchiveOptions.ParseProvider(connection))
+        switch (configuration.GetValue<ArchiveProvider?>($"{ArchiveOptions.SectionName}:Provider"))
         {
             case ArchiveProvider.S3:
                 services.AddSingleton<S3ArchiveStore>();
@@ -138,7 +137,7 @@ public static class ServiceCollectionExtensions
                 break;
             default:
                 throw new InvalidOperationException(
-                    $"{connection.Key("provider")} is not set: the object storage Recipe returns it ('azureblob' or 's3').");
+                    $"Set {ArchiveOptions.SectionName}__Provider to AzureBlob or S3: which object store backs the archive connection is the environment's choice.");
         }
 
         return services;

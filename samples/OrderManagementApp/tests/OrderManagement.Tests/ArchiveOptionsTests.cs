@@ -3,7 +3,7 @@ using OrderManagement.Shared.Configuration;
 
 namespace OrderManagement.Tests;
 
-/// <summary>How the archive connection picks and checks the object storage client.</summary>
+/// <summary>How the archive settings pick and check the object storage client.</summary>
 public sealed class ArchiveOptionsTests
 {
     [Fact]
@@ -11,7 +11,7 @@ public sealed class ArchiveOptionsTests
     {
         var options = Read(new()
         {
-            ["CONNECTION_ARCHIVE_PROVIDER"] = "azureblob",
+            ["Archive:Provider"] = "AzureBlob",
             ["CONNECTION_ARCHIVE_ENDPOINT"] = "https://account.blob.core.windows.net",
             ["CONNECTION_ARCHIVE_CONTAINERNAME"] = "orders",
             ["AZURE_CLIENT_ID"] = "00000000-0000-0000-0000-000000000001",
@@ -27,7 +27,7 @@ public sealed class ArchiveOptionsTests
     {
         var options = Read(new()
         {
-            ["CONNECTION_ARCHIVE_PROVIDER"] = "s3",
+            ["Archive:Provider"] = "S3",
             ["CONNECTION_ARCHIVE_ENDPOINT"] = "https://seaweedfs-s3.object-store.svc.cluster.local:8443",
             ["CONNECTION_ARCHIVE_CONTAINERNAME"] = "oms-azurelocal.orders",
             ["CONNECTION_ARCHIVE_ACCESSKEYID"] = "key",
@@ -54,7 +54,7 @@ public sealed class ArchiveOptionsTests
     public void Refuses_a_connection_without_an_endpoint() =>
         Assert.Throws<OptionsValidationException>(() => Read(new()
         {
-            ["CONNECTION_ARCHIVE_PROVIDER"] = "s3",
+            ["Archive:Provider"] = "S3",
             ["CONNECTION_ARCHIVE_CONTAINERNAME"] = "orders",
             ["CONNECTION_ARCHIVE_ACCESSKEYID"] = "key",
             ["CONNECTION_ARCHIVE_SECRETACCESSKEY"] = "secret"
@@ -64,7 +64,7 @@ public sealed class ArchiveOptionsTests
     public void Refuses_s3_without_both_keys() =>
         Assert.Throws<OptionsValidationException>(() => Read(new()
         {
-            ["CONNECTION_ARCHIVE_PROVIDER"] = "s3",
+            ["Archive:Provider"] = "S3",
             ["CONNECTION_ARCHIVE_ENDPOINT"] = "http://store:8333",
             ["CONNECTION_ARCHIVE_CONTAINERNAME"] = "orders",
             ["CONNECTION_ARCHIVE_ACCESSKEYID"] = "key"
@@ -74,7 +74,7 @@ public sealed class ArchiveOptionsTests
     public void Refuses_blob_storage_without_a_workload_identity() =>
         Assert.Throws<OptionsValidationException>(() => Read(new()
         {
-            ["CONNECTION_ARCHIVE_PROVIDER"] = "azureblob",
+            ["Archive:Provider"] = "AzureBlob",
             ["CONNECTION_ARCHIVE_ENDPOINT"] = "https://account.blob.core.windows.net",
             ["CONNECTION_ARCHIVE_CONTAINERNAME"] = "orders"
         }));

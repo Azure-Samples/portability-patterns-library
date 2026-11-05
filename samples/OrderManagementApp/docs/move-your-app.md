@@ -56,8 +56,9 @@ return options.Provider switch
 ```
 
 Everything else in the app sees only `IMessageQueue`. Object storage picks its client the same way,
-from `CONNECTION_ARCHIVE_PROVIDER` (`azureblob` or `s3`), which its Recipe returns. SQL picks only
-its credential; [How authentication works](./authentication.md#workloads) shows how each picks its
+from `Archive__Provider` (`AzureBlob` or `S3`), which each environment's Recipe Pack sets, since the
+built-in `Radius.Storage/objectStorage` type doesn't say which store backs it. SQL picks only its
+credential; [How authentication works](./authentication.md#workloads) shows how each picks its
 credential. [compose.yaml](../compose.yaml) sets the same variables to run the app locally.
 
 Sign-in stays an ordinary Entra app: MSAL.js in the browser and Microsoft.Identity.Web in the API.

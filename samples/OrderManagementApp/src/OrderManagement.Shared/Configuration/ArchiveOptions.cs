@@ -15,9 +15,9 @@ public enum ArchiveProvider
 /// The <c>archive</c> connection, backed by the built-in <c>Radius.Storage/objectStorage</c> Resource
 /// Type, and the client's settings from the <c>Archive</c> section.
 ///
-/// The Recipe that created the store says which it is, as <c>CONNECTION_ARCHIVE_PROVIDER</c>, the way
-/// the queue's Recipe does: <c>azureblob</c> on Azure, a blob container reached with the workload
-/// identity; <c>s3</c> on Azure Local, a bucket in the site's object store (SeaweedFS), reached with
+/// Which store backs it is the environment's choice, set by its Recipe Pack as
+/// <c>Archive__Provider</c>: <c>AzureBlob</c> on Azure, a blob container reached with the workload
+/// identity; <c>S3</c> on Azure Local, a bucket in the site's object store (SeaweedFS), reached with
 /// the S3 keys the platform issues to the services connected to it.
 /// </summary>
 public sealed class ArchiveOptions
@@ -25,7 +25,7 @@ public sealed class ArchiveOptions
     public const string ConnectionName = "archive";
     public const string SectionName = "Archive";
 
-    /// <summary><c>CONNECTION_ARCHIVE_PROVIDER</c>: which client to use, from the Recipe.</summary>
+    /// <summary><c>Archive__Provider</c>: which client to use. Required; the environment sets it.</summary>
     [Required]
     public ArchiveProvider? Provider { get; set; }
 
@@ -62,8 +62,7 @@ public sealed class ArchiveOptions
 
     public static OptionsBuilder<ArchiveOptions> Add(IServiceCollection services) =>        services.AddConnectionOptions<ArchiveOptions>(ConnectionName, SectionName, (options, values) =>
             {
-            options.Provider = ParseProvider(values);
-            options.ContainerName = values.Get("containerName");
+                options.ContainerName = values.Get("containerName");
                 options.Endpoint = values.Get("endpoint") is { } endpoint
                     ? Uri.TryCreate(endpoint, UriKind.Absolute, out var uri)
                         ? uri
@@ -77,14 +76,4 @@ public sealed class ArchiveOptions
             .Validate<WorkloadIdentity>(
                 (options, identity) => options.Provider != ArchiveProvider.AzureBlob || identity.Entra is not null,
                 "Blob storage needs the pod's Entra workload identity (AZURE_CLIENT_ID and AZURE_FEDERATED_TOKEN_FILE).");
-
-    public static ArchiveProvider? ParseProvider(ConnectionValues values) =>
-        values.Get("provider")?.ToLowerInvariant() switch
-        {
-            null => null,
-            "azureblob" => ArchiveProvider.AzureBlob,
-            "s3" => ArchiveProvider.S3,
-            var other => throw new InvalidOperationException(
-                $"{values.Key("provider")} must be 'azureblob' or 's3', not '{other}'.")
-        };
 }
