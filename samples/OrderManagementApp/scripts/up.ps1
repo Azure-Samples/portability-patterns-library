@@ -44,7 +44,7 @@ if ($SettingsPath) { $common.SettingsPath = $SettingsPath }
 
 if ($Target -eq 'AzureLocal' -and -not $SkipPreflight) {
     Write-Host "`n######## Preflight ########" -ForegroundColor Magenta
-    $preflightArgs = @{}
+    $preflightArgs = @{ Skip = $Skip }
     if ($SettingsPath) { $preflightArgs.SettingsPath = $SettingsPath }
     & (Join-Path $PSScriptRoot 'infra/azurelocal/preflight.ps1') @preflightArgs
     if ($LASTEXITCODE -ne 0) { throw 'Preflight failed. Fix the FAIL lines above and run this again.' }

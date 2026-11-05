@@ -28,7 +28,9 @@
 param(
     # Empty: scripts/settings.json.
     [string]$SettingsPath,
-    [string]$RadiusVersion = '0.60'
+    [string]$RadiusVersion = '0.60',
+    # Setup steps that won't run, as for setup-platform.ps1 -Skip; their checks are left out.
+    [string[]]$Skip = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -182,16 +184,18 @@ if ($signedIn) {
     # The KeyVault step grants the extension's identity, and you, access to the vault's secrets,
     # which takes the right to create role assignments; Contributor doesn't have it. Roles held
     # through a group count; a PIM-eligible role counts only once activated.
-    Invoke-AzureCheck 'Can create role assignments' {
-        $assignee = if ($account.user.type -eq 'servicePrincipal') { $account.user.name } else { Invoke-OmsAzShow @('ad', 'signed-in-user', 'show', '--query', 'id', '--output', 'tsv') }
-        $subscriptionScope = "/subscriptions/$($account.id)"
-        $scopes = @('/', $subscriptionScope, "$subscriptionScope/resourceGroups/$($s.ResourceGroup)")
-        $assignments = Invoke-OmsAzShow (@('role', 'assignment', 'list', '--assignee', $assignee, '--all', '--include-inherited', '--include-groups', '--output', 'json') + $sub)
-        $canAssign = @($assignments | ConvertFrom-Json |
-                Where-Object { $_.roleDefinitionName -in 'Owner', 'User Access Administrator', 'Role Based Access Control Administrator' -and
-                    ($_.scope -in $scopes -or $_.scope -like '/providers/Microsoft.Management/managementGroups/*') }) | Select-Object -First 1
-        if ($canAssign) { Add-Result Azure 'Can create role assignments' PASS "$($canAssign.roleDefinitionName) on $($canAssign.scope)" }
-        else { Add-Result Azure 'Can create role assignments' FAIL "needs Owner, User Access Administrator or Role Based Access Control Administrator on the subscription or resource group '$($s.ResourceGroup)', for the KeyVault step" }
+    if ('KeyVault' -notin $Skip) {
+        Invoke-AzureCheck 'Can create role assignments' {
+            $assignee = if ($account.user.type -eq 'servicePrincipal') { $account.user.name } else { Invoke-OmsAzShow @('ad', 'signed-in-user', 'show', '--query', 'id', '--output', 'tsv') }
+            $subscriptionScope = "/subscriptions/$($account.id)"
+            $scopes = @('/', $subscriptionScope, "$subscriptionScope/resourceGroups/$($s.ResourceGroup)")
+            $assignments = Invoke-OmsAzShow (@('role', 'assignment', 'list', '--assignee', $assignee, '--all', '--include-inherited', '--include-groups', '--output', 'json') + $sub)
+            $canAssign = @($assignments | ConvertFrom-Json |
+                    Where-Object { $_.roleDefinitionName -in 'Owner', 'User Access Administrator', 'Role Based Access Control Administrator' -and
+                        ($_.scope -in $scopes -or $_.scope -like '/providers/Microsoft.Management/managementGroups/*') }) | Select-Object -First 1
+            if ($canAssign) { Add-Result Azure 'Can create role assignments' PASS "$($canAssign.roleDefinitionName) on $($canAssign.scope)" }
+            else { Add-Result Azure 'Can create role assignments' FAIL "needs Owner, User Access Administrator or Role Based Access Control Administrator on the subscription or resource group '$($s.ResourceGroup)', for the KeyVault step (or skip it: -Skip KeyVault)" }
+        }
     }
 }
 # --- Network ------------------------------------------------------------------------------------
