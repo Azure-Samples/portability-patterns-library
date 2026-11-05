@@ -127,6 +127,9 @@ $execArguments = @(
     # kubectl reads each --exec-arg as comma-separated values, so each is quoted as one CSV field.
     '--exec-arg="{0}"' -f $_.Replace('"', '""')
 }
+# set-credentials merges into an existing entry, and a static token there would win over the exec
+# plugin, so the entry is written from scratch.
+kubectl config delete-user $ContextName 2>$null | Out-Null
 kubectl config set-credentials $ContextName --exec-api-version=client.authentication.k8s.io/v1 `
     --exec-command=kubectl @execArguments --exec-interactive-mode=Never | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Could not write the credential of context '$ContextName'." }
