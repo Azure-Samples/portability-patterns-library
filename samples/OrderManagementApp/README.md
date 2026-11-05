@@ -1,17 +1,16 @@
 # Order Management App
 
-An app written for Azure that moves to **Azure Local** without code changes. The same app
-definition and the same container images run on AKS with Azure PaaS services, and on AKS enabled by
-Arc on Azure Local, where the app keeps running when the site loses its link to Azure.
+An app written for Azure that moves to **Azure Local** without code changes. The same app definition
+and container images run on AKS with Azure PaaS services, and on AKS enabled by Arc on Azure Local,
+where the app keeps running when the site loses its link to Azure.
 
 Use it as a template for moving your own app: [Move your app in five steps](./docs/move-your-app.md).
 
 ## Architecture
 
-Users sign in to a browser app and place orders. The **API** prices each order from the
-**inventory** service and publishes it to a **queue**. The **processor** reserves the stock with the
-inventory service, archives the order as JSON in **object storage** and records it in **SQL**, as
-completed, or rejected when stock ran out. Inventory admins restock products from the same app.
+Users place orders in a browser app. The **API** prices them from the **inventory** service and
+publishes them to a **queue**. The **processor** reserves stock, archives each order to **object
+storage** and records it in **SQL**.
 
 ```mermaid
 flowchart LR
@@ -38,103 +37,56 @@ flowchart LR
     inventory --> pg
 ```
 
-Each service runs as its own identity and gets only what it needs: the API may send to the queue and
-read orders, the processor may receive, write orders and reserve stock, and only the inventory
-service touches the stock database. The services call each other with their own tokens; a user's
-token never reaches the inventory service. Network policies only let in the traffic each service
-needs.
-
 | Dependency | On Azure | On Azure Local |
 |---|---|---|
-| Queue | Azure Service Bus | RabbitMQ cluster, three nodes, run by the RabbitMQ Cluster Operator (one broker with `Availability` `standard`) |
-| Object storage | Azure Blob Storage | A bucket in the cluster's S3-compatible store (SeaweedFS), replicated across nodes |
+| Queue | Azure Service Bus | RabbitMQ |
+| Object storage | Azure Blob Storage | SeaweedFS (S3) |
 | SQL (orders) | Azure SQL Database | SQL Server container |
-| PostgreSQL (stock) | Azure Database for PostgreSQL flexible server | PostgreSQL cluster, three instances, run by the CloudNativePG operator and backed up to object storage in the cluster (one server, no backups, with `Availability` `standard`) |
-| User sign-in | Microsoft Entra ID | Keycloak, federated to the site's Active Directory |
-| How each service authenticates | Its own managed identity, through Entra Workload ID (no secrets) | Its own Kubernetes service account token, exchanged with Keycloak for the queue and the inventory service; its own database user, with a password generated on site |
-| Secrets | None: databases use Entra authentication | Database passwords and object store keys generated on site and kept in the cluster; Key Vault, through the Secret Store extension, for secrets that already live in Azure |
-| Monitoring | Application Insights, with alerts | On-site OpenTelemetry collector, Prometheus and Grafana, with alerts |
-| Images and Recipes | Azure Container Registry | ACR connected registry inside the cluster |
-| HTTPS address | Managed NGINX ingress (app routing add-on) on a public IP, `<label>.<region>.cloudapp.azure.com`, certificate from Let's Encrypt | NGINX ingress on an address from the Arc load balancer on the site network, certificate from a site CA, renewed by cert-manager in the cluster |
+| PostgreSQL (stock) | Azure Database for PostgreSQL | PostgreSQL (CloudNativePG) |
+| User sign-in | Microsoft Entra ID | Keycloak, federated to Active Directory |
+| Service identity | Entra Workload ID | Kubernetes service account tokens, exchanged with Keycloak |
+| Monitoring | Application Insights | Prometheus, Grafana, Loki, Tempo |
+| Images | Azure Container Registry | ACR connected registry in the cluster |
 
-The Azure Local column runs nothing in Azure at runtime. That is what lets the app keep working when
-the site is cut off from Azure. Its credentials are made and changed on site too.
+Each service runs as its own identity with least privilege. On Azure Local nothing runs in Azure at
+run time, so the app keeps working offline.
 
 ## Prerequisites
 
-All commands run from this folder, `samples/OrderManagementApp`.
+All commands run from this folder.
 
-**To run the app locally:**
+**Locally:** [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0), and Docker or Podman.
 
-- [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0)
-- [Docker](https://docs.docker.com/get-docker/) or [Podman](https://podman.io/docs/installation)
+**Azure:** Owner on a subscription and the right to register Entra apps;
+[azd](https://aka.ms/azd-install), [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli)
+with `kubectl` and `kubelogin` (`az aks install-cli`), [Helm](https://helm.sh/docs/intro/install/),
+[Radius CLI 0.60](https://docs.radapp.io/installation/),
+[PowerShell 7.3+](https://learn.microsoft.com/powershell/scripting/install/installing-powershell),
+and Docker or Podman.
 
-**To deploy to Azure:**
+**Azure Local:**
 
-- Owner on an Azure subscription (the template assigns roles), and the right to register apps in
-  Microsoft Entra ID.
-- [Azure Developer CLI](https://aka.ms/azd-install)
-- [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli), with `kubectl` and
-  `kubelogin` (`az aks install-cli`)
-- [Helm](https://helm.sh/docs/intro/install/)
-- [Radius CLI 0.60](https://docs.radapp.io/installation/)
-- [PowerShell 7.3 or later](https://learn.microsoft.com/powershell/scripting/install/installing-powershell)
-- Docker or Podman
-
-**To deploy to Azure Local:**
-
-- An Azure Local instance, [deployed](https://learn.microsoft.com/azure/azure-local/deploy/deployment-introduction)
-  and connected to Azure, with its custom location and a running Arc resource bridge. See the
-  [system requirements](https://learn.microsoft.com/azure/azure-local/concepts/system-requirements-23h2).
-- Free capacity on the instance for the AKS cluster: a control plane of 4 vCPUs and 6 GB, and three
-  workers. With `Availability` `high` (the default) each worker needs 4 vCPUs and 16 GB, so that the
-  other two hold every replica while one is down or being upgraded; with `standard`, 4 vCPUs and
-  8 GB each is enough. Plus storage for the in-cluster registry, the databases, the object store, the
-  queue and monitoring: about 120 GB with `high`, 80 GB with `standard`.
-- A management machine on the site network, not an Azure Local node, that can also sign in to
-  Azure, with the same tools as for Azure except azd. Microsoft recommends managing AKS on Azure
-  Local from such a
-  [client machine](https://learn.microsoft.com/azure/aks-hybrid-edge/local/aks-create-clusters-cli#install-the-azure-cli-extension)
-  rather than from the nodes. It must reach the cluster's API address directly: the Radius CLI
-  doesn't work through Arc cluster connect (`az connectedk8s proxy`).
-- Free addresses on the site network for the AKS cluster: its control plane, a pool for the nodes and a
-  small range for the load balancer, of at least two addresses: one for the app, one for Keycloak.
-- The site's Active Directory, with the app's groups and a bind account for Keycloak. See
-  [Connect your Active Directory](./docs/authentication.md#connect-your-active-directory).
-- Contributor and User Access Administrator on the subscription, and the right to create groups in
-  Entra ID.
+- An [Azure Local](https://learn.microsoft.com/azure/azure-local/deploy/deployment-introduction)
+  instance connected to Azure, with a custom location.
+- Room for the AKS cluster: a 4 vCPU / 6 GB control plane and three 4 vCPU workers, 16 GB each
+  (8 GB with `Availability` `standard`), and about 120 GB of storage (80 GB with `standard`).
+- A management machine on the site network that can sign in to Azure, with the Azure tools above
+  except azd.
+- Free addresses on the site network, Active Directory with a bind account for Keycloak, and
+  Contributor and User Access Administrator on the subscription. See
+  [Azure Local settings](./docs/azure-local-settings.md).
 
 ## Run the app locally
-
-The app runs with RabbitMQ, SQL Server, PostgreSQL, SeaweedFS and Keycloak in containers: the same
-services as on Azure Local, with no cluster and no Radius.
 
 ```powershell
 dotnet dev-certs https --trust
 dotnet dev-certs https --export-path local/certs/localhost.crt --format Pem --no-password
-$env:LOCAL_PASSWORD = '<a password for the local containers>'   # or LOCAL_PASSWORD=... in a .env file here
+$env:LOCAL_PASSWORD = '<at least 8 characters, upper and lower case and digits>'
 docker compose up --build
 ```
 
-`LOCAL_PASSWORD` needs at least 8 characters with upper and lower case letters and digits; SQL
-Server refuses weaker ones. Every port is published on 127.0.0.1 only.
-
-On Linux and macOS, also run `chmod 644 local/certs/localhost.*` before `docker compose up`, so the
-Keycloak container can read the certificate.
-
-Open http://localhost:8080 and sign in as `demo`, password `demo`, to place orders, or as `manager`,
-password `manager`, to restock.
-
-The build downloads packages from nuget.org and images from mcr.microsoft.com, docker.io and quay.io.
-If your network blocks them, ask for access, or point the build at your own NuGet feed with a
-[NuGet.Config](https://learn.microsoft.com/nuget/reference/nuget-config-file) in this folder; the
-build uses it when it's there, and Git ignores it.
-
-To run the tests:
-
-```powershell
-dotnet test   # the integration tests start PostgreSQL and SQL Server in Docker or Podman, and are skipped without one
-```
+On Linux and macOS, run `chmod 644 local/certs/localhost.*` first. Open http://localhost:8080 and sign
+in as `demo` / `demo` to order, or `manager` / `manager` to restock. Run the tests with `dotnet test`.
 
 ## Deploy to Azure
 
@@ -144,172 +96,41 @@ az login
 azd up
 ```
 
-azd and the Azure CLI keep separate sign-ins, and `azd up` uses both, so sign in to the same tenant
-with each.
-
-If your Entra tenant requires a service management reference on app registrations (the Microsoft
-corporate tenant does), set it before `azd up`:
-
-```powershell
-azd env set SERVICE_MANAGEMENT_REFERENCE <service tree ID>
-```
-
-`azd up` creates AKS, a container registry, a managed identity for each service and Application
-Insights, installs Radius and an HTTPS ingress, registers the app in Entra ID, then builds and
-deploys the app. It prints the app's address. Your account gets all the app roles, including
-`Inventory.Manage`, so you can place orders and restock straight away.
-
-To get alerts by email (orders stuck in the queue, the processor stalled, stock below its reorder
-level), set an address before `azd up`:
-
-```powershell
-azd env set ALERT_EMAIL <address>
-```
-
-Settings for your subscription, if you need them, are listed at the top of
-[azure.yaml](./azure.yaml) (`azd env set ...`).
-
-If `azd up` fails because a VM size or service isn't available in your region
-([SkuNotAvailable](https://learn.microsoft.com/azure/azure-resource-manager/troubleshooting/error-sku-not-available)
-or a capacity error), pick another size or region, then run `azd up` again:
-
-```powershell
-azd env set AKS_NODE_VM_SIZE <size>     # the cluster's nodes, Standard_D4s_v7 by default
-azd env set SQL_LOCATION <region>       # Azure SQL only
-azd env set POSTGRES_LOCATION <region>  # PostgreSQL only
-```
-
-To move everything to another region, start a new environment there: `azd env new <name> --location <region>`.
-List the VM sizes a region offers with `az vm list-skus --location <region> --resource-type virtualMachines -o table`.
+`azd up` creates AKS, a registry, the Azure services and the app registrations, then deploys the app
+and prints its address. Optional settings (alert email, VM size, regions) are listed at the top of
+[azure.yaml](./azure.yaml). In the Microsoft tenant, first run
+`azd env set SERVICE_MANAGEMENT_REFERENCE <service tree ID>`.
 
 ## Deploy to Azure Local
 
-On the management machine, copy [scripts/settings.example.json](./scripts/settings.example.json) to
-`scripts/settings.json` and fill in the `AzureLocal` section. [Azure Local settings](./docs/azure-local-settings.md)
-says where to find each value. Then run:
+Copy [scripts/settings.example.json](./scripts/settings.example.json) to `scripts/settings.json`,
+fill in the `AzureLocal` section ([where to find each value](./docs/azure-local-settings.md)), then:
 
 ```powershell
 ./scripts/up.ps1 -Target AzureLocal
 ```
 
-It checks the site, creates the AKS cluster and everything the app needs on it, and deploys the app.
-Open the address it prints and sign in with an AD account in one of the app's groups. The first
-time, trust the site CA with the command it printed.
+It creates the AKS cluster and everything the app needs, deploys the app and prints its address.
+Sign in with an AD account in one of the app's groups. To deploy a new version later, run
+`./scripts/deploy.ps1 -Target AzureLocal`.
 
-To deploy a new version later, run `./scripts/deploy.ps1 -Target AzureLocal`.
-
-The queue and the stock database are run by operators in the cluster, the way Azure runs them on
-Azure: the [RabbitMQ Cluster Operator](https://www.rabbitmq.com/kubernetes/operator/operator-overview)
-runs RabbitMQ on three nodes, with the queues replicated to each, and
-[CloudNativePG](https://cloudnative-pg.io) runs PostgreSQL as a primary and two replicas, failing
-over on its own. Keycloak runs two replicas on its own CloudNativePG database. Each replica runs on a
-different worker, so losing a worker loses no message, order or sign-in. The processor archives each
-order to S3-compatible storage in the cluster (SeaweedFS), which keeps two copies of every object on
-different workers. Both databases archive their write-ahead log and take a daily backup there too,
-so they can be restored to any point in the last 30 days. An order that fails `maxDeliveryCount` times (10)
-moves to the `orders.dead-letter` queue, as it moves to the dead-letter queue in Service Bus on Azure.
-Traffic inside the cluster is encrypted: the services reach RabbitMQ, PostgreSQL, the object store
-and Keycloak over TLS, with certificates from the site CA that every pod trusts, and RabbitMQ's
-nodes, PostgreSQL's replicas and the object store's components talk to each other over TLS too.
-cert-manager renews every certificate on site, 30 days before it expires. The operators are installed
-once, by the `Operators` setup step; see [Operators on Azure Local](./infra/azurelocal/operators/README.md).
-
-That is `Availability` `high`, the default. A site that can accept downtime and data loss for fewer
-resources can set `Common.Availability` to `standard` in the settings: RabbitMQ, PostgreSQL and
-Keycloak's database then run as one StatefulSet each, the object store as one server of each kind,
-with no operators and no backups. The app and its connections, TLS included, are the same either way;
-only the Recipe Pack picks different Recipes. See [Azure Local settings](./docs/azure-local-settings.md).
-
-### When the link to Azure is down
-
-Everything the app needs at run time is on site, so it keeps serving users: pods restart and move
-between workers with images from the in-cluster registry, users sign in through Keycloak and Active
-Directory, services get their tokens from Keycloak, and cert-manager renews certificates from the site
-CA. Database passwords and object store keys are in the cluster, and change there.
-
-Installing and changing the deployment need the link: the setup steps download Helm charts and
-operator manifests from their public repositories, and a new version is built and published in Azure
-and reaches the site through the connected registry.
-Plan installs and upgrades for when the site is connected. Azure Local itself has to connect at least
-once every 30 days; past that, running VMs, including the cluster's, keep running, but nothing on the
-instance can be created or changed.
-
-For production, you would also need:
-
-- **High availability for the rest:** SQL Server runs one instance, and the app's own services one
-  replica each. For SQL Server, consider
-  [SQL Managed Instance enabled by Azure Arc](https://learn.microsoft.com/azure/azure-arc/data/managed-instance-overview),
-  whose Business Critical tier fails over between replicas.
-- **Backups off site:** the PostgreSQL backups and the archived orders are in the same cluster as
-  the databases, which covers a failed instance or a bad change, not losing the cluster; copy them
-  off site (see [Object storage for Azure Local](./infra/azurelocal/object-store/README.md)). Nothing
-  backs up SQL Server; schedule its backups and copy them off the cluster.
-- **Sizing:** the volume sizes and CPU and memory limits are small defaults; set them from your load.
-- **Licensing:** SQL Server runs the Express edition, which is free and licensed for production up
-  to 10 GB per database. For more, set `SqlServerEdition` in the `Deploy` settings to `Standard`,
-  `Enterprise` or your product key. Standard and Enterprise are licensed per core for what the
-  container may use: `SqlServerCpuLimit` in the same settings, 2 by default. See Microsoft's SQL
-  Server licensing guide for the minimums.
-- **Upgrades:** every image is pinned to an exact version in
-  [images.txt](./infra/azurelocal/images.txt) and the Recipe Pack. Test a new version of any image
-  or operator before rolling it out.
-- **Hardening:** the platform's administrators hold broad rights (cluster administrator, the
-  operators, Owner on the Azure resource group for Radius); keep them to trusted operators.
-- **Credentials kept on site:** the database passwords and object store keys are generated on site
-  and stored only in the cluster, as Kubernetes Secrets, which AKS on Azure Local encrypts at rest.
-  Back up the cluster's Secrets, or accept resetting them after rebuilding the cluster.
-- **Rotation is a script, not automatic:**
-  [rotate-credentials.ps1](./scripts/infra/azurelocal/rotate-credentials.ps1) changes a password or
-  a key with nothing but the cluster. That is the same pattern as Key Vault on Azure, where rotation
-  is a function you write, run on a near-expiry event. For automatic rotation, run a secret store on
-  site: [OpenBao](https://openbao.org) (MPL-2.0) rotates PostgreSQL, MySQL and Active Directory
-  passwords and issues certificates, but has no SQL Server plugin;
-  [HashiCorp Vault](https://developer.hashicorp.com/vault) (Business Source License; Enterprise adds
-  replication between sites) also rotates SQL Server passwords. Secrets without a plugin, such as
-  the S3 keys, still need their own rotation.
-- **No stored S3 key for the app (optional):** SeaweedFS can exchange a Keycloak token for temporary
-  S3 credentials (STS `AssumeRoleWithWebIdentity`), the model the queue and the inventory service
-  already use. It needs SeaweedFS's advanced IAM with Keycloak as identity provider, a role limited
-  to the processor and its buckets, and a credential provider in the app. The backup keys stay static.
-
-To change a database password or an object store key:
-
-```powershell
-# One or more of: sql-api-password, sql-processor-password, postgres-inventory-password,
-# sql-admin-password, postgres-admin-password, object-store, backup-object-store
-./scripts/infra/azurelocal/rotate-credentials.ps1 -KubeContext <context> -Credential sql-api-password
-```
-
-A service's new password takes effect when its pods restart, so expect a few failed requests from
-that service meanwhile. An object store key changes with no downtime: the new key works alongside
-the old one until every client uses it.
-
-To bring a secret that already lives in Azure to the site, such as a certificate or a partner's API
-key, keep it in Key Vault and sync it as [key-vault-sync.yaml](./infra/azurelocal/key-vault-sync.yaml)
-shows.
+By default (`Availability` `high`) RabbitMQ and PostgreSQL run replicated by operators and
+PostgreSQL is backed up, so losing a worker loses nothing; `standard` runs one of each for fewer
+resources. [Running on Azure Local](./docs/run-on-azure-local.md) covers offline operation,
+credentials and what to add for production.
 
 ## Clean up
 
-**Locally:** `docker compose down`.
+- **Locally:** `docker compose down`
+- **Azure:** `azd down`
+- **Azure Local:** `az group delete --name <ResourceGroup from the settings>`
 
-**Azure:** `azd down`. It deletes the resource group, including what the Recipes created in it, and
-the app registrations.
-
-**Azure Local:** delete the resource group the scripts created (`ResourceGroup` in the settings,
-`bcd-azurelocal` by default), which holds the AKS cluster, the registry and the logical network:
-
-```powershell
-az group delete --name bcd-azurelocal
-```
-
-The AKS cluster's Entra admin group and the objects `ad-setup.ps1` added to Active Directory stay;
-remove them by hand if you no longer need them.
-
-## Understand how it works
+## Learn more
 
 | | |
 |---|---|
-| [Move your app in five steps](./docs/move-your-app.md) | resource types, connections, Recipes, Recipe Packs, environments |
-| [How authentication works](./docs/authentication.md) | user sign-in, each service's identity and permissions, connecting Active Directory |
-| [Operators on Azure Local](./infra/azurelocal/operators/README.md) | how RabbitMQ and PostgreSQL run replicated, fail over and back up |
-| [Monitoring on Azure Local](./infra/azurelocal/observability/README.md) | the on-site metrics, logs, traces, dashboard and alerts |
+| [Move your app in five steps](./docs/move-your-app.md) | resource types, Recipes, Recipe Packs, environments |
+| [How authentication works](./docs/authentication.md) | sign-in, service identities, connecting Active Directory |
+| [Running on Azure Local](./docs/run-on-azure-local.md) | offline operation, credentials, production checklist |
+| [Operators on Azure Local](./infra/azurelocal/operators/README.md) | replication, failover and backups |
+| [Monitoring on Azure Local](./infra/azurelocal/observability/README.md) | metrics, logs, traces and alerts |

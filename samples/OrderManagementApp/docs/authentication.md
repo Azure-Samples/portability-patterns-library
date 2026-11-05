@@ -50,11 +50,8 @@ credential from what the platform provides, with no platform switch:
 | SQL, PostgreSQL | Entra Workload ID: a database user for the service's managed identity | the service's own database login, with a password generated on site | [DatabaseLogin.cs](../src/OrderManagement.Shared/Identity/DatabaseLogin.cs) |
 | Inventory service | Entra Workload ID: a token for the `oms-inventory` app | the same Keycloak token as for the queue, which also names `oms-inventory` | [ServiceCollectionExtensions.cs](../src/OrderManagement.Shared/DependencyInjection/ServiceCollectionExtensions.cs) |
 
-On Azure Local, Keycloak plays Entra's part: it trusts the cluster's token issuer, the way Entra
-trusts it through a federated credential, so the exchange works the same way. It checks the tokens
-with signing keys it fetches from the cluster's API server, not from the issuer's address, so the
-exchange needs nothing in Azure. With Arc workload identity on, that address is a public Azure URL;
-Keycloak only compares it to the token's `iss` claim.
+On Azure Local, Keycloak plays Entra's part: it trusts the cluster's token issuer and checks tokens
+with keys from the cluster's API server, so the exchange needs nothing in Azure.
 
 | | Azure | Azure Local |
 |---|---|---|
@@ -67,29 +64,24 @@ Keycloak only compares it to the token's `iss` claim.
 
 No service is a database administrator. A one-off setup job,
 [OrderManagement.DbSetup](../src/OrderManagement.DbSetup/Program.cs), runs at each deployment as
-the administrator: it applies the schema's migrations and creates a database user for each service,
-with only the rights in the table above. A migration is a numbered `.sql` file in
-[Migrations](../src/OrderManagement.DbSetup/Migrations), applied once by
-[DbUp](https://dbup.readthedocs.io) and recorded in the database's `SchemaVersions` table; to change
-the schema, add the next file rather than editing one already applied.
+the administrator: it applies the [migrations](../src/OrderManagement.DbSetup/Migrations) with
+[DbUp](https://dbup.readthedocs.io) and creates each service's database user with only the rights
+above. To change the schema, add the next numbered `.sql` file.
 
 - **Azure:** Azure SQL and PostgreSQL accept Entra sign-in only, with no passwords. Their
   administrator is a dedicated managed identity, `id-oms-db-admin`, used by the setup job alone. The
   services' users are their managed identities.
-- **Azure Local:** each service has a database login of its own (`api`, `processor`, `inventory`).
-  The deploy script generates the passwords, and the administrators', on site the first time, into
-  Secret `oms-db-passwords`, and keeps them after that. It sets them in the databases, then gives
-  each service only its own password, in Secret `<service>-db-credentials`. See the
-  [README](../README.md#deploy-to-azure-local) to change one.
+- **Azure Local:** each service has its own database login. The deploy script generates the
+  passwords on site into Secret `oms-db-passwords` and gives each service only its own, in
+  `<service>-db-credentials`. See [Running on Azure Local](./run-on-azure-local.md#credentials) to
+  change one.
 
 ### Calls between services
 
-The API and the processor call the inventory service with their own tokens. The inventory service
-accepts only tokens issued for it (audience `oms-inventory`) and checks their roles
-([InventoryAuthentication.cs](../src/OrderManagement.Inventory/InventoryAuthentication.cs)): reading
-products, reserving stock and restocking are separate roles, granted to the identity that needs
-each. A user's token never reaches it; the API checks the user's `Inventory.Manage` role before
-restocking on their behalf.
+The API and the processor call the inventory service with their own tokens. It accepts only tokens
+issued for it (audience `oms-inventory`) and checks their roles
+([InventoryAuthentication.cs](../src/OrderManagement.Inventory/InventoryAuthentication.cs)). A
+user's token never reaches it; the API checks the user's `Inventory.Manage` role before restocking.
 
 - **Azure:** `oms-inventory` is an app registration with application roles, assigned to the API's
   and processor's managed identities ([app-identity.bicep](../infra/azure/app-identity.bicep)).
@@ -120,10 +112,7 @@ needs:
   | `oms-inventory-admins` | `Inventory.Manage` and `Orders.Read` |
   | `oms-operators` | `Operations.Monitor`: the site's Grafana (dashboards, logs, traces) |
   | `oms-identity-admins` | Administration of the app's Keycloak realm, `oms`, and nothing else |
-- A bind account for Keycloak, `svc-keycloak`, limited to what Keycloak does: sign in to a domain
-  controller over LDAP and read the users and groups in the OU. It's in no group, can sign in only
-  at the domain controllers, can't be delegated, and is denied listing every container outside the
-  OU. Keycloak's connection is read-only too, so it never writes to the directory.
+- A bind account for Keycloak, `svc-keycloak`, that can only read the users and groups in the OU.
 - LDAPS on the domain controller, which needs a server certificate from a certificate authority.
 
 [ad-setup.ps1](../scripts/infra/azurelocal/ad-setup.ps1) creates all of this and hands the bind
@@ -135,21 +124,8 @@ domain administrator, once the cluster exists:
     -KubeContext <cluster context>
 ```
 
-If your directory already has these, you don't need it: put the bind account in
-`Keycloak.AdBindUpn` and the CA's certificate file in `Keycloak.AdCaCertificatePath`
-([settings](./azure-local-settings.md#active-directory)). The first `up.ps1` run asks for the bind
-account's password and keeps it, with the certificate, in the cluster.
-
-The listing limits cover the containers and domain controllers that exist when the script runs, so
-run it again after adding either; that leaves the existing passwords alone. To change the bind
-password, run it with `-ResetBindPassword`, then `keycloak.ps1` (the `Keycloak` setup step), which
-gives Keycloak the new one.
-Some things stay readable, as they are for every account in the domain: the names of the containers
-directly under the domain root (Keycloak has to find the OU there), the sub-containers of Group
-Policy objects, the forest's configuration, schema and DNS partitions, and the domain controllers'
-SYSVOL share.
-
-To create the objects yourself instead, give the bind account the same limits, and set
-`Keycloak.AdBindUpn` and `Keycloak.AdCaCertificatePath` as above.
-
-To use an OU other than `OMS`, pass its name to `keycloak.ps1 -AdOuName`.
+If your directory already has these, put the bind account in `Keycloak.AdBindUpn` and the CA's
+certificate file in `Keycloak.AdCaCertificatePath` ([settings](./azure-local-settings.md#active-directory));
+the first `up.ps1` run asks for the bind password and keeps it in the cluster. To change the bind
+password, run `ad-setup.ps1 -ResetBindPassword`, then `keycloak.ps1`. To use an OU other than `OMS`,
+pass `keycloak.ps1 -AdOuName`.

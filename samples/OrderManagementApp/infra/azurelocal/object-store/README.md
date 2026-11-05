@@ -1,104 +1,31 @@
 # Object storage for Azure Local
 
-[SeaweedFS](https://github.com/seaweedfs/seaweedfs) (Apache 2.0) runs in the cluster as an
-S3-compatible object store, and keeps working when the link to Azure is down. It holds:
-
-- **the applications' object storage:** the Recipe for `Radius.Storage/objectStorage`
-  ([seaweedfs-objectstorage.bicep](../../../../../recipes/object-storage/azure-local/seaweedfs/seaweedfs-objectstorage.bicep))
-  gives each resource a bucket here, named `<namespace>.<containerName>`. The Order Management
-  processor archives every order to `oms-azurelocal.orders`;
-- **PostgreSQL backups,** with `Common.Availability` `high`: CloudNativePG's Barman Cloud plugin
-  archives every write-ahead log segment and takes a daily base backup, so a database can be
-  restored to any point in its retention window (30 days by default).
+[SeaweedFS](https://github.com/seaweedfs/seaweedfs) runs in the cluster as an S3-compatible store.
+It holds the app's buckets (the processor archives every order to `oms-azurelocal.orders`) and,
+with `Availability` `high`, the PostgreSQL backups.
 
 | File | What it is |
 | --- | --- |
-| [values.yaml](./values.yaml) | SeaweedFS replicated (3 masters, 3 volume servers keeping 2 copies of every object, 2 filers, 2 S3 gateways, each on its own node) and encrypted. With `standard`, [provision-object-store.ps1](../../../scripts/infra/azurelocal/provision-object-store.ps1) runs one of each, keeping one copy |
-| [network-policy.yaml](./network-policy.yaml) | Only the store's clients may reach it, and only over HTTPS: pods labelled `object-store/client` in namespaces labelled `object-store/objects`, and PostgreSQL instances in namespaces labelled `object-store/backups`. provision-object-store.ps1 labels the namespaces it creates keys for |
-| [pod-disruption-budgets.yaml](./pod-disruption-budgets.yaml) | A node drain takes down one pod of each component at a time, so the masters keep their quorum and every object a copy |
+| [values.yaml](./values.yaml) | SeaweedFS: 3 masters, 3 volume servers keeping 2 copies of every object, 2 filers, 2 S3 gateways, encrypted. One of each with `standard` |
+| [network-policy.yaml](./network-policy.yaml) | Only the store's clients may reach it, over HTTPS |
+| [pod-disruption-budgets.yaml](./pod-disruption-budgets.yaml) | A node drain takes one pod of each component at a time |
 
-Every component runs as the image's unprivileged `seaweed` user (uid 1000), with no capabilities, a
-read-only root filesystem and the default seccomp profile. The volume servers accept a write only
-with a token signed by the masters; the signing key is 32 random bytes in Secret
-`object-store/seaweedfs-jwt-signing-key`, key `signing-key`, which provision-object-store.ps1
-generates once.
+[provision-object-store.ps1](../../../scripts/infra/azurelocal/provision-object-store.ps1), the
+`ObjectStore` setup step, installs it and creates S3 identities, each limited to its own buckets:
 
-Nothing reaches or leaves the store in the clear:
-
-- clients connect to `https://seaweedfs-s3.object-store.svc.cluster.local:8443`, whose certificate
-  comes from the site CA; the app's pods trust that CA, and the databases get it in their Secret;
-- the store's components talk to each other over mutual TLS, with certificates cert-manager issues
-  from the store's own CA;
-- the S3 gateways encrypt every chunk of an object before it goes to a volume server, so the volume
-  servers, and their disks, only ever hold ciphertext.
-
-[provision-object-store.ps1](../../../scripts/infra/azurelocal/provision-object-store.ps1) installs
-it into namespace `object-store`, after the operators, and creates S3 identities, each limited to
-its own buckets, with keys generated once:
-
-| For | Identity may | Its keys, in Secret |
+| For | May use | Keys in Secret |
 | --- | --- | --- |
-| Applications in `oms-azurelocal` | create and use buckets `oms-azurelocal.*` | `object-store-credentials` there, keys `ACCESSKEYID` and `SECRETACCESSKEY` |
-| Databases in `oms-azurelocal` and `identity` | use bucket `postgres-<namespace>` | `backup-object-store` there, keys `ACCESS_KEY_ID` and `ACCESS_SECRET_KEY`, with the CA to verify the store, `ca.crt` |
+| Apps in a namespace | buckets `<namespace>.*` | `object-store-credentials` |
+| Databases in a namespace | bucket `postgres-<namespace>` | `backup-object-store` |
 
-The Recipe Pack gives an application's keys only to containers connected to object storage, as
-`CONNECTION_<NAME>_ACCESSKEYID` and `_SECRETACCESSKEY`, and labels their pods
-`object-store/client: "true"`, which the network policy lets in. The identities go to SeaweedFS in
-Secret `object-store/object-store-s3-config`, key `seaweedfs_s3_config`. Namespace names can't
-contain a dot, so one namespace's `<namespace>.*` never matches another's buckets, nor the backup
-buckets:
-
-```json
-{
-  "identities": [
-    {
-      "name": "objects-oms-azurelocal",
-      "credentials": [ { "accessKey": "<generated>", "secretKey": "<generated>" } ],
-      "actions": [ "Admin:oms-azurelocal.*" ]
-    },
-    {
-      "name": "postgres-oms-azurelocal",
-      "credentials": [ { "accessKey": "<generated>", "secretKey": "<generated>" } ],
-      "actions": [ "Read:postgres-oms-azurelocal", "Write:postgres-oms-azurelocal", "List:postgres-oms-azurelocal", "Tagging:postgres-oms-azurelocal" ]
-    }
-  ]
-}
-```
-
-## What it survives
-
-| Failure | What happens |
-| --- | --- |
-| A master | The other two keep a majority and carry on. |
-| A volume server | Reads come from the other copy; new objects go to the two volume servers left. |
-| A filer or an S3 gateway | The other one carries on, and the S3 Service sends requests to it. |
-
-It needs at least three nodes: the masters must each be on a different node, and so must the volume
-servers.
-
-## Changing keys
-
-An identity may have several keys at once, so a key changes with no downtime.
-[rotate-credentials.ps1](../../../scripts/infra/azurelocal/rotate-credentials.ps1) does it with
-nothing but the cluster:
-
-```powershell
-./scripts/infra/azurelocal/rotate-credentials.ps1 -KubeContext <context> -Credential object-store
-./scripts/infra/azurelocal/rotate-credentials.ps1 -KubeContext <context> -Credential backup-object-store -Namespace identity
-```
-
-It adds a new key next to the old one in `object-store-s3-config` and restarts the S3 gateways, which
-read that config only when they start. It then writes the new key to the namespace's Secret and
-restarts the applications that use it; the PostgreSQL clusters reload theirs without a restart, since
-`backup-object-store` carries the `cnpg.io/reload` label. Last, it keeps only the new key, restarts
-the gateways again and, for backups, checks that each cluster still archives its write-ahead log.
+Clients connect to `https://seaweedfs-s3.object-store.svc.cluster.local:8443` with a certificate
+from the site CA. To change a namespace's keys with no downtime, run
+[rotate-credentials.ps1](../../../scripts/infra/azurelocal/rotate-credentials.ps1)
+`-Credential object-store` or `backup-object-store`.
 
 ## For production
 
-- **Copy data off the cluster.** The store is in the same cluster as what it holds, so it protects
-  against a failed node or pod, a deleted object or table, not against losing the cluster or its
-  storage. Copy the buckets to another site, for example with `weed filer.remote.sync` to Azure Blob
-  Storage or another S3 store while the link is up.
-- **Size:** 10 GB per volume server by default; with two copies of everything on three servers, that
-  holds about 15 GB. Grow `StorageSize` with the data: base backups are compressed copies of each
-  database, plus every WAL segment in the retention window.
+- **Copy data off the cluster.** The store protects against a failed node or pod, not losing the
+  cluster. Copy the buckets to another site, for example with `weed filer.remote.sync`.
+- **Size:** 10 GB per volume server by default, about 15 GB of data with two copies. Set
+  `StorageSize` from your data.

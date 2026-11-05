@@ -82,15 +82,11 @@ A container is only reachable from outside the cluster through a route the app d
 sample that's one route, `web`, from `/` to the API; the inventory service and the processor have
 none. The Recipe Pack decides how routes are published: ingress class, host name, certificate.
 
-On Azure a Recipe asks the cloud for a managed service, which keeps replicas, fails over and backs
-up. On Azure Local the queue and PostgreSQL Recipes do the same with an operator the platform
-installed once: they declare a RabbitMQ cluster or a CloudNativePG PostgreSQL cluster, and the
-operator runs it. See [Operators on Azure Local](../infra/azurelocal/operators/README.md). A site
-that doesn't need that sets `Availability` to `standard`, and the Azure Local pack picks the
-[rabbitmq](../../../recipes/message-queue/azure-local/rabbitmq/) and
-[postgres](../../../recipes/postgresql-database/azure-local/postgres/) Recipes instead: one container
-each, from the official images, returning the same values. Two Recipes for one resource on one
-platform is the same idea as one per platform, so the app doesn't change.
+On Azure a Recipe asks the cloud for a managed service. On Azure Local the queue and PostgreSQL
+Recipes declare a cluster that an operator runs ([Operators on Azure Local](../infra/azurelocal/operators/README.md)).
+With `Availability` `standard`, the pack picks the [rabbitmq](../../../recipes/message-queue/azure-local/rabbitmq/)
+and [postgres](../../../recipes/postgresql-database/azure-local/postgres/) Recipes instead: one
+container each, returning the same values, so the app doesn't change.
 
 ## 4. Bind them per platform with a Recipe Pack and an Environment
 
