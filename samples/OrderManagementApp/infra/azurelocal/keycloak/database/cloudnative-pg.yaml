@@ -25,7 +25,7 @@ spec:
     serverTLSSecret: keycloak-db-tls
     serverCASecret: keycloak-db-tls
   storage:
-    size: 8Gi
+    size: 4Gi
   affinity:
     enablePodAntiAffinity: true
     topologyKey: kubernetes.io/hostname

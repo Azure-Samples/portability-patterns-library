@@ -86,9 +86,11 @@ All commands run from this folder, `samples/OrderManagementApp`.
 - An Azure Local instance, [deployed](https://learn.microsoft.com/azure/azure-local/deploy/deployment-introduction)
   and connected to Azure, with its custom location and a running Arc resource bridge. See the
   [system requirements](https://learn.microsoft.com/azure/azure-local/concepts/system-requirements-23h2).
-- Free capacity on the instance for the AKS cluster: four VMs, a control plane of 4 vCPUs and 8 GB
-  and three workers of 4 vCPUs and 16 GB each, plus about 210 GB of storage for the in-cluster
-  registry, the databases, the object store, the queue and monitoring.
+- Free capacity on the instance for the AKS cluster: a control plane of 4 vCPUs and 6 GB, and three
+  workers. With `Availability` `high` (the default) each worker needs 4 vCPUs and 16 GB, so that the
+  other two hold every replica while one is down or being upgraded; with `standard`, 4 vCPUs and
+  8 GB each is enough. Plus storage for the in-cluster registry, the databases, the object store, the
+  queue and monitoring: about 120 GB with `high`, 80 GB with `standard`.
 - A management machine on the site network, not an Azure Local node, that can also sign in to
   Azure, with the same tools as for Azure except azd. Microsoft recommends managing AKS on Azure
   Local from such a

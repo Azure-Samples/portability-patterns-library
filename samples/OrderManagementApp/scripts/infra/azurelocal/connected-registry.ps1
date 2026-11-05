@@ -56,7 +56,7 @@ param(
     # (10.96.0.0/12 on AKS enabled by Arc). The registry's certificate is issued for it.
     # preflight.ps1 checks it.
     [string]$ServiceClusterIp,
-    [string]$StorageRequest = '40Gi',
+    [string]$StorageRequest = '25Gi',
     # Storage class for the registry's volume: the one AKS enabled by Arc creates.
     [string]$StorageClassName = 'default',
     # How long a failed extension may take to delete before it is reinstalled.

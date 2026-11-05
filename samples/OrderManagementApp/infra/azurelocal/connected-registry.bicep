@@ -56,7 +56,7 @@ param serviceClusterIp string
 param storageClassName string = 'default'
 
 @description('Size of the connected registry volume.')
-param storageRequest string = '40Gi'
+param storageRequest string = '25Gi'
 
 resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
   name: registryName

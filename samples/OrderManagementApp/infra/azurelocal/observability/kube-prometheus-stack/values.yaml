@@ -67,14 +67,14 @@ prometheus:
     # How long metrics are kept, and a size cap a little under the volume so Prometheus deletes old
     # data before the volume fills.
     retention: 15d
-    retentionSize: 9GB
+    retentionSize: 4GB
     storageSpec:
       volumeClaimTemplate:
         spec:
           accessModes: [ReadWriteOnce]
           resources:
             requests:
-              storage: 10Gi
+              storage: 5Gi
           # storageClassName: <class>  # unset uses the cluster's default storage class
     resources:
       requests:

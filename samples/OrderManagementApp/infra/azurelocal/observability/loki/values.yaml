@@ -54,7 +54,7 @@ singleBinary:
   sidecar: false
   persistence:
     enabled: true
-    size: 10Gi
+    size: 5Gi
     storageClass: null  # null uses the cluster's default storage class
   resources:
     requests:

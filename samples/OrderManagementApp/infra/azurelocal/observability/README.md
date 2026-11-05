@@ -81,9 +81,9 @@ Set these in the `Observability` section of `scripts/settings.json` and run the 
 
 | Setting | Default | |
 | --- | --- | --- |
-| `PrometheusRetention`, `PrometheusStorage` | `15d`, `10Gi` | Prometheus also deletes old data once it fills 90% of the volume |
-| `LokiRetention`, `LokiStorage` | `168h`, `10Gi` | |
-| `TempoRetention`, `TempoStorage` | `72h`, `10Gi` | |
+| `PrometheusRetention`, `PrometheusStorage` | `15d`, `5Gi` | Prometheus also deletes old data once it fills 90% of the volume |
+| `LokiRetention`, `LokiStorage` | `168h`, `5Gi` | |
+| `TempoRetention`, `TempoStorage` | `72h`, `5Gi` | |
 | `StorageClassName` | empty | Empty uses the cluster's default storage class |
 
 Retention changes apply on the next run. Sizes apply when a volume is created. To grow a volume

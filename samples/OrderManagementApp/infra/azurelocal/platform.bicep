@@ -93,14 +93,14 @@ param podCidr string = '10.244.0.0/16'
 ])
 param controlPlaneCount int = 1
 
-@description('VM size of the control plane nodes. List sizes with: az aksarc vmsize list --custom-location <id>')
-param controlPlaneVmSize string = 'Standard_A4_v2'
+@description('VM size of the control plane nodes: 4 vCPUs and 6 GB, the smallest AKS Arc allows. List sizes with: az aksarc vmsize list --custom-location <id>')
+param controlPlaneVmSize string = 'Standard_K8S3_v1'
 
 @description('Number of worker nodes. Three lets the RabbitMQ cluster and the databases\' replicas each run on a different node, so losing one node loses no service.')
 @minValue(1)
 param nodeCount int = 3
 
-@description('VM size of the worker nodes: 4 vCPUs and 16 GB holds the replicated backing services, Keycloak and monitoring.')
+@description('VM size of the worker nodes: 4 vCPUs and 16 GB, so two workers hold everything while the third is down or being upgraded. With standard availability, Standard_A4_v2 (8 GB) is enough.')
 param nodeVmSize string = 'Standard_D4s_v3'
 
 @description('Kubernetes version. List versions with: az aksarc get-versions --custom-location <id>')

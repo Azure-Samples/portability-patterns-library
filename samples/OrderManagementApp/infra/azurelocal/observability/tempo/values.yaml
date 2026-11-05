@@ -52,7 +52,7 @@ securityContext:
 
 persistence:
   enabled: true
-  size: 10Gi
+  size: 5Gi
   storageClassName: null  # null uses the cluster's default storage class
 
 # Prometheus scrapes Tempo's own metrics.

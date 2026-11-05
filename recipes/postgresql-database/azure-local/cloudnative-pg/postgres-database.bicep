@@ -51,7 +51,7 @@ param icuLocale string = 'en-US'
 param certificateIssuer string = ''
 
 @description('Size of each instance\'s persistent volume.')
-param storageSize string = '10Gi'
+param storageSize string = '5Gi'
 
 @description('Storage class of those volumes. Empty uses the cluster default.')
 param storageClassName string = ''

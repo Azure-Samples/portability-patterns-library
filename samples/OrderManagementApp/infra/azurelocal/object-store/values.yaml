@@ -108,7 +108,7 @@ volume:
   dataDirs:
     - name: data1
       type: persistentVolumeClaim
-      size: 20Gi
+      size: 10Gi
       storageClass: null
       maxVolumes: 0  # as many as fit on the disk
   # Grows the volumes when dataDirs' size changes. It runs another image; grow them by hand instead.

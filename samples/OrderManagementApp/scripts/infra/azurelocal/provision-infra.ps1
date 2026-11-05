@@ -73,7 +73,8 @@ param(
     # Address range for pods, inside the cluster only. Empty keeps the template's AKS Arc default.
     [string]$PodCidr,
     [int]$ControlPlaneCount = 1,
-    [string]$ControlPlaneVmSize = 'Standard_A4_v2',
+    # 4 vCPUs and 6 GB, the smallest control plane AKS Arc allows.
+    [string]$ControlPlaneVmSize = 'Standard_K8S3_v1',
     # Three workers, so each replica of RabbitMQ and the databases runs on its own node.
     [int]$NodeCount = 3,
 

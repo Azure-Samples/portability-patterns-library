@@ -99,6 +99,6 @@ the gateways again and, for backups, checks that each cluster still archives its
   against a failed node or pod, a deleted object or table, not against losing the cluster or its
   storage. Copy the buckets to another site, for example with `weed filer.remote.sync` to Azure Blob
   Storage or another S3 store while the link is up.
-- **Size:** 20 GB per volume server by default; with two copies of everything on three servers, that
-  holds about 30 GB. Grow `StorageSize` with the data: base backups are compressed copies of each
+- **Size:** 10 GB per volume server by default; with two copies of everything on three servers, that
+  holds about 15 GB. Grow `StorageSize` with the data: base backups are compressed copies of each
   database, plus every WAL segment in the retention window.

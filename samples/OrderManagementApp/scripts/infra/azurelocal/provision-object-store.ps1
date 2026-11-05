@@ -65,7 +65,7 @@ param(
 
     [string]$ChartVersion = '4.51.0',
     # Per volume server. Every object is on two of the three.
-    [string]$StorageSize = '20Gi',
+    [string]$StorageSize = '10Gi',
     # Empty uses the cluster's default storage class.
     [string]$StorageClassName
 )

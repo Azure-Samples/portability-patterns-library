@@ -70,13 +70,13 @@ param(
     # Storage class for every volume. Empty uses the cluster's default class.
     [string]$StorageClassName,
     [string]$PrometheusRetention = '15d',
-    [string]$PrometheusStorage = '10Gi',
+    [string]$PrometheusStorage = '5Gi',
     [string]$AlertmanagerStorage = '1Gi',
     [string]$GrafanaStorage = '1Gi',
     [string]$LokiRetention = '168h',
-    [string]$LokiStorage = '10Gi',
+    [string]$LokiStorage = '5Gi',
     [string]$TempoRetention = '72h',
-    [string]$TempoStorage = '10Gi',
+    [string]$TempoStorage = '5Gi',
     # Telemetry queued while Tempo or Loki is unavailable.
     [string]$CollectorQueueStorage = '2Gi',
 

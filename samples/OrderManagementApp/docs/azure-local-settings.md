@@ -29,10 +29,12 @@ Your Azure Local administrator can give you these. To look them up yourself:
 | `Cluster.VmSwitchName` | `az stack-hci-vm network lnet list -g <that resource group> --query [].properties.vmSwitchName -o tsv`. Instead, you can set `Cluster.SwitchSourceLogicalNetworkName` to an existing logical network that uses the switch; one of the two is required. |
 | `Registry.StorageClassName` | The storage class for the in-cluster registry's volume: `default` on AKS enabled by Arc (`kubectl get storageclass`) |
 
-The cluster gets three workers of `Standard_D4s_v3` (4 vCPUs, 16 GB), so the replicas of RabbitMQ and
-the databases each run on their own. If your instance offers other sizes
-(`az aksarc vmsize list --custom-location <custom location ID>`), set `Cluster.NodeVmSize`, and
-`Cluster.NodeCount` for more workers.
+The cluster gets a control plane of `Standard_K8S3_v1` (4 vCPUs, 6 GB) and three workers of
+`Standard_D4s_v3` (4 vCPUs, 16 GB), so the replicas of RabbitMQ and the databases each run on their
+own, and two workers can hold everything while the third is down or being upgraded. With
+`Common.Availability` `standard`, set `Cluster.NodeVmSize` to `Standard_A4_v2` (4 vCPUs, 8 GB). If your
+instance offers other sizes (`az aksarc vmsize list --custom-location <custom location ID>`), set
+`Cluster.NodeVmSize`, and `Cluster.NodeCount` for more workers.
 
 ## Network
 
