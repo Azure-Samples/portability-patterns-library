@@ -21,7 +21,8 @@ function Invoke-OmsDatabaseSetup {
         [hashtable]$SecretEnvironment = @{},
         [string]$ImagePullSecretName = '',
         # Secret with the CA (key ca.crt) that issued the databases' certificates, so the job verifies
-        # them. PostgreSQL clients read PGSSLROOTCERT.
+        # them, as the Recipe Pack does for the services: SqlClient reads SSL_CERT_FILE, PostgreSQL
+        # clients PGSSLROOTCERT.
         [string]$CaSecretName = '',
         [int]$TimeoutSeconds = 900
     )
@@ -52,6 +53,7 @@ function Invoke-OmsDatabaseSetup {
         volumes       = @(@{ name = 'tmp'; emptyDir = @{} })
     }
     if ($CaSecretName) {
+        $container.env += @{ name = 'SSL_CERT_FILE'; value = '/etc/database-ca/ca.crt' }
         $container.env += @{ name = 'PGSSLROOTCERT'; value = '/etc/database-ca/ca.crt' }
         $container.volumeMounts += @{ name = 'database-ca'; mountPath = '/etc/database-ca'; readOnly = $true }
         $podSpec.volumes += @{ name = 'database-ca'; secret = @{ secretName = $CaSecretName } }
