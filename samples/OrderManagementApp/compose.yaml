@@ -238,6 +238,10 @@ services:
     environment:
       AWS_ACCESS_KEY_ID: oms
       AWS_SECRET_ACCESS_KEY: ${LOCAL_PASSWORD:?Set LOCAL_PASSWORD, see compose.yaml}
+      # One volume at a time per bucket rather than seven. Volume slots are counted from free disk
+      # (1 GB each), so on a small disk the first bucket would take them all and the next couldn't
+      # store anything.
+      WEED_MASTER_VOLUME_GROWTH_COPY_1: "1"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8333/status"]
       interval: 5s
