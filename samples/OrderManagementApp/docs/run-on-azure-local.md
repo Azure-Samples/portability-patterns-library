@@ -38,17 +38,4 @@ Key Vault and sync it as [key-vault-sync.yaml](../infra/azurelocal/key-vault-syn
 
 ## For production
 
-- **SQL Server:** one instance, Express edition (free, up to 10 GB per database), no backups.
-  Schedule backups, set `SqlServerEdition` for more, or consider
-  [SQL Managed Instance enabled by Azure Arc](https://learn.microsoft.com/azure/azure-arc/data/managed-instance-overview).
-- **Off-site backups:** PostgreSQL backups and archived orders stay in the cluster; copy them off
-  site ([object storage](../infra/azurelocal/object-store/README.md)).
-- **Secrets:** back up the cluster's Secrets, or accept resetting them after a rebuild.
-- **Rotation:** the script above, run when needed. For automatic rotation use an on-site secret
-  store such as [OpenBao](https://openbao.org) or [HashiCorp Vault](https://developer.hashicorp.com/vault).
-- **Object store key:** the processor uses a stored S3 key. SeaweedFS can instead exchange its
-  Keycloak token for temporary credentials (STS `AssumeRoleWithWebIdentity`), as RabbitMQ and the
-  inventory service already use tokens; not done here.
-- **Sizing and upgrades:** volume sizes and limits are small defaults; images are pinned in
-  [images.txt](../infra/azurelocal/images.txt). Test new versions before rolling them out.
-- **Access:** platform administrators hold broad rights; keep them to trusted operators.
+See the production list in the [README](../README.md#deploy-to-azure-local).
