@@ -103,6 +103,11 @@ and prints its address. Optional settings (alert email, VM size, regions) are li
 
 ## Deploy to Azure Local
 
+> **Scope.** This sample deploys the same app to Azure and to Azure Local; each deployment starts
+> with its own data. Moving a running workload between them (copying orders, stock and archived
+> orders, switching users between addresses, keeping order history across Entra ID and Keycloak)
+> isn't covered yet and will follow in a later iteration.
+
 Copy [scripts/settings.example.json](./scripts/settings.example.json) to `scripts/settings.json`,
 fill in the `AzureLocal` section ([where to find each value](./docs/azure-local-settings.md)), then:
 
