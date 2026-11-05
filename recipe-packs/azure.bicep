@@ -103,10 +103,7 @@ var containerIdentityParameters = {
   containerVolumeMounts: useServiceCa ? [
     { name: 'service-ca', mountPath: '/etc/service-ca', readOnly: true }
   ] : []
-  containerEnv: concat([
-    // Which store backs the app's object storage, so the app picks its client.
-    { name: 'Archive__Provider', value: 'AzureBlob' }
-  ], empty(applicationInsightsConnectionString) ? [] : [
+  containerEnv: concat(empty(applicationInsightsConnectionString) ? [] : [
     { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: applicationInsightsConnectionString }
   ], useServiceCa ? [
     { name: 'SSL_CERT_DIR', value: '/etc/ssl/certs:/etc/service-ca' }

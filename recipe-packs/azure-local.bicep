@@ -210,11 +210,6 @@ var telemetryEnv = empty(otlpEndpoint) ? [] : [
   { name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: otlpEndpoint }
 ]
 
-// Which store backs the app's object storage (the site's S3 store), so the app picks its client.
-var objectStorageEnv = [
-  { name: 'Archive__Provider', value: 'S3' }
-]
-
 // Site CA: every container trusts the CA that signs the in-cluster services' certificates: the
 // queue, the object store, SQL Server, PostgreSQL and the identity provider. .NET and most runtimes
 // read SSL_CERT_FILE as the CAs they trust, so clients verify those services with no code; PostgreSQL
@@ -253,7 +248,7 @@ var containerPlatformParameters = union(
     serviceCertificateIssuer: certificateIssuer
     platformPodVolumes: concat(identityProviderVolumes, siteCaVolumes)
     containerVolumeMounts: concat(identityProviderMounts, siteCaMounts)
-    containerEnv: concat(identityProviderEnv, telemetryEnv, siteCaEnv, objectStorageEnv)
+    containerEnv: concat(identityProviderEnv, telemetryEnv, siteCaEnv)
     containerEnvFromSecrets: containerEnvFromSecrets
   }
 )

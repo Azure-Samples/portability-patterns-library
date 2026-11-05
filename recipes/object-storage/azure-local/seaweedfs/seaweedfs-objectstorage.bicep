@@ -22,6 +22,8 @@ var bucket = toLower('${namespace}.${context.resource.properties.?containerName 
 output result object = {
   resources: []
   values: {
+    // Which store this is, so connected containers pick their client (CONNECTION_<NAME>_PROVIDER).
+    provider: 's3'
     endpoint: !startsWith(endpoint, 'https://')
       ? fail('No HTTPS object store endpoint. Run scripts/infra/azurelocal/provision-object-store.ps1 and set the Recipe Pack\'s objectStoreEndpoint.')
       : endpoint

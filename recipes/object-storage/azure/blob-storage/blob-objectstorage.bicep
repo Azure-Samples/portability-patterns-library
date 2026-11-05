@@ -83,6 +83,8 @@ output result object = {
     container.id
   ]
   values: {
+    // Which store this is, so connected containers pick their client (CONNECTION_<NAME>_PROVIDER).
+    provider: 'azureblob'
     accountName: accountName
     endpoint: storageAccount.properties.primaryEndpoints.blob
     containerName: containerName
