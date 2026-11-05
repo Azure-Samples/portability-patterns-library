@@ -1,6 +1,5 @@
 # Portability Patterns Library
-
-The portability patterns library helps you build workloads that run on Azure, in sovereign environments and on Azure Local. For each Azure service, it shows what carries over, what changes and which alternatives to use on Azure Local. Sample applications show the same application definition and container images running on Azure and on Azure Local, so a workload can move or recover across environments with as few location-specific dependencies as possible.
+The portability patterns library provides reusable application patterns, reference implementations, and guidance for building workloads that can operate consistently across Azure cloud, sovereign environments, and Azure Local. It supports business continuity by helping teams design adaptive applications that can be deployed, moved, or recovered across environments while minimizing dependencies on location-specific services.
 
 > **Disclaimer**
 >
