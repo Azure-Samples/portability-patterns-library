@@ -119,6 +119,7 @@ public sealed class InventoryAuthorizationTests
             builder.UseSetting("CONNECTION_INVENTORYDB_DATABASE", "inventory");
             builder.UseSetting("POSTGRES_USERNAME", "inventory");
             builder.UseSetting("POSTGRES_PASSWORD", "unused");
+            builder.UseSetting("Telemetry:Exporter", "None");
             if (authority is not null)
             {
                 builder.UseSetting("InventoryAuth:Authority", authority);

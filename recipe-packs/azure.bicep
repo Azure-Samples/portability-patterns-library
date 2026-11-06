@@ -106,6 +106,8 @@ var containerIdentityParameters = {
   containerEnv: concat([
     // Which store backs the app's object storage, so the app picks its client.
     { name: 'Archive__Provider', value: 'AzureBlob' }
+    // Where telemetry goes: Application Insights, or nowhere when there is none.
+    { name: 'Telemetry__Exporter', value: empty(applicationInsightsConnectionString) ? 'None' : 'AzureMonitor' }
   ], empty(applicationInsightsConnectionString) ? [] : [
     { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: applicationInsightsConnectionString }
   ], useServiceCa ? [

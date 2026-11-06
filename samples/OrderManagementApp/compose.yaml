@@ -39,6 +39,8 @@ x-sql: &sql
   CONNECTION_SQL_TLS: optional
 
 x-inventorydb: &inventorydb
+  # Locally, telemetry stays in each process: there is no collector.
+  Telemetry__Exporter: None
   # The inventory database: PostgreSQL. The local server has no TLS.
   CONNECTION_INVENTORYDB_HOST: postgres
   CONNECTION_INVENTORYDB_PORT: "5432"
@@ -47,6 +49,8 @@ x-inventorydb: &inventorydb
 
 x-connections: &connections
   <<: *sql
+  # Locally, telemetry stays in each process: there is no collector.
+  Telemetry__Exporter: None
   # The queue: Portability.Messaging/messageQueues. The local broker has no TLS and no token issuer,
   # so the services sign in with a login.
   CONNECTION_QUEUE_PROVIDER: rabbitmq

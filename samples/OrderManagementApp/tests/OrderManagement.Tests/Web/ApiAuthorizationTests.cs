@@ -140,7 +140,8 @@ public sealed class ApiAuthorizationTests : IClassFixture<ApiAuthorizationTests.
                 ["CONNECTION_SQL_DATABASE"] = "omsdb",
                 ["SQL_USERNAME"] = "api",
                 ["SQL_PASSWORD"] = "unused",
-                ["Inventory:BaseUrl"] = "http://inventory:8080"
+                ["Inventory:BaseUrl"] = "http://inventory:8080",
+                ["Telemetry:Exporter"] = "None"
             })
             {
                 builder.UseSetting(key, value);

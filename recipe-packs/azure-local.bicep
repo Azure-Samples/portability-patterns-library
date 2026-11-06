@@ -133,7 +133,7 @@ per-service database passwords. {resource} is the container resource name.
 ''')
 param containerEnvFromSecrets array = []
 
-@description('OpenTelemetry Collector endpoint given to every container as OTEL_EXPORTER_OTLP_ENDPOINT. Empty sends no telemetry.')
+@description('OpenTelemetry Collector endpoint given to every container as OTEL_EXPORTER_OTLP_ENDPOINT, with Telemetry__Exporter set to Otlp. Empty sets it to None: no telemetry.')
 param otlpEndpoint string = ''
 
 @description('Existing image pull secret in the application namespace for the connected registry.')
@@ -206,7 +206,11 @@ var identityProviderEnv = [
   { name: 'IDENTITY_TOKEN_ENDPOINT', value: identityTokenEndpoint }
 ]
 
-var telemetryEnv = empty(otlpEndpoint) ? [] : [
+// Where telemetry goes: the on-site collector, or nowhere when it isn't installed.
+var telemetryEnv = empty(otlpEndpoint) ? [
+  { name: 'Telemetry__Exporter', value: 'None' }
+] : [
+  { name: 'Telemetry__Exporter', value: 'Otlp' }
   { name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: otlpEndpoint }
 ]
 
