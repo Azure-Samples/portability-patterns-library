@@ -1,11 +1,13 @@
 # Azure Database for PostgreSQL → Azure Local
 
-Azure Database for PostgreSQL flexible server isn't available on Azure Local. This guide shows what you can use instead, what stays the same, and what you change in your workload.
+Azure Database for PostgreSQL flexible server isn't available on Azure Local. This guide describes the alternatives this project explored, what stays the same, and what you change in your workload.
+
+> **About the alternatives:** the open-source alternatives in this guide are examples this project explored, not Microsoft recommendations, and other alternatives may exist. Evaluate any alternative against your own requirements.
 
 | Target | Alternative | Portability class | Availability | Summary |
 |---|---|---|---|---|
 | Azure Local | [CloudNativePG](./alternatives/cloudnative-pg.md) | `protocol-compatible` | Sample available | Open-source Kubernetes operator (Apache-2.0) that runs PostgreSQL in the cluster with replicas, automatic failover and continuous backups. Same engine, driver and SQL. |
-| Azure Local | [PostgreSQL container](./alternatives/postgresql-container.md) | `protocol-compatible` | Sample available | The official PostgreSQL image, one instance on a persistent volume, no operator. Simpler to run, but no failover and no backups. |
+| Azure Local | [PostgreSQL container](./alternatives/postgresql-container.md) | `protocol-compatible` | Sample available | The official PostgreSQL image, one instance on a persistent volume, no operator. No failover and no backups. |
 
 ## What carries over
 

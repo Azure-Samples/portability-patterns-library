@@ -1,6 +1,8 @@
 # Azure Key Vault → Azure Local
 
-Azure Key Vault runs in Azure. A workload on Azure Local that has to keep working while the site is cut off from Azure needs its secrets available on site. This guide shows what you can use, what stays the same, and what you change in your workload.
+Azure Key Vault runs in Azure. A workload on Azure Local that has to keep working while the site is cut off from Azure needs its secrets available on site. This guide describes the alternatives this project explored, what stays the same, and what you change in your workload.
+
+> **About the alternatives:** the open-source alternatives in this guide are examples this project explored, not Microsoft recommendations, and other alternatives may exist. Evaluate any alternative against your own requirements.
 
 | Target | Alternative | Portability class | Availability | Summary |
 |---|---|---|---|---|
@@ -34,7 +36,7 @@ How the extension maps to Key Vault on AKS, and how the sample uses it: [Key Vau
 
 **Data:** secrets stay in Key Vault. Nothing moves; the cluster holds copies.
 
-**When to use it on Azure Local:** use Key Vault for secrets and certificates that already live in Azure and must reach the site, such as a partner's API key. It keeps a copy outside the cluster and gives you central rotation and audit, but rotation only works while the site is connected. Secrets that only matter on site, such as database passwords, can be Kubernetes Secrets generated on site. A rebuilt cluster gets new ones.
+**What it covers on Azure Local:** secrets and certificates that already live in Azure and must reach the site, such as a partner's API key. Key Vault keeps a copy outside the cluster and gives central rotation and audit, but rotation only works while the site is connected. In the sample, secrets that only matter on site, such as database passwords, are Kubernetes Secrets generated on site. A rebuilt cluster gets new ones.
 
 ## Rotating secrets on site
 

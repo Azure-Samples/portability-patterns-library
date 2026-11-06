@@ -69,6 +69,8 @@ Every Azure resource has one guide, `resources/<slug>/README.md`. It summarizes 
 
 An **alternative** is how the capability is provided on a target. It can be a different product (RabbitMQ in place of Service Bus), the same engine hosted by the customer (SQL Server in a container), or the Azure service itself where it is still reachable.
 
+The open-source alternatives in a guide are ones this project chose to explore. They aren't recommendations or endorsements by Microsoft, and other alternatives may exist. Guides state what was observed, without ranking or recommending one alternative over another. Each guide says this in a short note under its introduction.
+
 Illustrative example (not final content):
 
 > ### Azure Service Bus → Azure Local

@@ -1,6 +1,8 @@
 # Azure Service Bus → Azure Local
 
-Azure Service Bus isn't available on Azure Local. This guide shows what you can use instead, what stays the same, and what you change in your workload.
+Azure Service Bus isn't available on Azure Local. This guide describes the alternatives this project explored, what stays the same, and what you change in your workload.
+
+> **About the alternatives:** the open-source alternatives in this guide are examples this project explored, not Microsoft recommendations, and other alternatives may exist. Evaluate any alternative against your own requirements.
 
 | Target | Alternative | Portability class | Availability | Summary |
 |---|---|---|---|---|

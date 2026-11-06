@@ -1,6 +1,8 @@
 # Application Insights and Log Analytics → Azure Local
 
-Application Insights and the Log Analytics workspace behind it run in Azure. A workload on Azure Local that has to keep working while the site is cut off from Azure also needs its telemetry on site. This guide shows what you can use instead, what stays the same, and what you change in your workload.
+Application Insights and the Log Analytics workspace behind it run in Azure. A workload on Azure Local that has to keep working while the site is cut off from Azure also needs its telemetry on site. This guide describes the alternatives this project explored, what stays the same, and what you change in your workload.
+
+> **About the alternatives:** the open-source alternatives in this guide are examples this project explored, not Microsoft recommendations, and other alternatives may exist. Evaluate any alternative against your own requirements.
 
 | Target | Alternative | Portability class | Availability | Summary |
 |---|---|---|---|---|

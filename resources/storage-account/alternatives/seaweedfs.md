@@ -1,6 +1,6 @@
 # SeaweedFS as an alternative to Azure Blob storage
 
-[SeaweedFS](https://github.com/seaweedfs/seaweedfs) is an open-source distributed store (Apache-2.0) that serves objects over an [S3 API](https://github.com/seaweedfs/seaweedfs/wiki/Amazon-S3-API). On Azure Local it runs in the cluster, from the [Helm chart](https://github.com/seaweedfs/seaweedfs/tree/master/k8s/charts/seaweedfs), and keeps the objects that Blob storage keeps on Azure. It's built for many small files: each object is one disk read, with about 40 bytes of metadata.
+[SeaweedFS](https://github.com/seaweedfs/seaweedfs) is an open-source distributed store (Apache-2.0) that serves objects over an [S3 API](https://github.com/seaweedfs/seaweedfs/wiki/Amazon-S3-API). On Azure Local it runs in the cluster, from the [Helm chart](https://github.com/seaweedfs/seaweedfs/tree/master/k8s/charts/seaweedfs), and keeps the objects that Blob storage keeps on Azure. Its documentation describes it as built for many small files: each object is one disk read, with about 40 bytes of metadata.
 
 | Part | Role |
 |---|---|

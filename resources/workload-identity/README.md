@@ -2,6 +2,8 @@
 
 On Azure, Microsoft Entra Workload ID lets a pod exchange its Kubernetes service account token for an Entra token, so the workload stores no secret. This guide shows how to keep that pattern on Azure Local, with an identity provider on site instead of Entra ID. Workloads then keep signing in when the link to Azure is down.
 
+> **About the alternatives:** the open-source alternatives in this guide are examples this project explored, not Microsoft recommendations, and other alternatives may exist. Evaluate any alternative against your own requirements.
+
 | Target | Alternative | Portability class | Availability | Summary |
 |---|---|---|---|---|
 | Azure Local | [Keycloak](./alternatives/keycloak.md) | `adapter-required` | Sample available | Open-source identity provider you run on site in place of Entra ID. Each federated identity credential becomes a Keycloak client that trusts the cluster's tokens; the client code and permission model change. |

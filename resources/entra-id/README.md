@@ -2,6 +2,8 @@
 
 On Azure, users sign in to web apps and APIs through Microsoft Entra ID: app registrations, delegated scopes and app roles. A workload on Azure Local that has to keep working while the site is cut off from Azure needs an identity provider on site. This guide covers user sign-in and the roles apps check. How services sign in without a secret is in the [Microsoft Entra Workload ID guide](../workload-identity/README.md).
 
+> **About the alternatives:** the open-source alternatives in this guide are examples this project explored, not Microsoft recommendations, and other alternatives may exist. Evaluate any alternative against your own requirements.
+
 | Target | Alternative | Portability class | Availability | Summary |
 |---|---|---|---|---|
 | Azure Local | [Keycloak with Active Directory](./alternatives/keycloak.md) | `protocol-compatible` | Sample available | Open-source identity provider you run on site, with users and groups read from Active Directory. Standard OpenID Connect and OAuth 2.0, so the Microsoft identity libraries keep working with different settings. |

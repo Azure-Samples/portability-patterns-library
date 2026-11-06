@@ -47,7 +47,7 @@ The sample is sample code. Before production:
 - confirm how Secrets are encrypted at rest in your cluster;
 - alert when a secret stops syncing;
 - decide how long the site may run with a secret that can't be rotated, within Arc's 90-day limit;
-- for public TLS certificates, prefer issuing them on each site (for example ACME with DNS validation) over copying them from Key Vault, so renewal doesn't depend on Azure.
+- decide how public TLS certificates renew. Certificates copied from Key Vault renew only while the site is connected; certificates issued on each site (for example ACME with DNS validation) renew without Azure.
 
 ## References
 

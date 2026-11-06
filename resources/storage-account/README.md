@@ -1,6 +1,8 @@
 # Azure Storage account → Azure Local
 
-Azure Storage isn't available on Azure Local. This guide covers two of its services: Blob storage and Azure Files. For each, it shows what you can use instead, what stays the same, and what you change in your workload.
+Azure Storage isn't available on Azure Local. This guide covers two of its services: Blob storage and Azure Files. For each, it describes the alternatives this project explored, what stays the same, and what you change in your workload.
+
+> **About the alternatives:** the open-source alternatives in this guide are examples this project explored, not Microsoft recommendations, and other alternatives may exist. Evaluate any alternative against your own requirements.
 
 ## Blob storage
 
