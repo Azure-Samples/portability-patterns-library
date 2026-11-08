@@ -66,7 +66,9 @@ public sealed class HttpInventoryClient(HttpClient http) : IInventoryClient
             {
                 response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is HttpRequestException or TimeoutRejectedException or BrokenCircuitException)
+            catch (Exception ex) when (ex is HttpRequestException or TimeoutRejectedException or BrokenCircuitException
+                // HttpClient's own timeout, which also covers reading the body.
+                or TaskCanceledException { InnerException: TimeoutException })
             {
                 throw new InventoryUnavailableException($"The inventory service could not be reached: {ex.Message}", ex);
             }

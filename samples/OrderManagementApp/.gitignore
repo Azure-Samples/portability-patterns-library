@@ -36,3 +36,6 @@ local/certs/*
 ## Azure Developer CLI environments (azd env)
 .azure/
 
+## Handover files from earlier versions of the Azure Local scripts (may hold a registry pull credential)
+scripts/.handover/
+

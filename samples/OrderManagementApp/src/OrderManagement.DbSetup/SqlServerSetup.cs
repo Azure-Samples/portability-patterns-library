@@ -51,7 +51,7 @@ public sealed class SqlServerSetup(
         var loginPrincipals = principals.Where(principal => principal.ClientId is null).ToList();
         var useMaster = !admin.UsesToken || loginPrincipals.Count > 0;
 
-        await using var session = await setup.Value.CreateConnectPipeline($"SQL Server {target.Host}", _logger)
+        await using var session = await setup.Value.CreateConnectPipeline($"SQL Server {target.Host}", _logger, retryLoginFailure: admin.UsesToken)
             .ExecuteAsync(async token => await connections.OpenAsync(useMaster ? "master" : null, token), cancellationToken);
 
         if (useMaster)

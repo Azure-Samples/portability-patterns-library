@@ -74,13 +74,13 @@ public static class TelemetryExtensions
 
         var telemetry = builder.Services.AddOpenTelemetry()
             .ConfigureResource(resource =>
-            {
                 // OTEL_SERVICE_NAME, set per container by the app definition, wins when present.
-                if (string.IsNullOrWhiteSpace(builder.Configuration["OTEL_SERVICE_NAME"]))
-                {
-                    resource.AddService(builder.Environment.ApplicationName);
-                }
-            })
+                // AddService also gives each process its own service.instance.id, so the replicas of
+                // a service report separate series rather than one.
+                resource.AddService(
+                    string.IsNullOrWhiteSpace(builder.Configuration["OTEL_SERVICE_NAME"])
+                        ? builder.Environment.ApplicationName
+                        : builder.Configuration["OTEL_SERVICE_NAME"]!))
             .WithTracing(tracer =>
             {
                 tracer

@@ -87,12 +87,15 @@ public static class ServiceCollectionExtensions
         var identity = services.AddWorkloadIdentity(configuration);
         InventoryOptions.Add(services);
 
+        // The resilience handler's timeouts end when the response headers arrive; HttpClient reads
+        // the body afterwards. The same total limit on the HttpClient covers the body too, so an
+        // answer that stalls halfway can't hold a caller (on RabbitMQ, the processor's only delivery).
+        var resilience = new HttpStandardResilienceOptions();
+        configuration.GetSection($"{InventoryOptions.SectionName}:Resilience").Bind(resilience);
+        var totalTimeout = resilience.TotalRequestTimeout.Timeout;
+
         var client = services.AddHttpClient<IInventoryClient, HttpInventoryClient>((sp, http) =>
-        {
-            http.BaseAddress = sp.GetRequiredService<IOptions<InventoryOptions>>().Value.BaseUrl;
-            // The resilience handler's timeouts apply instead.
-            http.Timeout = Timeout.InfiniteTimeSpan;
-        });
+            http.BaseAddress = sp.GetRequiredService<IOptions<InventoryOptions>>().Value.BaseUrl);
 
         // Outermost, so each attempt gets a current token. Restocking adds stock each time it is
         // sent, so a POST is never repeated; reserving is repeated by the processor, which can.
@@ -101,6 +104,8 @@ public static class ServiceCollectionExtensions
             configuration.GetSection($"{InventoryOptions.SectionName}:Resilience").Bind(options);
             options.Retry.DisableFor(HttpMethod.Post);
         });
+        // After the resilience handler, which turns the HttpClient's timeout off.
+        client.ConfigureHttpClient(http => http.Timeout = totalTimeout);
 
         if (identity.Entra is { } entra)
         {
