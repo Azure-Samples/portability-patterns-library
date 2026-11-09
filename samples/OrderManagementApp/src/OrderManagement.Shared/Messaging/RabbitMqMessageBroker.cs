@@ -34,6 +34,8 @@ public sealed class RabbitMqMessageBroker : IMessageQueue
     private IChannel? _publishChannel;
     private IChannel? _consumeChannel;
     private CredentialsRefresher? _refresher;
+    // The access token the broker holds for this connection, so an unchanged one isn't sent again.
+    private volatile string? _currentSecret;
 
     // Cancelled when the consuming channel closes: deliveries in progress can no longer be
     // acknowledged, and the broker hands them out again after the channel recovers.
@@ -250,6 +252,9 @@ public sealed class RabbitMqMessageBroker : IMessageQueue
             var connection = await factory.CreateConnectionAsync(cancellationToken).ConfigureAwait(false);
             if (_tokenCredentials is not null)
             {
+                // The refresher fetches a token as soon as it starts; the cached one the connection
+                // just opened with is skipped rather than sent again.
+                _currentSecret = (await _tokenCredentials.GetCredentialsAsync(cancellationToken).ConfigureAwait(false)).Password;
                 _refresher = new CredentialsRefresher(_tokenCredentials, (credentials, failure, token) =>
                     UpdateSecretAsync(connection, credentials, failure, token), CancellationToken.None);
             }
@@ -273,7 +278,13 @@ public sealed class RabbitMqMessageBroker : IMessageQueue
 
         try
         {
+            if (credentials.Password == _currentSecret)
+            {
+                return;
+            }
+
             await connection.UpdateSecretAsync(credentials.Password, "access token renewed", cancellationToken).ConfigureAwait(false);
+            _currentSecret = credentials.Password;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
