@@ -65,7 +65,7 @@ jobs:
           exit $status
 
   app:
-    name: App build and local run
+    name: App build, tests and local run
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -79,6 +79,12 @@ jobs:
 
       - name: Build
         run: dotnet build OrderManagement.sln --configuration Release -warnaserror
+
+      # Unit tests, the API and inventory authorization tests, and the integration tests, which run
+      # PostgreSQL and SQL Server in containers. With CI=true, as here, they fail rather than skip
+      # when there is no container engine.
+      - name: Tests
+        run: dotnet test OrderManagement.sln --configuration Release --no-build
 
       # The same steps a developer follows in the README to run the app locally, with a password
       # for this run only.
