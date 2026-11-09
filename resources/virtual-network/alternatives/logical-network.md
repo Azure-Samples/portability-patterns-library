@@ -47,7 +47,7 @@ A [logical network](https://learn.microsoft.com/azure/azure-local/manage/create-
 | Attaching the cluster | The same file passes the logical network to AKS in `cloudProviderProfile.infraNetworkProfile.vnetSubnetIds`. The node VMs and the control plane address come from it. |
 | Pod addresses | `podCidr` with Calico, separate from the logical network's prefix |
 | Reaching the app from the site | The [Arc load balancer](../../../samples/OrderManagementApp/infra/azurelocal/platform-resources.bicep) (MetalLB) gives the ingress an address from the logical network's prefix, outside the IP pool. On Azure, the ingress gets an Azure load balancer address. |
-| Traffic between pods | The same [network policies](../../../samples/OrderManagementApp/deploy/network-policies.yaml) on both targets: nothing reaches a pod unless a policy allows it. |
+| Traffic between pods | The same [network policies](../../../samples/OrderManagementApp/deploy/network-policies.yaml) on both targets default-deny ingress to pods in the application namespace, with explicit allowances. Kubelet health probes are unaffected; these policies don't cover other namespaces. |
 
 ## Not covered by the sample
 
