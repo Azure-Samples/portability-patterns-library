@@ -44,7 +44,7 @@ public sealed class SqlServerSetup(
             ReadPrincipal("processor", "SQL_PROCESSOR", "SELECT, INSERT")
         ];
 
-        _logger.LogInformation("Setting up SQL host {Host}, database {Database}, as {Login}", target.Host, target.Database, admin);
+        _logger.LogInformation("Setting up SQL host {Host}, database {Database}", target.Host, target.Database);
 
         // SQL logins live in master, and a SQL Server container starts without the application
         // database. With Entra users only (Azure SQL) the database exists and master is not needed.

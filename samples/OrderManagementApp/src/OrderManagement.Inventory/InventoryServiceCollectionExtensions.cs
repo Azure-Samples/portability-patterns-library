@@ -29,7 +29,7 @@ public static class InventoryServiceCollectionExtensions
         {
             var options = sp.GetRequiredService<IOptions<PostgresOptions>>().Value;
             sp.GetRequiredService<ILogger<PostgresProductRepository>>().LogInformation(
-                "Connecting to PostgreSQL host {Host}, database {Database}, with {Login}", options.Host, options.Database, login);
+                "Connecting to PostgreSQL host {Host}, database {Database}", options.Host, options.Database);
             return PostgresDataSourceFactory.Create(options, login, sp.GetRequiredService<ILoggerFactory>());
         });
 

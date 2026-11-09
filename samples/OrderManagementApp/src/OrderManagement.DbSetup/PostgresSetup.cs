@@ -42,8 +42,7 @@ public sealed class PostgresSetup(
         var admin = DatabaseLogin.Create(configuration, identity, "POSTGRES_ADMIN_USERNAME", "POSTGRES_ADMIN_PASSWORD",
             DatabaseLogin.PostgresScope, tokenNeedsUserName: true);
 
-        _logger.LogInformation("Setting up PostgreSQL host {Host}, database {Database}, as {Login}",
-            target.Host, target.Database, admin);
+        _logger.LogInformation("Setting up PostgreSQL host {Host}, database {Database}", target.Host, target.Database);
 
         // Databases and roles are server-wide; Entra principals can only be created from 'postgres'.
         await using var server = PostgresDataSourceFactory.Create(target, admin, loggerFactory, database: "postgres");

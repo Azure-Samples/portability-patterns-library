@@ -36,11 +36,6 @@ public sealed class DatabaseLogin
         await (_credential ?? throw new InvalidOperationException("This login uses a password."))
             .GetTokenAsync(new TokenRequestContext([_scope]), cancellationToken).ConfigureAwait(false);
 
-    // For logs: never the secret.
-    public override string ToString() => UsesToken
-        ? UserName is null ? "an Entra ID token" : $"an Entra ID token as '{UserName}'"
-        : $"password login '{UserName}'";
-
     /// <param name="userNameKey">For example <c>SQL_USERNAME</c>.</param>
     /// <param name="passwordKey">For example <c>SQL_PASSWORD</c>.</param>
     /// <param name="tokenNeedsUserName">
