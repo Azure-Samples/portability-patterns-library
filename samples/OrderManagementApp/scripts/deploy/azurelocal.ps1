@@ -246,7 +246,8 @@ done
             containers            = @(@{
                     name            = $podName
                     image           = "$PullRegistry/$RegistryClientImage"
-                    command         = @('/bin/sh', '-c', $script)
+                    # A Windows checkout can give the here-string CRLF line ends, which sh can't parse.
+                    command         = @('/bin/sh', '-c', ($script -replace "`r", ''))
                     env             = @(
                         @{ name = 'REGISTRY'; value = $PullRegistry },
                         @{ name = 'TIMEOUT_SECONDS'; value = "$timeoutSeconds" },
