@@ -36,7 +36,7 @@ A [logical network](https://learn.microsoft.com/azure/azure-local/manage/create-
 - **Ask the network team first.** Reserve the address range, VLAN, gateway and DNS servers with them. Without a VLAN ID, the VMs send untagged traffic, which the physical switch must accept.
 - **Size the address range.** For AKS, the node pool, upgrades, the control plane address and load balancer addresses all come from the logical network's prefix. Running out of addresses fails cluster deployment and upgrades. IP pools must not overlap on the same VLAN.
 - **Pods use their own range.** AKS on Azure Local gives pods addresses from a separate pod CIDR, carried over VXLAN by Calico, not from the logical network. Keep it from overlapping site networks the pods call. See [IP address planning](https://learn.microsoft.com/azure/aks-hybrid-edge/local/hyperconverged/aks-hci-ip-address-planning).
-- **Network security groups.** Available with [SDN enabled by Arc](https://learn.microsoft.com/azure/azure-local/concepts/sdn-overview), on Azure Local 2506 or later. They apply to Azure Local VMs created through Azure, not to the logical network AKS uses or to AKS node NICs. SDN managed by on-premises tools offers virtual networks and gateways, but for a different set of VMs; don't mix the two.
+- **Network security groups.** Available with [SDN enabled by Arc](https://learn.microsoft.com/azure/azure-local/concepts/sdn-overview), on Azure Local 2506 or later. They apply to Azure Local VMs created through Azure, not to the logical network AKS uses or to AKS node NICs. [SDN managed by on-premises tools](https://learn.microsoft.com/azure/azure-local/concepts/software-defined-networking-23h2) offers virtual networks, a load balancer and gateways, but only for VMs managed on site, and you can't mix the two methods. [AKS on Azure Local doesn't support software-defined virtual networks](https://learn.microsoft.com/azure/aks/aksarc/network-system-requirements).
 
 ## How the Order Management sample does it
 
@@ -66,3 +66,5 @@ The sample uses one network per target. Before production, add:
 - [IP address planning for AKS on Azure Local](https://learn.microsoft.com/azure/aks-hybrid-edge/local/hyperconverged/aks-hci-ip-address-planning)
 - [SDN enabled by Azure Arc on Azure Local](https://learn.microsoft.com/azure/azure-local/concepts/sdn-overview)
 - [Network security groups on Azure Local](https://learn.microsoft.com/azure/azure-local/manage/create-network-security-groups)
+- [SDN managed by on-premises tools](https://learn.microsoft.com/azure/azure-local/concepts/software-defined-networking-23h2)
+- [AKS on Azure Local network requirements](https://learn.microsoft.com/azure/aks/aksarc/network-system-requirements)

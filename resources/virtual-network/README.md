@@ -5,7 +5,7 @@ Azure Virtual Network isn't available on Azure Local. A logical network gives VM
 | Target | Alternative | Portability class | Availability | Summary |
 |---|---|---|---|---|
 | Azure Local | [Logical network](./alternatives/logical-network.md) | — | Documentation available | Addresses, DNS servers, gateway and VLAN on the site network, for Azure Local VMs and AKS nodes. No peering or Private Link; routing between networks and firewalls come from the site. |
-
+| Azure Local | [SDN managed by on-premises tools](https://learn.microsoft.com/azure/azure-local/concepts/software-defined-networking-23h2) | — | Documentation available | Not evaluated by this project. Virtual networks, load balancer and gateways for Hyper-V VMs managed on site; not supported for AKS on Azure Local. See the linked documentation. |
 ## What carries over
 
 - **Pod-to-pod rules:** the same Kubernetes NetworkPolicies work on both targets, enforced by Cilium on Azure and Calico on Azure Local.
