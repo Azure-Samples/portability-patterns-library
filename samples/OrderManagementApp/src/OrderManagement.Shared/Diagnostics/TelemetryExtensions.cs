@@ -74,13 +74,14 @@ public static class TelemetryExtensions
 
         var telemetry = builder.Services.AddOpenTelemetry()
             .ConfigureResource(resource =>
-                // OTEL_SERVICE_NAME, set per container by the app definition, wins when present.
-                // AddService also gives each process its own service.instance.id, so the replicas of
-                // a service report separate series rather than one.
+                // OTEL_SERVICE_NAME, set per container by the app definition, wins when present. Each
+                // process reports as its host name, the pod's name in Kubernetes, so the replicas of a
+                // service are separate series and Application Insights shows which pod sent what.
                 resource.AddService(
                     string.IsNullOrWhiteSpace(builder.Configuration["OTEL_SERVICE_NAME"])
                         ? builder.Environment.ApplicationName
-                        : builder.Configuration["OTEL_SERVICE_NAME"]!))
+                        : builder.Configuration["OTEL_SERVICE_NAME"]!,
+                    serviceInstanceId: Environment.MachineName))
             .WithTracing(tracer =>
             {
                 tracer
