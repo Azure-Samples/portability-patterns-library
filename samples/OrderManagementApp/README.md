@@ -113,7 +113,7 @@ object store and Keycloak's admin. On Linux and macOS, also run `chmod 644 local
 before `docker compose up`, so the Keycloak container can read the certificate.
 
 Open http://localhost:8080 and sign in as `demo`, password `demo`, to place orders, or as `manager`,
-password `manager`, to restock. Run the tests with `dotnet test`.
+password `manager`, to restock.
 
 The build downloads packages from nuget.org and images from mcr.microsoft.com, docker.io and quay.io.
 If your network blocks them, ask for access, or point the build at your own NuGet feed with a
