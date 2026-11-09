@@ -25,8 +25,8 @@ public sealed class ApiExceptionHandler(IProblemDetailsService problems, ILogger
             return false;
         }
 
-        // The endpoint's route template, not the raw path a caller sent; the exception carries the rest.
-        logger.LogWarning(exception, "{Endpoint} answered {Status}", context.GetEndpoint()?.DisplayName ?? context.Request.Method, status);
+        // The endpoint's route template, not anything the caller sent; the exception carries the rest.
+        logger.LogWarning(exception, "{Endpoint} answered {Status}", context.GetEndpoint()?.DisplayName, status);
         context.Response.StatusCode = status;
         return await problems.TryWriteAsync(new ProblemDetailsContext
         {
