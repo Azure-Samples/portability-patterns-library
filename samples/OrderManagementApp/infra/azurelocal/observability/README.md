@@ -17,7 +17,7 @@ link to Azure is down. On Azure, Azure Monitor does this job.
 ## Grafana
 
 Open `https://<app address>/grafana` and sign in through Keycloak. Only members of the AD group
-`oms-operators` get in, since the logs carry customers' order details. The **Order Management**
+`oms-operators` get in, because the logs include customer and order IDs. The **Order Management**
 dashboard shows orders per minute, processing time, queue lengths and stock.
 
 ## Alerts
@@ -46,4 +46,5 @@ Grafana under **Alerting**.
 | `LokiRetention`, `LokiStorage` | `168h`, `5Gi` |
 | `TempoRetention`, `TempoStorage` | `72h`, `5Gi` |
 
-Sizes apply when a volume is created; keep `LokiStorage` and `TempoStorage` at their first values.
+Choose `LokiStorage` and `TempoStorage` before the first install: changing them later makes the
+upgrade fail, because Kubernetes doesn't change the size of an existing StatefulSet's volumes.

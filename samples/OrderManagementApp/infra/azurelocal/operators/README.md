@@ -20,15 +20,14 @@ servers and between replicas, uses TLS from the site CA.
 
 | Failure | What happens |
 | --- | --- |
-| PostgreSQL primary | A replica is promoted in about 20 seconds; no committed transaction is lost. |
+| PostgreSQL primary | A replica takes over in about half a minute; no committed transaction is lost. |
 | RabbitMQ node | The other two keep serving; every queue has a copy on each node. |
-| Keycloak pod | The other replica keeps serving. |
 
 The cluster needs three workers so the replicas don't share one.
 
 ## Restoring a database
 
-The write-ahead log is archived at least every 5 minutes and a base backup is taken daily, kept 30
-days. To restore, create a new CloudNativePG `Cluster` that recovers from them, as in
+Changes reach the backup in the object store within 5 minutes, and a full backup is taken daily.
+Backups are kept 30 days. To restore, create a new CloudNativePG `Cluster` that recovers from them, as in
 [the plugin's documentation](https://cloudnative-pg.io/plugin-barman-cloud/docs/usage/#restoring-a-cluster),
 then point the app at it.
