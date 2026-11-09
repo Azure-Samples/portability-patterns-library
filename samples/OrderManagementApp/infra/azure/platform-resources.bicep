@@ -53,6 +53,22 @@ param nodeOsUpgradeDay string
 
 @description('Start of that window, HH:mm in UTC. It lasts four hours.')
 param nodeOsUpgradeStartTime string
+
+@description('Address space of the virtual network the nodes join.')
+param virtualNetworkAddressPrefix string
+
+@description('Address prefix of the node subnet. Only nodes take addresses from it; pods use podCidr.')
+param nodeSubnetAddressPrefix string
+
+@description('Pod address range. Must not overlap the virtual network or any network the pods call.')
+param podCidr string
+
+@description('Kubernetes service address range. Must not overlap the virtual network or podCidr.')
+param serviceCidr string
+
+@description('Address of the cluster DNS service, inside serviceCidr.')
+param dnsServiceIP string
+
 // Built-in role definition ID for AcrPull.
 var acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 
@@ -67,6 +83,10 @@ var aksRbacClusterAdminRoleId = 'b1ff04bb-8a4e-4dc4-8eb5-8693973ce19b'
 // group because its Recipes create both resources and role assignments; Contributor alone cannot
 // grant the data-plane roles that Service Bus and Storage require.
 var ownerRoleId = '8e3af657-a8ff-443c-a75c-2fe8c4bcb635'
+
+// Built-in role definition ID for Network Contributor. The cluster identity needs it on the node
+// subnet to join nodes to it and to manage load balancers there.
+var networkContributorRoleId = '4d97b98b-1d4f-4787-a291-c67834d212e7'
 
 // The Radius control plane services that authenticate to Azure. Each needs a federated credential
 // bound to its Kubernetes service account in the radius-system namespace.
@@ -92,13 +112,66 @@ resource registry 'Microsoft.ContainerRegistry/registries@2025-04-01' = {
   }
 }
 
+// The cluster's network. Declared here, rather than left to AKS, so it can be planned, peered and
+// secured like any other network. With Azure CNI Overlay only the nodes take addresses from the
+// subnet; pods get theirs from podCidr.
+resource virtualNetwork 'Microsoft.Network/virtualNetworks@2024-05-01' = {
+  name: 'vnet-${clusterName}'
+  location: location
+  tags: tags
+  properties: {
+    addressSpace: {
+      addressPrefixes: [
+        virtualNetworkAddressPrefix
+      ]
+    }
+    subnets: [
+      {
+        name: 'aks-nodes'
+        properties: {
+          addressPrefix: nodeSubnetAddressPrefix
+        }
+      }
+    ]
+  }
+}
+
+resource nodeSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' existing = {
+  parent: virtualNetwork
+  name: 'aks-nodes'
+}
+
+// The cluster's control-plane identity. User-assigned so it can be granted Network Contributor on
+// the subnet before the cluster exists; a system-assigned identity only exists after the cluster.
+resource clusterIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: '${identityPrefix}-aks'
+  location: location
+  tags: tags
+}
+
+resource clusterSubnetAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: nodeSubnet
+  name: guid(nodeSubnet.id, clusterIdentity.id, networkContributorRoleId)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', networkContributorRoleId)
+    principalId: clusterIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
 resource cluster 'Microsoft.ContainerService/managedClusters@2025-04-01' = {
   name: clusterName
   location: location
   tags: tags
   identity: {
-    type: 'SystemAssigned'
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${clusterIdentity.id}': {}
+    }
   }
+  dependsOn: [
+    clusterSubnetAssignment
+  ]
   properties: {
     dnsPrefix: clusterName
     kubernetesVersion: empty(kubernetesVersion) ? null : kubernetesVersion
@@ -121,6 +194,8 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2025-04-01' = {
         count: nodeCount
         vmSize: nodeVmSize
         osDiskSizeGB: 128
+        // Fixed once the pool exists: moving nodes to another subnet means a new pool or cluster.
+        vnetSubnetID: nodeSubnet.id
       }
     ]
     // The two settings that make Workload Identity possible. The OIDC issuer publishes the
@@ -136,12 +211,16 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2025-04-01' = {
       }
     }
     // Azure CNI Overlay with Cilium enforces Kubernetes network policies, which limit which pods may
-    // reach each service.
+    // reach each service. The pod and service ranges are set explicitly so they can't overlap the
+    // virtual network.
     networkProfile: {
       networkPlugin: 'azure'
       networkPluginMode: 'overlay'
       networkDataplane: 'cilium'
       networkPolicy: 'cilium'
+      podCidr: podCidr
+      serviceCidr: serviceCidr
+      dnsServiceIP: dnsServiceIP
     }
     // Managed NGINX ingress (app routing add-on): how applications are published to users.
     ingressProfile: {
@@ -414,3 +493,5 @@ output alertActionGroupId string = alertActionGroup.id
 output radiusIdentityClientId string = radiusIdentity.properties.clientId
 output radiusIdentityPrincipalId string = radiusIdentity.properties.principalId
 output radiusIdentityName string = radiusIdentity.name
+output virtualNetworkId string = virtualNetwork.id
+output nodeSubnetId string = nodeSubnet.id

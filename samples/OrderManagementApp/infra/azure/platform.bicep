@@ -3,6 +3,7 @@
 // Creates everything the application deployment assumes already exists:
 //
 //   * Azure Container Registry, holding both the application images and the Bicep Recipes.
+//   * A virtual network with a node subnet, and the AKS cluster's nodes joined to it.
 //   * AKS cluster with the OIDC issuer and workload identity both enabled.
 //   * AcrPull for the cluster's kubelet identity, the declarative equivalent of
 //     `az aks update --attach-acr`, so the kubelet can pull the application images.
@@ -120,6 +121,24 @@ param nodeOsUpgradeDay string = 'Sunday'
 @description('Start of that window, HH:mm in UTC. It lasts four hours.')
 param nodeOsUpgradeStartTime string = '02:00'
 
+@description('''
+Address space of the virtual network the AKS nodes join. Fixed for the life of the cluster. Must
+not overlap podCidr, serviceCidr, or any network you later peer or connect over VPN.
+''')
+param virtualNetworkAddressPrefix string = '10.224.0.0/16'
+
+@description('Address prefix of the node subnet, inside the virtual network. Leave room for scaling and upgrades.')
+param nodeSubnetAddressPrefix string = '10.224.0.0/24'
+
+@description('Pod address range for Azure CNI Overlay. Not routable outside the cluster.')
+param podCidr string = '10.244.0.0/16'
+
+@description('Kubernetes service address range.')
+param serviceCidr string = '10.0.0.0/16'
+
+@description('Address of the cluster DNS service, inside serviceCidr.')
+param dnsServiceIP string = '10.0.0.10'
+
 resource platformResourceGroup 'Microsoft.Resources/resourceGroups@2022-09-01' = {
   name: resourceGroupName
   location: location
@@ -148,6 +167,11 @@ module platform 'platform-resources.bicep' = {
     tags: tags
     nodeOsUpgradeDay: nodeOsUpgradeDay
     nodeOsUpgradeStartTime: nodeOsUpgradeStartTime
+    virtualNetworkAddressPrefix: virtualNetworkAddressPrefix
+    nodeSubnetAddressPrefix: nodeSubnetAddressPrefix
+    podCidr: podCidr
+    serviceCidr: serviceCidr
+    dnsServiceIP: dnsServiceIP
   }
 }
 
@@ -182,3 +206,9 @@ output radiusIdentityClientId string = platform.outputs.radiusIdentityClientId
 output radiusIdentityPrincipalId string = platform.outputs.radiusIdentityPrincipalId
 
 output appNamespace string = appNamespace
+
+@description('Virtual network the AKS nodes join. Peer or connect other networks to it.')
+output virtualNetworkId string = platform.outputs.virtualNetworkId
+
+@description('Subnet the AKS nodes take their addresses from.')
+output nodeSubnetId string = platform.outputs.nodeSubnetId
