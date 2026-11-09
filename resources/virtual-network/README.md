@@ -6,6 +6,7 @@ Azure Virtual Network isn't available on Azure Local. A logical network gives VM
 |---|---|---|---|---|
 | Azure Local | [Logical network](./alternatives/logical-network.md) | — | Documentation available | Addresses, DNS servers, gateway and VLAN on the site network, for Azure Local VMs and AKS nodes. No peering or Private Link; routing between networks and firewalls come from the site. |
 | Azure Local | [SDN managed by on-premises tools](https://learn.microsoft.com/azure/azure-local/concepts/software-defined-networking-23h2) | — | Documentation available | Not evaluated by this project. Virtual networks, load balancer and gateways for Hyper-V VMs managed on site; not supported for AKS on Azure Local. See the linked documentation. |
+
 ## What carries over
 
 - **Pod-to-pod rules:** the same Kubernetes NetworkPolicies work on both targets, enforced by Cilium on Azure and Calico on Azure Local.
@@ -36,4 +37,4 @@ How Virtual Network features map to logical networks, and what to watch on Azure
 
 ## Sample
 
-The [Order Management sample](../../samples/OrderManagementApp/README.md) runs on AKS on Azure, which manages its own virtual network, and on AKS on Azure Local, attached to a logical network that the deployment creates. [Logical networks as an alternative](./alternatives/logical-network.md#how-the-order-management-sample-does-it) points to the code. The sample doesn't use peering or private endpoints.
+The [Order Management sample](../../samples/OrderManagementApp/README.md) runs on AKS on Azure, with its nodes in a virtual network the deployment declares, and on AKS on Azure Local, attached to a logical network that the deployment creates. [Logical networks as an alternative](./alternatives/logical-network.md#how-the-order-management-sample-does-it) points to the code. The sample doesn't use peering or private endpoints.

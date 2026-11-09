@@ -42,10 +42,10 @@ A [logical network](https://learn.microsoft.com/azure/azure-local/manage/create-
 
 | Step | In the sample |
 |---|---|
-| The network on Azure | [Azure platform resources](../../../samples/OrderManagementApp/infra/azure/platform-resources.bicep) don't declare a virtual network: AKS creates and manages one, with Azure CNI Overlay and Cilium. |
+| The network on Azure | [Azure platform resources](../../../samples/OrderManagementApp/infra/azure/platform-resources.bicep) declare a virtual network with one node subnet and attach the AKS system pool to it in `vnetSubnetID`. The cluster identity has Network Contributor on the subnet. |
 | The network on Azure Local | [Azure Local platform resources](../../../samples/OrderManagementApp/infra/azurelocal/platform-resources.bicep) create a static logical network: switch, address prefix, IP pool, VLAN, DNS servers and default route. It's created with the cluster, before Radius, not by a Recipe. |
 | Attaching the cluster | The same file passes the logical network to AKS in `cloudProviderProfile.infraNetworkProfile.vnetSubnetIds`. The node VMs and the control plane address come from it. |
-| Pod addresses | `podCidr` with Calico, separate from the logical network's prefix |
+| Pod addresses | `podCidr` on both targets, separate from the node subnet or logical network: Azure CNI Overlay with Cilium on Azure, Calico on Azure Local |
 | Reaching the app from the site | The [Arc load balancer](../../../samples/OrderManagementApp/infra/azurelocal/platform-resources.bicep) (MetalLB) gives the ingress an address from the logical network's prefix, outside the IP pool. On Azure, the ingress gets an Azure load balancer address. |
 | Traffic between pods | The same [network policies](../../../samples/OrderManagementApp/deploy/network-policies.yaml) on both targets default-deny ingress to pods in the application namespace, with explicit allowances. Kubelet health probes are unaffected; these policies don't cover other namespaces. |
 
