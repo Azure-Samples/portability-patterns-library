@@ -37,4 +37,4 @@ How Virtual Network features map to logical networks, and what to watch on Azure
 
 ## Sample
 
-The [Order Management sample](../../samples/OrderManagementApp/README.md) runs on AKS on Azure, with its nodes in a virtual network the deployment declares, and on AKS on Azure Local, attached to a logical network that the deployment creates. [Logical networks as an alternative](./alternatives/logical-network.md#how-the-order-management-sample-does-it) points to the code. The sample doesn't use peering or private endpoints.
+The [Order Management sample](../../samples/OrderManagementApp/README.md) runs on AKS on Azure, with its nodes in a virtual network the deployment declares, and on AKS on Azure Local, attached to a logical network that the deployment creates. [Logical networks as an alternative](./alternatives/logical-network.md#how-the-order-management-sample-does-it) points to the code. On Azure, the sample can also use private endpoints for Blob Storage, Azure SQL and PostgreSQL, and peer with a hub; neither has an equivalent on Azure Local.

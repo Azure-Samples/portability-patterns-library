@@ -43,6 +43,9 @@ A [logical network](https://learn.microsoft.com/azure/azure-local/manage/create-
 | Step | In the sample |
 |---|---|
 | The network on Azure | [Azure platform resources](../../../samples/OrderManagementApp/infra/azure/platform-resources.bicep) declare a virtual network with one node subnet and attach the AKS system pool to it in `vnetSubnetID`. The cluster identity has Network Contributor on the subnet. |
+| Filtering and outbound on Azure | The node subnet has an NSG that allows only ports 80 and 443 from the internet, and a NAT gateway: the nodes and pods reach the internet from one static address. On Azure Local, the site's firewall does both. |
+| Reaching backing services on Azure | Optional, with `UsePrivateEndpoints`: the platform adds a private endpoint subnet and private DNS zones, and the Blob Storage, Azure SQL and PostgreSQL Recipes add private endpoints and turn public access off. Service Bus and the registry stay public. On Azure Local, the services run on site. |
+| Connecting other networks on Azure | Optional, with `HubVirtualNetworkId`: the platform peers the virtual network with a hub, both ways. On Azure Local, the site's routers connect networks. |
 | The network on Azure Local | [Azure Local platform resources](../../../samples/OrderManagementApp/infra/azurelocal/platform-resources.bicep) create a static logical network: switch, address prefix, IP pool, VLAN, DNS servers and default route. It's created with the cluster, before Radius, not by a Recipe. |
 | Attaching the cluster | The same file passes the logical network to AKS in `cloudProviderProfile.infraNetworkProfile.vnetSubnetIds`. The node VMs and the control plane address come from it. |
 | Pod addresses | `podCidr` on both targets, separate from the node subnet or logical network: Azure CNI Overlay with Cilium on Azure, Calico on Azure Local |
@@ -56,7 +59,8 @@ The sample uses one network per target. Before production, add:
 - separate logical networks for tiers that must be isolated, such as a database moved out of the cluster onto its own VM, with routes and firewall rules between them on the site network;
 - network security groups on standalone Azure Local VMs, if you run any;
 - egress rules: the sample's network policies restrict inbound traffic only;
-- monitoring of the site network.
+- monitoring of the site network;
+- on Azure, private endpoints for Service Bus and the container registry, which need their Premium tiers.
 
 ## References
 
