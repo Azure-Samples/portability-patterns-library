@@ -23,6 +23,23 @@ param contributorPrincipalIds array
 ])
 param sku string = 'Standard_LRS'
 
+@description('Subnet for a private endpoint to the blob service. Empty keeps public access and creates no endpoint.')
+param privateEndpointSubnetId string = ''
+
+@description('Private DNS zone (privatelink.blob...) the endpoint registers in. Required with privateEndpointSubnetId.')
+param privateDnsZoneId string = ''
+
+@description('Region of the private endpoint: the virtual network\'s.')
+param privateEndpointLocation string = location
+
+var usePrivateEndpoint = !empty(privateEndpointSubnetId)
+
+var radiusTags = {
+  'radapp.io-application': context.application == null ? '' : context.application.name
+  'radapp.io-environment': context.environment.name
+  'radapp.io-resource': context.resource.name
+}
+
 var containerName = context.resource.properties.?containerName ?? 'data'
 
 // Storage account names are globally unique, lowercase alphanumeric, 3-24 characters. The resource
@@ -46,12 +63,10 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
     // Force Entra ID auth; this is what makes the managed identity path mandatory.
     allowSharedKeyAccess: false
     allowBlobPublicAccess: false
+    // With a private endpoint, only the virtual network reaches the account's data.
+    publicNetworkAccess: usePrivateEndpoint ? 'Disabled' : 'Enabled'
   }
-  tags: {
-    'radapp.io-application': context.application == null ? '' : context.application.name
-    'radapp.io-environment': context.environment.name
-    'radapp.io-resource': context.resource.name
-  }
+  tags: radiusTags
 }
 
 resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
@@ -77,11 +92,48 @@ resource blobContributorAssignments 'Microsoft.Authorization/roleAssignments@202
   }
 }]
 
+resource privateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = if (usePrivateEndpoint) {
+  name: 'pe-${accountName}-blob'
+  location: privateEndpointLocation
+  properties: {
+    subnet: {
+      id: privateEndpointSubnetId
+    }
+    privateLinkServiceConnections: [
+      {
+        name: 'blob'
+        properties: {
+          privateLinkServiceId: storageAccount.id
+          groupIds: [
+            'blob'
+          ]
+        }
+      }
+    ]
+  }
+  tags: radiusTags
+}
+
+resource privateDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = if (usePrivateEndpoint) {
+  parent: privateEndpoint
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'blob'
+        properties: {
+          privateDnsZoneId: privateDnsZoneId
+        }
+      }
+    ]
+  }
+}
+
 output result object = {
-  resources: [
+  resources: concat([
     storageAccount.id
     container.id
-  ]
+  ], usePrivateEndpoint ? [ privateEndpoint.id ] : [])
   values: {
     accountName: accountName
     endpoint: storageAccount.properties.primaryEndpoints.blob

@@ -69,6 +69,15 @@ param serviceCidr string
 @description('Address of the cluster DNS service, inside serviceCidr.')
 param dnsServiceIP string
 
+@description('Create a subnet and private DNS zones for private endpoints to Blob Storage, Azure SQL and PostgreSQL.')
+param usePrivateEndpoints bool
+
+@description('Address prefix of the private endpoint subnet, inside the virtual network.')
+param privateEndpointSubnetAddressPrefix string
+
+@description('Resource ID of a hub virtual network to peer with, in the same subscription. Empty peers with nothing.')
+param hubVirtualNetworkId string
+
 // Built-in role definition ID for AcrPull.
 var acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 
@@ -112,6 +121,65 @@ resource registry 'Microsoft.ContainerRegistry/registries@2025-04-01' = {
   }
 }
 
+// Inbound to the nodes: the ingress's ports from the internet. Azure's default rules already allow
+// traffic within the virtual network and from the load balancer's health probes, and deny the rest.
+resource nodeSecurityGroup 'Microsoft.Network/networkSecurityGroups@2024-05-01' = {
+  name: 'nsg-${clusterName}-nodes'
+  location: location
+  tags: tags
+  properties: {
+    securityRules: [
+      {
+        name: 'allow-ingress-http-https'
+        properties: {
+          priority: 100
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: 'Tcp'
+          sourceAddressPrefix: 'Internet'
+          sourcePortRange: '*'
+          destinationAddressPrefix: '*'
+          destinationPortRanges: [
+            '80'
+            '443'
+          ]
+        }
+      }
+    ]
+  }
+}
+
+// Outbound from the nodes and pods leaves through one static address, which external firewalls can
+// allow, instead of the load balancer's.
+resource natPublicIp 'Microsoft.Network/publicIPAddresses@2024-05-01' = {
+  name: 'pip-${clusterName}-nat'
+  location: location
+  tags: tags
+  sku: {
+    name: 'Standard'
+  }
+  properties: {
+    publicIPAllocationMethod: 'Static'
+  }
+}
+
+resource natGateway 'Microsoft.Network/natGateways@2024-05-01' = {
+  name: 'ng-${clusterName}'
+  location: location
+  tags: tags
+  sku: {
+    name: 'Standard'
+  }
+  properties: {
+    idleTimeoutInMinutes: 4
+    publicIpAddresses: [
+      {
+        id: natPublicIp.id
+      }
+    ]
+  }
+}
+
 // The cluster's network. Declared here, rather than left to AKS, so it can be planned, peered and
 // secured like any other network. With Azure CNI Overlay only the nodes take addresses from the
 // subnet; pods get theirs from podCidr.
@@ -125,20 +193,84 @@ resource virtualNetwork 'Microsoft.Network/virtualNetworks@2024-05-01' = {
         virtualNetworkAddressPrefix
       ]
     }
-    subnets: [
+    subnets: concat([
       {
         name: 'aks-nodes'
         properties: {
           addressPrefix: nodeSubnetAddressPrefix
+          networkSecurityGroup: {
+            id: nodeSecurityGroup.id
+          }
+          natGateway: {
+            id: natGateway.id
+          }
         }
       }
-    ]
+    ], usePrivateEndpoints ? [
+      {
+        name: 'private-endpoints'
+        properties: {
+          addressPrefix: privateEndpointSubnetAddressPrefix
+        }
+      }
+    ] : [])
   }
 }
 
 resource nodeSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' existing = {
   parent: virtualNetwork
   name: 'aks-nodes'
+}
+
+// Zones the Recipes' private endpoints register in. Linked to the virtual network, so pods resolve
+// the services' usual host names to private addresses through Azure DNS.
+var privateDnsZoneNames = {
+  blob: 'privatelink.blob.${environment().suffixes.storage}'
+  sql: 'privatelink${environment().suffixes.sqlServerHostname}'
+  postgres: 'privatelink.postgres.database.azure.com'
+}
+
+resource privateDnsZones 'Microsoft.Network/privateDnsZones@2024-06-01' = [for zone in items(privateDnsZoneNames): if (usePrivateEndpoints) {
+  name: zone.value
+  location: 'global'
+  tags: tags
+}]
+
+resource privateDnsZoneLinks 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = [for (zone, i) in items(privateDnsZoneNames): if (usePrivateEndpoints) {
+  parent: privateDnsZones[i]
+  name: virtualNetwork.name
+  location: 'global'
+  tags: tags
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: virtualNetwork.id
+    }
+  }
+}]
+
+// Peering both ways with a hub in the same subscription. The deployer needs Network Contributor on
+// the hub's virtual network too. Address spaces must not overlap.
+resource hubPeering 'Microsoft.Network/virtualNetworks/virtualNetworkPeerings@2024-05-01' = if (!empty(hubVirtualNetworkId)) {
+  parent: virtualNetwork
+  name: 'to-hub'
+  properties: {
+    remoteVirtualNetwork: {
+      id: hubVirtualNetworkId
+    }
+    allowVirtualNetworkAccess: true
+    allowForwardedTraffic: true
+  }
+}
+
+module hubPeeringBack 'hub-peering.bicep' = if (!empty(hubVirtualNetworkId)) {
+  name: 'hub-peering-${clusterName}'
+  scope: resourceGroup(split(hubVirtualNetworkId, '/')[2], split(hubVirtualNetworkId, '/')[4])
+  params: {
+    hubVirtualNetworkName: last(split(hubVirtualNetworkId, '/'))
+    peeringName: 'to-${virtualNetwork.name}'
+    remoteVirtualNetworkId: virtualNetwork.id
+  }
 }
 
 // The cluster's control-plane identity. User-assigned so it can be granted Network Contributor on
@@ -221,6 +353,8 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2025-04-01' = {
       podCidr: podCidr
       serviceCidr: serviceCidr
       dnsServiceIP: dnsServiceIP
+      // Outbound through the NAT gateway on the node subnet, not the load balancer.
+      outboundType: 'userAssignedNATGateway'
     }
     // Managed NGINX ingress (app routing add-on): how applications are published to users.
     ingressProfile: {
@@ -495,3 +629,6 @@ output radiusIdentityPrincipalId string = radiusIdentity.properties.principalId
 output radiusIdentityName string = radiusIdentity.name
 output virtualNetworkId string = virtualNetwork.id
 output nodeSubnetId string = nodeSubnet.id
+output natPublicIpAddress string = natPublicIp.properties.ipAddress
+output privateEndpointSubnetId string = usePrivateEndpoints ? '${virtualNetwork.id}/subnets/private-endpoints' : ''
+output privateDnsZoneIds object = usePrivateEndpoints ? toObject(items(privateDnsZoneNames), zone => zone.key, zone => resourceId('Microsoft.Network/privateDnsZones', zone.value)) : {}

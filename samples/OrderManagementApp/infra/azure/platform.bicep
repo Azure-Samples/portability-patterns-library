@@ -3,7 +3,9 @@
 // Creates everything the application deployment assumes already exists:
 //
 //   * Azure Container Registry, holding both the application images and the Bicep Recipes.
-//   * A virtual network with a node subnet, and the AKS cluster's nodes joined to it.
+//   * A virtual network with a node subnet, and the AKS cluster's nodes joined to it. The subnet
+//     has a network security group and a NAT gateway for outbound traffic. Optionally, a subnet and
+//     private DNS zones for private endpoints, and peering with a hub virtual network.
 //   * AKS cluster with the OIDC issuer and workload identity both enabled.
 //   * AcrPull for the cluster's kubelet identity, the declarative equivalent of
 //     `az aks update --attach-acr`, so the kubelet can pull the application images.
@@ -139,6 +141,22 @@ param serviceCidr string = '10.0.0.0/16'
 @description('Address of the cluster DNS service, inside serviceCidr.')
 param dnsServiceIP string = '10.0.0.10'
 
+@description('''
+Reach Blob Storage, Azure SQL and PostgreSQL through private endpoints in the virtual network, with
+their public access turned off. Creates a subnet and private DNS zones here; the Recipes create the
+endpoints. Service Bus and the registry stay public: their private endpoints need the Premium tier.
+''')
+param usePrivateEndpoints bool = false
+
+@description('Address prefix of the private endpoint subnet, inside the virtual network.')
+param privateEndpointSubnetAddressPrefix string = '10.224.1.0/24'
+
+@description('''
+Resource ID of a hub virtual network in the same subscription to peer with, both ways. Empty peers
+with nothing. Its address space must not overlap this virtual network's.
+''')
+param hubVirtualNetworkId string = ''
+
 resource platformResourceGroup 'Microsoft.Resources/resourceGroups@2022-09-01' = {
   name: resourceGroupName
   location: location
@@ -172,6 +190,9 @@ module platform 'platform-resources.bicep' = {
     podCidr: podCidr
     serviceCidr: serviceCidr
     dnsServiceIP: dnsServiceIP
+    usePrivateEndpoints: usePrivateEndpoints
+    privateEndpointSubnetAddressPrefix: privateEndpointSubnetAddressPrefix
+    hubVirtualNetworkId: hubVirtualNetworkId
   }
 }
 
@@ -212,3 +233,12 @@ output virtualNetworkId string = platform.outputs.virtualNetworkId
 
 @description('Subnet the AKS nodes take their addresses from.')
 output nodeSubnetId string = platform.outputs.nodeSubnetId
+
+@description('Address the nodes and pods reach the internet from. Allow it on external firewalls.')
+output natPublicIpAddress string = platform.outputs.natPublicIpAddress
+
+@description('Subnet the Recipes put private endpoints in. Empty without private endpoints.')
+output privateEndpointSubnetId string = platform.outputs.privateEndpointSubnetId
+
+@description('Private DNS zone IDs by service (blob, sql, postgres). Empty without private endpoints.')
+output privateDnsZoneIds object = platform.outputs.privateDnsZoneIds

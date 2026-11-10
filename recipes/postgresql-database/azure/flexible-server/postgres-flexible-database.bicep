@@ -42,6 +42,23 @@ param storageSizeGB int = 32
 @description('Days of automatic backups to keep.')
 param backupRetentionDays int = 7
 
+@description('Subnet for a private endpoint to the server. Empty keeps public access and creates no endpoint.')
+param privateEndpointSubnetId string = ''
+
+@description('Private DNS zone (privatelink.postgres.database.azure.com) the endpoint registers in. Required with privateEndpointSubnetId.')
+param privateDnsZoneId string = ''
+
+@description('Region of the private endpoint: the virtual network\'s, which may differ from the server\'s.')
+param privateEndpointLocation string = location
+
+var usePrivateEndpoint = !empty(privateEndpointSubnetId)
+
+var radiusTags = {
+  'radapp.io-application': context.application == null ? '' : context.application.name
+  'radapp.io-environment': context.environment.name
+  'radapp.io-resource': context.resource.name
+}
+
 var database = context.resource.properties.?database ?? 'postgres_db'
 
 // Server names are globally unique and lowercase; the resource group and the location are part of
@@ -72,17 +89,13 @@ resource server 'Microsoft.DBforPostgreSQL/flexibleServers@2025-08-01' = {
       tenantId: tenantId
     }
     network: {
-      publicNetworkAccess: 'Enabled'
+      publicNetworkAccess: usePrivateEndpoint ? 'Disabled' : 'Enabled'
     }
     highAvailability: {
       mode: 'Disabled'
     }
   }
-  tags: {
-    'radapp.io-application': context.application == null ? '' : context.application.name
-    'radapp.io-environment': context.environment.name
-    'radapp.io-resource': context.resource.name
-  }
+  tags: radiusTags
 }
 
 resource administrator 'Microsoft.DBforPostgreSQL/flexibleServers/administrators@2025-08-01' = {
@@ -105,9 +118,9 @@ resource postgresDatabase 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2
   }
 }
 
-// Allows other Azure services, including the AKS cluster's egress, to reach the server.
-// Replace with private access (VNet integration or a Private Endpoint) for production.
-resource allowAzureServices 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2025-08-01' = {
+// Without a private endpoint: allows other Azure services, including the AKS cluster's egress, to
+// reach the server. Set privateEndpointSubnetId for production.
+resource allowAzureServices 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2025-08-01' = if (!usePrivateEndpoint) {
   parent: server
   name: 'AllowAllAzureServicesAndResourcesWithinAzureIps'
   dependsOn: [ postgresDatabase ]
@@ -117,11 +130,49 @@ resource allowAzureServices 'Microsoft.DBforPostgreSQL/flexibleServers/firewallR
   }
 }
 
+resource privateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = if (usePrivateEndpoint) {
+  name: 'pe-${serverName}'
+  location: privateEndpointLocation
+  dependsOn: [ postgresDatabase ]
+  properties: {
+    subnet: {
+      id: privateEndpointSubnetId
+    }
+    privateLinkServiceConnections: [
+      {
+        name: 'postgresqlServer'
+        properties: {
+          privateLinkServiceId: server.id
+          groupIds: [
+            'postgresqlServer'
+          ]
+        }
+      }
+    ]
+  }
+  tags: radiusTags
+}
+
+resource privateDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = if (usePrivateEndpoint) {
+  parent: privateEndpoint
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'postgres'
+        properties: {
+          privateDnsZoneId: privateDnsZoneId
+        }
+      }
+    ]
+  }
+}
+
 output result object = {
-  resources: [
+  resources: concat([
     server.id
     postgresDatabase.id
-  ]
+  ], usePrivateEndpoint ? [ privateEndpoint.id ] : [])
   values: {
     host: server.properties.fullyQualifiedDomainName
     port: 5432

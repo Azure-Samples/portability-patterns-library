@@ -311,6 +311,22 @@ try {
     $alertActionGroupId = Invoke-Checked 'az monitor action-group list' {
         az monitor action-group list --resource-group $ResourceGroup --query '[0].id' --output tsv
     }
+    # Private endpoints, when the platform was provisioned with -UsePrivateEndpoints: its subnet and
+    # private DNS zones decide whether the Recipes create them.
+    $privateEndpointSubnetId = Invoke-Checked 'az network vnet list' {
+        az network vnet list --resource-group $ResourceGroup --query "[0].subnets[?name=='private-endpoints'].id | [0]" --output tsv
+    }
+    $privateDnsZoneIds = @{ blob = ''; sql = ''; postgres = '' }
+    if ($privateEndpointSubnetId) {
+        $zones = Invoke-Checked 'az network private-dns zone list' {
+            az network private-dns zone list --resource-group $ResourceGroup --query '[].{name:name, id:id}' --output json
+        } | ConvertFrom-Json
+        foreach ($zone in $zones) {
+            $key = switch -Wildcard ($zone.name) { 'privatelink.blob.*' { 'blob' } 'privatelink.database.*' { 'sql' } 'privatelink.postgres.*' { 'postgres' } }
+            if ($key) { $privateDnsZoneIds[$key] = $zone.id }
+        }
+        Write-Host "    private endpoints for: $(($privateDnsZoneIds.Keys | Where-Object { $privateDnsZoneIds[$_] }) -join ', ')" -ForegroundColor DarkGray
+    }
 
     Write-Host "==> Publishing Azure Recipes" -ForegroundColor Cyan
     ./scripts/deploy/publish-recipes.ps1 -Registry $Registry -Platform azure -Tag $ImageTag
@@ -353,6 +369,10 @@ try {
         databaseAdministratorName           = $identities['db-admin'].name
         applicationInsightsConnectionString = [string]$applicationInsightsConnectionString
         alertActionGroupId                  = [string]$alertActionGroupId
+        privateEndpointSubnetId             = [string]$privateEndpointSubnetId
+        blobPrivateDnsZoneId                = $privateDnsZoneIds.blob
+        sqlPrivateDnsZoneId                 = $privateDnsZoneIds.sql
+        postgresPrivateDnsZoneId            = $privateDnsZoneIds.postgres
         location                            = $Location
         sqlLocation                         = $SqlLocation
         postgresLocation                    = $PostgresLocation
