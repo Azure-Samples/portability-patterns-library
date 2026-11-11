@@ -62,7 +62,7 @@ All commands run from this folder, `samples/OrderManagementApp`.
 
 **To run the app locally:**
 
-- [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0)
+- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
 - [Docker](https://docs.docker.com/get-docker/) or [Podman](https://podman.io/docs/installation)
 
 **To deploy to Azure:**
