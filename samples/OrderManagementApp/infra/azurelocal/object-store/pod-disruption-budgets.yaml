@@ -1,0 +1,60 @@
+# PodDisruptionBudgets for SeaweedFS, which its chart doesn't ship. A node drain (an AKS Arc node
+# upgrade, say) then evicts one pod of each component at a time and waits for it to be back:
+#   - masters: two of three stay up, so Raft keeps its quorum;
+#   - volume servers: two of three stay up, so every object (2 copies) keeps at least one;
+#   - filers and S3 gateways: one of two keeps serving.
+# maxUnavailable rather than minAvailable, so with -Availability standard (one of each) a drain still
+# goes through instead of waiting forever. Applied by provision-object-store.ps1 after the chart:
+#
+#   kubectl apply -f infra/azurelocal/object-store/pod-disruption-budgets.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: seaweedfs-master
+  namespace: object-store
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: seaweedfs
+      app.kubernetes.io/instance: seaweedfs
+      app.kubernetes.io/component: master
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: seaweedfs-volume
+  namespace: object-store
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: seaweedfs
+      app.kubernetes.io/instance: seaweedfs
+      app.kubernetes.io/component: volume
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: seaweedfs-filer
+  namespace: object-store
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: seaweedfs
+      app.kubernetes.io/instance: seaweedfs
+      app.kubernetes.io/component: filer
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: seaweedfs-s3
+  namespace: object-store
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: seaweedfs
+      app.kubernetes.io/instance: seaweedfs
+      app.kubernetes.io/component: s3

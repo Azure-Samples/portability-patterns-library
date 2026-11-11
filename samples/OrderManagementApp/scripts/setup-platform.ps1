@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+#Requires -Version 7.3
 <#
 .SYNOPSIS
     Prepares a site for the Order Management sample, once: cluster, HTTPS ingress, user sign-in
@@ -18,34 +18,31 @@
       Cluster   infra/azurelocal/provision-infra.ps1         AKS Arc cluster, ACR, load balancer
       Images    infra/azurelocal/import-images.ps1           third-party images mirrored into the ACR
       Registry  infra/azurelocal/connected-registry.ps1      in-cluster registry that keeps serving offline
+      KeyVault  infra/azurelocal/key-vault.ps1               Key Vault and its Secret Store extension, for secrets from Azure
       Ingress   infra/azurelocal/provision-ingress.ps1       NGINX ingress, site CA, renewed certificates
+      Operators infra/azurelocal/provision-operators.ps1     CloudNativePG and RabbitMQ operators: replicas, failover, backups
+                                                             (only with Availability 'high')
+      ObjectStore infra/azurelocal/provision-object-store.ps1  S3 storage in the cluster for the app's objects and the database backups
       Keycloak  infra/azurelocal/keycloak.ps1                on-site sign-in and token issuer, federated to Active Directory
+      Observability infra/azurelocal/provision-observability.ps1  metrics, logs, traces, alerts and Grafana, in the cluster
     Values come from the target's section of scripts/settings.json (see settings.example.json):
     'Common' goes to every step that takes the parameter, a section named after the step to that
     step only. Keep secrets out of it; the scripts read those from Kubernetes Secrets.
 
-    Azure Local expects a Keycloak bind account for the site's Active Directory in the Secret
-    identity/oms-ad-bind and the directory's CA in identity/oms-ad-ca. Create them by hand (see
-    the sample README) or with infra/azurelocal/ad-setup.ps1.
+    On Azure Local, 'Common' Availability sets how the backing services run, for the platform and
+    the app alike: 'high' (the default) replicates them across nodes and backs the databases up,
+    with operators; 'standard' runs one copy of each, with no operators and no backups.
 
-    Azure Local steps need Azure (Cluster, Images), the cluster's network (Ingress, Keycloak) or
-    both (Registry), so they run in two stages, the way a site whose management machine can't reach
-    Azure has to:
-      -Stage Azure  where Azure is reachable: Cluster, Images and the Azure part of Registry
-      -Stage Site   on the site network, with no Azure sign-in: the site part of Registry, Ingress,
-                    Keycloak
-    The Azure stage leaves what the site needs in scripts/.handover (cluster credentials, a registry
-    pull token); the Site stage takes it over and deletes the secrets. On two machines, copy that
-    folder across in between. The default, -Stage All, runs both stages in a row on this machine,
-    through the same folder.
+    Azure Local needs a read-only bind account in the site's Active Directory for Keycloak: set
+    Keycloak.AdBindUpn and Keycloak.AdCaCertificatePath, and the Keycloak step asks for the
+    account's password the first time. infra/azurelocal/ad-setup.ps1 can create the account.
+
+    On Azure Local, run it from a management machine that can sign in to Azure and reach the site
+    network: some steps use both.
 
 .EXAMPLE
     ./scripts/setup-platform.ps1 -Target AzureLocal
 
-.EXAMPLE
-    # The site's management machine has no Azure access.
-    ./scripts/setup-platform.ps1 -Target AzureLocal -Stage Azure   # where Azure is reachable
-    ./scripts/setup-platform.ps1 -Target AzureLocal -Stage Site    # on the site network
 
 .EXAMPLE
     # Existing cluster: show what would run, then run it.
@@ -57,16 +54,13 @@ param(
     [Parameter(Mandatory)]
     [ValidateSet('Azure', 'AzureLocal')]
     [string]$Target,
-    [ValidateSet('Cluster', 'Images', 'Registry', 'Keycloak', 'Ingress', 'Identity')]
+    [ValidateSet('Cluster', 'Images', 'Registry', 'KeyVault', 'Operators', 'ObjectStore', 'Keycloak', 'Ingress', 'Identity', 'Observability')]
     [string[]]$Skip = @(),
-    [string]$SettingsPath,
-    [ValidateSet('All', 'Azure', 'Site')]
-    [string]$Stage = 'All'
+    [string]$SettingsPath
 )
 
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/lib/settings.ps1"
-if ($Target -eq 'Azure' -and $Stage -ne 'All') { throw '-Stage applies to -Target AzureLocal only.' }
 
 $steps = if ($Target -eq 'Azure') {
     [ordered]@{
@@ -80,58 +74,45 @@ else {
         Cluster  = 'infra/azurelocal/provision-infra.ps1'
         Images   = 'infra/azurelocal/import-images.ps1'
         Registry = 'infra/azurelocal/connected-registry.ps1'
+        KeyVault = 'infra/azurelocal/key-vault.ps1'
         # Before Keycloak, which takes the app's address from the ingress.
         Ingress  = 'infra/azurelocal/provision-ingress.ps1'
+        # Before Keycloak, whose database is a CloudNativePG cluster that backs up to the object store.
+        Operators   = 'infra/azurelocal/provision-operators.ps1'
+        ObjectStore = 'infra/azurelocal/provision-object-store.ps1'
         Keycloak = 'infra/azurelocal/keycloak.ps1'
+        # After Keycloak, which registers Grafana's sign-in client and its secret.
+        Observability = 'infra/azurelocal/provision-observability.ps1'
     }
 }
 
 $settings = Read-OmsSettings $Target $SettingsPath
-$handoverPath = Join-Path $PSScriptRoot '.handover'
-# Which steps each stage runs; Registry runs in both, each doing its own part.
-$stageSteps = @{ All = @($steps.Keys); Azure = @('Cluster', 'Images', 'Registry'); Site = @('Registry', 'Ingress', 'Keycloak') }
-$stages = Get-OmsStages $Target $Stage
+# Only highly available backing services need the operators.
+$availability = if ($settings.ContainsKey('Common')) { $settings['Common']['Availability'] }
+if ($Target -eq 'AzureLocal' -and $availability -eq 'standard') {
+    $steps.Remove('Operators')
+}
 Push-Location (Split-Path -Parent $PSScriptRoot)
+$previousSubscription = if ($WhatIfPreference) { $null } else { Select-OmsSubscription $settings }
 try {
-    foreach ($currentStage in $stages) {
-        if ($stages.Count -gt 1) { Write-Host "`n======== $Target, $currentStage stage ========" -ForegroundColor Magenta }
-        $previousSubscription = $null
-        try {
-            if (-not $WhatIfPreference) {
-                # The Site stage must work with no Azure sign-in at all, so it never touches az.
-                if ($currentStage -eq 'Site') { Import-OmsHandoverKubeconfig $handoverPath }
-                else { $previousSubscription = Select-OmsSubscription $settings }
-            }
-
-            foreach ($step in $steps.Keys) {
-                if ($step -in $Skip -or $step -notin $stageSteps[$currentStage]) {
-                    Write-Host "==> [$Target] $step skipped" -ForegroundColor DarkGray
-                    continue
-                }
-                $script = Join-Path $PSScriptRoot $steps[$step]
-                $arguments = Get-OmsStepArguments $settings $step $script
-                if ($currentStage -ne 'All' -and (Get-Command $script).Parameters.ContainsKey('Stage')) { $arguments['Stage'] = $currentStage }
-                $shown = ($arguments.GetEnumerator() | Sort-Object Key | ForEach-Object { "-$($_.Key) $(@($_.Value) -join ',')" }) -join ' '
-                if ($PSCmdlet.ShouldProcess("scripts/$($steps[$step]) $shown", "$Target $step")) {
-                    Write-Host "`n==> [$Target] $step : scripts/$($steps[$step])" -ForegroundColor Magenta
-                    & $script @arguments
-                }
-            }
+    foreach ($step in $steps.Keys) {
+        if ($step -in $Skip) {
+            Write-Host "==> [$Target] $step skipped" -ForegroundColor DarkGray
+            continue
         }
-        finally {
-            Restore-OmsSubscription $previousSubscription
+        $script = Join-Path $PSScriptRoot $steps[$step]
+        $arguments = Get-OmsStepArguments $settings $step $script
+        $shown = ($arguments.GetEnumerator() | Sort-Object Key | ForEach-Object { "-$($_.Key) $(@($_.Value) -join ',')" }) -join ' '
+        if ($PSCmdlet.ShouldProcess("scripts/$($steps[$step]) $shown", "$Target $step")) {
+            Write-Host "`n==> [$Target] $step : scripts/$($steps[$step])" -ForegroundColor Magenta
+            & $script @arguments
         }
     }
     if (-not $WhatIfPreference) {
-        if ($Stage -eq 'Azure') {
-            Write-Host "`nAzure stage done. Copy scripts/.handover to the site machine and run: ./scripts/setup-platform.ps1 -Target $Target -Stage Site" -ForegroundColor Green
-        }
-        else {
-            $deployHint = if ($Stage -eq 'Site') { "./scripts/deploy.ps1 -Target $Target -Stage Azure (where Azure is reachable), then -Stage Site here" } else { "./scripts/deploy.ps1 -Target $Target" }
-            Write-Host "`nPlatform ready for $Target. Deploy the app with: $deployHint" -ForegroundColor Green
-        }
+        Write-Host "`nPlatform ready for $Target. Deploy the app with: ./scripts/deploy.ps1 -Target $Target" -ForegroundColor Green
     }
 }
 finally {
+    Restore-OmsSubscription $previousSubscription
     Pop-Location
 }

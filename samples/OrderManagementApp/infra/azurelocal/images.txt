@@ -5,38 +5,75 @@
 # 'artifact' marks an OCI artifact that isn't an image. Copy it with `az acr import` or `oras copy`,
 # not `docker`.
 #
+# Every tag is an exact version, never 'latest' or a major/minor tag that moves with new releases:
+# re-importing must not silently change what the connected registry syncs to every site.
+#
 # With az CLI, each line is one command:
 #   az acr import --name <acr> --source <source> --image <target>
 
 # Radius control plane. `rad install kubernetes --set global.imageRegistry=<registry>` pulls these
-# from the registry root, with no radius-project prefix. The tag must match your rad CLI version.
+# from the registry root, with no radius-project prefix. The tag must match your rad CLI version;
+# Radius 0.60 published only the 0.60 tag for its release.
 ghcr.io/radius-project/ucpd:0.60                               ucpd:0.60
 ghcr.io/radius-project/controller:0.60                         controller:0.60
 ghcr.io/radius-project/applications-rp:0.60                    applications-rp:0.60
 ghcr.io/radius-project/dynamic-rp:0.60                         dynamic-rp:0.60
 ghcr.io/radius-project/deployment-engine:0.60                  deployment-engine:0.60
-ghcr.io/radius-project/dashboard:0.60                          dashboard:0.60
 ghcr.io/radius-project/bicep:0.60                              bicep:0.60
 ghcr.io/radius-project/pre-upgrade:0.60                        pre-upgrade:0.60
 
 # Backing services the Recipes deploy. Paths match imageRepository in recipe-packs/azure-local.bicep.
-mcr.microsoft.com/mssql/server:2022-latest                     mssql/server:2022-latest
-mcr.microsoft.com/azure-storage/azurite:3.35.0                 azure-storage/azurite:3.35.0
-docker.io/library/rabbitmq:4-management-alpine                 rabbitmq:4-management-alpine
+# postgres is for Availability 'standard' (the postgres Recipe and Keycloak's database);
+# cloudnative-pg/postgresql for 'high'.
+mcr.microsoft.com/mssql/server:2022-CU27-GDR1-ubuntu-22.04     mssql/server:2022-CU27-GDR1-ubuntu-22.04
+docker.io/library/rabbitmq:4.3.7-management-alpine             rabbitmq:4.3.7-management-alpine
+docker.io/library/postgres:17.11-alpine3.24                    postgres:17.11-alpine3.24
+ghcr.io/cloudnative-pg/postgresql:17.11-202611020810-standard-trixie  cloudnative-pg/postgresql:17.11-202611020810-standard-trixie
+
+# Operators that run the backing services when Availability is 'high', see infra/azurelocal/operators.
+# The tags match the chart and manifest versions provision-operators.ps1 pins.
+ghcr.io/cloudnative-pg/cloudnative-pg:1.30.1                   cloudnative-pg/cloudnative-pg:1.30.1
+ghcr.io/cloudnative-pg/plugin-barman-cloud:v0.15.1             cloudnative-pg/plugin-barman-cloud:v0.15.1
+ghcr.io/cloudnative-pg/plugin-barman-cloud-sidecar:v0.15.1     cloudnative-pg/plugin-barman-cloud-sidecar:v0.15.1
+ghcr.io/rabbitmq/cluster-operator:2.23.2                       rabbitmq/cluster-operator:2.23.2
+ghcr.io/rabbitmq/messaging-topology-operator:1.20.5            rabbitmq/messaging-topology-operator:1.20.5
+quay.io/jetstack/cert-manager-csi-driver:v0.16.1               jetstack/cert-manager-csi-driver:v0.16.1
+quay.io/jetstack/csi-node-driver-registrar:v2.18.0             jetstack/csi-node-driver-registrar:v2.18.0
+quay.io/jetstack/livenessprobe:v2.20.0                         jetstack/livenessprobe:v2.20.0
+
+# Object storage for the applications and the database backups, see infra/azurelocal/object-store.
+docker.io/chrislusf/seaweedfs:4.51                             chrislusf/seaweedfs:4.51
+
+# The registry client deploy/azurelocal.ps1 checks the connected registry's sync with.
+ghcr.io/oras-project/oras:v1.3.6                               oras-project/oras:v1.3.6
 
 # Radius's stock secrets Recipe. The tag must match radiusRecipeTag in recipe-packs/azure-local.bicep.
-ghcr.io/radius-project/kube-recipes/secrets:latest             radius-project/kube-recipes/secrets:latest  artifact
+# Radius 0.60 published no tag of its own for it; 0.61.0 is the same template as 0.59.0, compiled
+# by a newer Bicep.
+ghcr.io/radius-project/kube-recipes/secrets:0.61.0             radius-project/kube-recipes/secrets:0.61.0  artifact
 
-# Keycloak, see infra/azurelocal/keycloak.
-quay.io/keycloak/keycloak:26.8                                 keycloak/keycloak:26.8
-docker.io/library/postgres:17-alpine                           postgres:17-alpine
+# Keycloak, see infra/azurelocal/keycloak, and the job that applies its realm. Its database runs on
+# one of the PostgreSQL images above.
+quay.io/keycloak/keycloak:26.8.1                               keycloak/keycloak:26.8.1
+docker.io/adorsys/keycloak-config-cli:6.5.1-26.5.5             adorsys/keycloak-config-cli:6.5.1-26.5.5
 
 # Ingress, see infra/azurelocal/ingress-nginx.
 registry.k8s.io/ingress-nginx/controller:v1.15.1               ingress-nginx/controller:v1.15.1
 registry.k8s.io/ingress-nginx/kube-webhook-certgen:v1.6.9      ingress-nginx/kube-webhook-certgen:v1.6.9
 
-# Base images for building the app's images (BASE_REGISTRY in docker/Dockerfile.*). Only needed where
-# the build runs; the connected registry doesn't sync them.
-mcr.microsoft.com/dotnet/sdk:9.0                               dotnet/sdk:9.0
-mcr.microsoft.com/dotnet/runtime:9.0                           dotnet/runtime:9.0
-mcr.microsoft.com/dotnet/aspnet:9.0                            dotnet/aspnet:9.0
+# Observability, see infra/azurelocal/observability. The tags are the defaults of the chart versions
+# provision-observability.ps1 pins; a new chart version needs its tags here too.
+#   opentelemetry-collector 0.178.0
+docker.io/otel/opentelemetry-collector-contrib:0.163.2                        otel/opentelemetry-collector-contrib:0.163.2
+#   kube-prometheus-stack 92.14.1 (with grafana 14.1.0, kube-state-metrics 8.7.1, prometheus-node-exporter 4.60.1)
+quay.io/prometheus/prometheus:v3.15.1-distroless                              prometheus/prometheus:v3.15.1-distroless
+quay.io/prometheus/alertmanager:v0.34.1                                       prometheus/alertmanager:v0.34.1
+quay.io/prometheus/node-exporter:v1.12.1-distroless                           prometheus/node-exporter:v1.12.1-distroless
+quay.io/prometheus-operator/prometheus-operator:v0.94.2                       prometheus-operator/prometheus-operator:v0.94.2
+quay.io/prometheus-operator/prometheus-config-reloader:v0.94.2                prometheus-operator/prometheus-config-reloader:v0.94.2
+registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.20.0                 kube-state-metrics/kube-state-metrics:v2.20.0
+docker.io/grafana/grafana:13.2.4-distroless                                   grafana/grafana:13.2.4-distroless
+quay.io/kiwigrid/k8s-sidecar:2.14.1                                           kiwigrid/k8s-sidecar:2.14.1
+#   loki 20.0.3 and tempo 3.2.1 (grafana-community charts)
+docker.io/grafana/loki:3.7.9                                                  grafana/loki:3.7.9
+docker.io/grafana/tempo:3.1.1                                                 grafana/tempo:3.1.1

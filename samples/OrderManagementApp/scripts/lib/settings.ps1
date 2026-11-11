@@ -1,4 +1,4 @@
-# Shared by setup-platform.ps1 and deploy.ps1: per-target values from scripts/settings.json.
+# Shared by setup-platform.ps1, deploy.ps1 and preflight.ps1: per-target values from scripts/settings.json.
 
 function Read-OmsSettings([string]$Target, [string]$Path) {
     if (-not $Path) { $Path = Join-Path (Split-Path -Parent $PSScriptRoot) 'settings.json' }
@@ -25,22 +25,6 @@ function Get-OmsStepArguments([hashtable]$Settings, [string]$Step, [string]$Scri
     $arguments
 }
 
-# The defaults a script declares in its param block, read without running it, so other scripts
-# can use the same values instead of repeating them.
-function Get-OmsScriptDefaults([string]$Path) {
-    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$null, [ref]$null)
-    $defaults = @{}
-    foreach ($parameter in $ast.ParamBlock.Parameters) {
-        if ($parameter.DefaultValue -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
-            $defaults[$parameter.Name.VariablePath.UserPath] = $parameter.DefaultValue.Value
-        }
-        elseif ($parameter.DefaultValue) {
-            try { $defaults[$parameter.Name.VariablePath.UserPath] = $parameter.DefaultValue.SafeGetValue() } catch { }
-        }
-    }
-    $defaults
-}
-
 # Points az at the target's subscription ('Common' SubscriptionId) for one run, so every step works
 # in the same subscription whatever az had selected before. Returns the previous subscription for
 # Restore-OmsSubscription, or nothing when there was nothing to change.
@@ -48,7 +32,8 @@ function Select-OmsSubscription([hashtable]$Settings) {
     $id = if ($Settings.ContainsKey('Common')) { $Settings['Common']['SubscriptionId'] }
     if (-not $id -or $id -like '<*') { return }
 
-    $previous = az account show --query id --output tsv 2>$null
+    $previous = az account show --query id --output tsv
+    if ($LASTEXITCODE -ne 0) { throw 'Not signed in to Azure. Run az login first.' }
     if ($previous -eq $id) { return }
 
     az account set --subscription $id
@@ -60,48 +45,9 @@ function Select-OmsSubscription([hashtable]$Settings) {
 }
 
 function Restore-OmsSubscription([string]$SubscriptionId) {
-    if ($SubscriptionId) { az account set --subscription $SubscriptionId 2>$null }
+    if (-not $SubscriptionId) { return }
+    az account set --subscription $SubscriptionId
+    if ($LASTEXITCODE -ne 0) { Write-Warning "Could not switch az back to subscription '$SubscriptionId'." }
 }
 
-# Azure Local runs in two stages that hand over through scripts/.handover (see setup-platform.ps1).
-# 'All' is both stages in a row on one machine, so it takes the same path as two machines would.
-function Get-OmsStages([string]$Target, [string]$Stage) {
-    if ($Target -ne 'AzureLocal') { return , @('All') }
-    if ($Stage -eq 'All') { return , @('Azure', 'Site') }
-    , @($Stage)
-}
 
-# Merges the cluster credentials the Azure stage left in the handover folder into ~/.kube/config,
-# then deletes the file, since it holds the cluster's admin certificate. Does nothing without one.
-function Import-OmsHandoverKubeconfig([string]$HandoverPath) {
-    $handoverKubeconfig = Join-Path $HandoverPath 'kubeconfig'
-    if (-not (Test-Path $handoverKubeconfig)) { return }
-
-    $kubeHome = Join-Path $HOME '.kube/config'
-    $previousKubeconfig = $env:KUBECONFIG
-    try {
-        $env:KUBECONFIG = (@($handoverKubeconfig) + @($kubeHome | Where-Object { Test-Path $_ })) -join [IO.Path]::PathSeparator
-        $merged = kubectl config view --flatten --raw
-    }
-    finally { $env:KUBECONFIG = $previousKubeconfig }
-    if ($LASTEXITCODE -ne 0 -or -not $merged) { throw "Could not read $handoverKubeconfig." }
-    Write-OmsSecretFile $kubeHome ($merged -join "`n")
-    Remove-Item $handoverKubeconfig -Force
-    Write-Host "==> Took over the cluster credentials from $handoverKubeconfig" -ForegroundColor Cyan
-}
-
-# Writes a file that holds credentials so only the current user can read it.
-function Write-OmsSecretFile([string]$Path, [string]$Content) {
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null
-    if (-not (Test-Path $Path)) { [IO.File]::WriteAllText($Path, '') }
-    Protect-OmsSecretPath $Path
-    [IO.File]::WriteAllText($Path, $Content, [Text.UTF8Encoding]::new($false))
-}
-
-# Owner-only access to a credentials file and its folder. A Windows profile is already private; on
-# Linux and macOS the default umask leaves both readable by other users.
-function Protect-OmsSecretPath([string]$Path) {
-    if ($IsWindows) { return }
-    [IO.File]::SetUnixFileMode((Split-Path -Parent $Path), [IO.UnixFileMode]'UserRead, UserWrite, UserExecute')
-    if (Test-Path $Path) { [IO.File]::SetUnixFileMode($Path, [IO.UnixFileMode]'UserRead, UserWrite') }
-}

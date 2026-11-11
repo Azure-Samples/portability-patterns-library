@@ -1,0 +1,30 @@
+# Only the store's clients may reach it, and only over HTTPS: application pods connected to object
+# storage (the Recipe Pack labels them object-store/client) in the namespaces labelled
+# object-store/objects, and the PostgreSQL instances in the namespaces labelled
+# object-store/backups. provision-object-store.ps1 labels the namespaces it creates keys for, so
+# with no backup namespaces (Availability 'standard') the second peer admits nobody. Pods in the
+# object-store namespace itself (the store's components, which talk over mutual TLS, and its bucket
+# creation job) reach each other on every port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: s3-from-clients
+  namespace: object-store
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { object-store/objects: "true" }
+          podSelector:
+            matchLabels: { object-store/client: "true" }
+        - namespaceSelector:
+            matchLabels: { object-store/backups: "true" }
+          podSelector:
+            matchExpressions:
+              - { key: cnpg.io/cluster, operator: Exists }
+      ports:
+        - { port: 8443, protocol: TCP }
+    - from:
+        - podSelector: {}

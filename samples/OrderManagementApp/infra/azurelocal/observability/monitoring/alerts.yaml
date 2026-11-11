@@ -1,0 +1,172 @@
+# The app's alerts. Alertmanager sends them by email when the site has an SMTP server
+# (settings.json, Observability section); they also show in Grafana under Alerting.
+#
+# The app's OpenTelemetry metrics reach Prometheus through the collector with dots turned into
+# underscores, and counters get a _total suffix: oms.orders.placed is oms_orders_placed_total. The
+# rules match the name with and without the suffix, so they keep working if the exporter's naming
+# changes.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: oms-alerts
+  namespace: observability
+spec:
+  groups:
+    - name: oms.orders
+      rules:
+        - alert: OmsMessageDeadLettered
+          # Each queue has a <queue>.dead-letter queue that RabbitMQ moves a message to once the
+          # processor has given up on it. Nothing reads it, so any message there needs a person.
+          expr: |
+            max by (namespace, vhost, queue) (
+              rabbitmq_detailed_queue_messages{queue=~".+[.]dead-letter"}
+            ) > 0
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Messages in dead-letter queue {{ $labels.queue }}"
+            description: >-
+              {{ $value }} message(s) in RabbitMQ queue {{ $labels.queue }} (namespace
+              {{ $labels.namespace }}). The processor rejected them or failed on them too many times.
+              Check the processor's logs in Grafana (Explore, Loki), fix the cause, then move the
+              messages back to the main queue or delete them in the RabbitMQ management UI.
+
+        - alert: OmsProcessorStalled
+          # Orders have been waiting in the queue for 15 minutes and the processor completed none.
+          # A stopped processor otherwise looks quiet: the queue just grows. Gated on the queue's
+          # backlog rather than on how many orders were placed, because increase() reads a counter
+          # series's first sample as no increase, so a new outcome (the first rejected order, say)
+          # would look like no completion at all.
+          expr: |
+            (min by (namespace, queue) (
+              min_over_time(rabbitmq_detailed_queue_messages{queue!~".+[.]dead-letter"}[15m])
+            ) > 0)
+            unless on ()
+            (sum(increase({__name__=~"oms_orders_completed(_total)?"}[15m])) > 0)
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Orders have waited in queue {{ $labels.queue }} for 15 minutes and none were completed"
+            description: >-
+              At least {{ $value | printf "%.0f" }} order(s) have been in RabbitMQ queue
+              {{ $labels.queue }} (namespace {{ $labels.namespace }}) for the last 15 minutes, and the
+              processor completed none, processed or rejected. Check that the processor pod is running
+              and connected to RabbitMQ and to the inventory service, and look at its logs in Grafana.
+
+    - name: oms.inventory
+      rules:
+        - alert: OmsInventoryBelowReorder
+          expr: max(oms_inventory_below_reorder) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $value }} product(s) at or below their reorder level"
+            description: >-
+              {{ $value }} SKU(s) have no more units available than their reorder level. The Order
+              Management dashboard's stock panel shows which; an inventory manager can restock them in
+              the app.
+
+    - name: oms.certificates
+      rules:
+        - alert: CertificateRenewalOverdue
+          # cert-manager renews each certificate at its renewal time (two thirds of its life by
+          # default, 30 days before expiry for the app's own). Past that time and still not renewed
+          # means renewal is failing, whatever the certificate's lifetime: short-lived certificates,
+          # such as the Arc extensions' own, renew every few days and never look overdue. The value
+          # is the time left before it expires. The certificate's own namespace is
+          # exported_namespace: Prometheus keeps namespace for the cert-manager pod it scraped.
+          expr: |
+            (certmanager_certificate_expiration_timestamp_seconds - time())
+            and on (exported_namespace, name)
+            (time() - certmanager_certificate_renewal_timestamp_seconds > 3600)
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Certificate {{ $labels.exported_namespace }}/{{ $labels.name }} wasn't renewed when due"
+            description: >-
+              cert-manager should have renewed certificate {{ $labels.exported_namespace }}/{{ $labels.name }}
+              over an hour ago and hasn't; it expires in {{ $value | humanizeDuration }}. Check its
+              status with `kubectl describe certificate {{ $labels.name }} -n {{ $labels.exported_namespace }}`
+              and cert-manager's logs in namespace cert-manager.
+
+        - alert: CertManagerMetricsMissing
+          # Without cert-manager's metrics the alert above can never fire.
+          expr: absent(up{job="observability/cert-manager"} == 1)
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: Prometheus gets no metrics from cert-manager
+            description: >-
+              The cert-manager PodMonitor in namespace observability finds no healthy target, so
+              certificate expiry isn't being watched. Check that cert-manager's controller pods carry
+              the labels the PodMonitor selects and that nothing blocks port 9402.
+
+    - name: oms.postgresql
+      rules:
+        - alert: PostgresInstanceDown
+          # CloudNativePG fails over to a replica on its own; this says an instance needs looking at
+          # before the cluster runs out of replicas.
+          expr: cnpg_collector_up == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "PostgreSQL instance {{ $labels.pod }} is down"
+            description: >-
+              Instance {{ $labels.pod }} of PostgreSQL cluster {{ $labels.cluster }} (namespace
+              {{ $labels.namespace }}) has reported PostgreSQL down for 5 minutes. Check it with
+              `kubectl get cluster {{ $labels.cluster }} -n {{ $labels.namespace }}` and the pod's logs.
+
+        - alert: PostgresReplicationLagging
+          expr: max by (namespace, cluster, pod) (cnpg_pg_replication_lag) > 300
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "PostgreSQL replica {{ $labels.pod }} is {{ $value | humanizeDuration }} behind"
+            description: >-
+              Replica {{ $labels.pod }} of cluster {{ $labels.cluster }} (namespace {{ $labels.namespace }})
+              is more than 5 minutes behind its primary. A failover now would lose the transactions it
+              hasn't received. Check the node's disk and network.
+
+        - alert: PostgresWalArchivingFailing
+          # PostgreSQL retries a segment it couldn't archive until it succeeds, so a last failure
+          # newer than the last success means archiving is failing now. Based on failures, not on
+          # the time since the last archive: a database with no writes (the inventory database
+          # overnight) has nothing to archive and must not alert.
+          expr: |
+            max by (namespace, cluster, pod) (
+              cnpg_pg_stat_archiver_last_failed_time > cnpg_pg_stat_archiver_last_archived_time
+            )
+            and on (namespace, pod)
+            increase(cnpg_pg_stat_archiver_failed_count[15m]) > 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "PostgreSQL cluster {{ $labels.cluster }} can't archive its write-ahead log"
+            description: >-
+              Instance {{ $labels.pod }} of cluster {{ $labels.cluster }} (namespace {{ $labels.namespace }})
+              has failed to archive write-ahead log for 10 minutes, so its backups have stopped and
+              the log piles up on its volume. Check the object store in namespace object-store and the
+              instance's plugin-barman-cloud sidecar logs.
+
+        - alert: PostgresWalArchiveBacklog
+          # Segments waiting to be archived that don't drain: archiving is stuck or far behind even
+          # though nothing reports a failure (an archive command that hangs, say).
+          expr: max by (namespace, cluster, pod) (cnpg_collector_pg_wal_archive_status{value="ready"}) > 10
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "PostgreSQL instance {{ $labels.pod }} has {{ $value }} write-ahead log segments waiting to be archived"
+            description: >-
+              Instance {{ $labels.pod }} of cluster {{ $labels.cluster }} (namespace {{ $labels.namespace }})
+              has had more than 10 write-ahead log segments waiting to be archived for 30 minutes.
+              Backups are falling behind and the log is filling the database's volume. Check the
+              object store in namespace object-store and the instance's plugin-barman-cloud sidecar logs.

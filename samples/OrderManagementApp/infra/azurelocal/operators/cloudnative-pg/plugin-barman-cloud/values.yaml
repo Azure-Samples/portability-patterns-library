@@ -1,0 +1,25 @@
+# Helm values for CloudNativePG's Barman Cloud plugin on Azure Local. It archives each PostgreSQL
+# cluster's write-ahead log and base backups to S3-compatible object storage, and restores from
+# them. Install it into the operator's namespace, after the operator:
+#
+#   helm upgrade --install barman-cloud plugin-barman-cloud --repo https://cloudnative-pg.github.io/charts `
+#     --version 0.8.1 --namespace cnpg-system `
+#     --values infra/azurelocal/operators/cloudnative-pg/plugin-barman-cloud/values.yaml
+#
+# Its certificates come from the cluster's cert-manager. Change the marked values for your site first;
+# scripts/infra/azurelocal/provision-operators.ps1 does this for you.
+
+image:
+  registry: <connected-registry-address>  # the connected registry's ClusterIP
+  repository: cloudnative-pg/plugin-barman-cloud
+  tag: v0.15.1
+
+# Runs next to every PostgreSQL instance that backs up, so it's pulled in the database's namespace,
+# with that cluster's pull secret.
+sidecarImage:
+  registry: <connected-registry-address>  # the connected registry's ClusterIP
+  repository: cloudnative-pg/plugin-barman-cloud-sidecar
+  tag: v0.15.1
+
+imagePullSecrets:
+  - name: azurelocal-registry

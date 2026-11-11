@@ -1,0 +1,179 @@
+# Applies realm.json to Keycloak on every deployment, with keycloak-config-cli: it creates the 'oms'
+# realm the first time and brings it back in line with realm.json and the site values after that.
+# Changing a site value, the bind password or realm.json and applying again is all a change takes.
+# It removes what it created earlier and is no longer in realm.json, and leaves the rest alone.
+#
+# A Job runs once, so delete it before applying the folder again:
+#   kubectl -n identity delete job keycloak-realm-config --ignore-not-found
+#
+# The ${...} placeholders in realm.json are filled from the environment below: site values from the
+# keycloak-realm-settings ConfigMap, secrets from their Secrets. A missing key stops the pod from
+# starting. Placeholders with no such variable, such as Keycloak's own ${client_id}, stay as they are.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: keycloak-realm-config
+  namespace: identity
+spec:
+  # Keycloak may still be starting; the tool waits for it (KEYCLOAK_AVAILABILITYCHECK_TIMEOUT) and
+  # the Job retries a few times after that.
+  backoffLimit: 4
+  activeDeadlineSeconds: 3600
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: keycloak-realm-config
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: azurelocal-registry
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      # Java reads trusted CAs from a keystore, so this turns the CA behind Keycloak's certificate
+      # into one.
+      initContainers:
+        - name: truststore
+          image: docker.io/adorsys/keycloak-config-cli
+          command:
+            - keytool
+            - -importcert
+            - -noprompt
+            - -alias
+            - keycloak-ca
+            - -file
+            - /keycloak-ca/ca.crt
+            - -keystore
+            - /truststore/truststore.p12
+            - -storetype
+            - PKCS12
+            # Not a secret: the keystore holds only a public certificate.
+            - -storepass
+            - truststore
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: keycloak-ca
+              mountPath: /keycloak-ca
+              readOnly: true
+            - name: truststore
+              mountPath: /truststore
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: keycloak-config-cli
+          image: docker.io/adorsys/keycloak-config-cli
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          env:
+            # Keycloak's Service inside the cluster, which its certificate names.
+            - name: KEYCLOAK_URL
+              value: https://keycloak.identity.svc
+            - name: KEYCLOAK_TLS_TRUSTSTOREPATH
+              value: /truststore/truststore.p12
+            - name: KEYCLOAK_TLS_TRUSTSTOREPASSWORD
+              value: truststore
+            - name: KEYCLOAK_AVAILABILITYCHECK_ENABLED
+              value: "true"
+            - name: KEYCLOAK_AVAILABILITYCHECK_TIMEOUT
+              value: 900s
+            # Keycloak's temporary admin service account (KC_BOOTSTRAP_ADMIN_CLIENT_* in keycloak.yaml).
+            - name: KEYCLOAK_GRANTTYPE
+              value: client_credentials
+            - name: KEYCLOAK_CLIENTID
+              valueFrom:
+                secretKeyRef: { name: keycloak-admin-client, key: client-id }
+            - name: KEYCLOAK_CLIENTSECRET
+              valueFrom:
+                secretKeyRef: { name: keycloak-admin-client, key: client-secret }
+            - name: IMPORT_FILES_LOCATIONS
+              value: /config/realm.json
+            # realm.json uses Keycloak's own placeholder syntax, so the same file also works with
+            # `kc.sh start --import-realm`, as in compose.yaml.
+            - name: IMPORT_VARSUBSTITUTION_ENABLED
+              value: "true"
+            - name: IMPORT_VARSUBSTITUTION_PREFIX
+              value: "${"
+            - name: IMPORT_VARSUBSTITUTION_SUFFIX
+              value: "}"
+            - name: IMPORT_VARSUBSTITUTION_UNDEFINEDISERROR
+              value: "false"
+            # Site values.
+            - name: LDAP_URL
+              valueFrom:
+                configMapKeyRef: { name: keycloak-realm-settings, key: LDAP_URL }
+            - name: LDAP_USERS_DN
+              valueFrom:
+                configMapKeyRef: { name: keycloak-realm-settings, key: LDAP_USERS_DN }
+            - name: KUBERNETES_ISSUER
+              valueFrom:
+                configMapKeyRef: { name: keycloak-realm-settings, key: KUBERNETES_ISSUER }
+            - name: KUBERNETES_ISSUER_DISCOVERY_URL
+              valueFrom:
+                configMapKeyRef: { name: keycloak-realm-settings, key: KUBERNETES_ISSUER_DISCOVERY_URL }
+            - name: WORKLOAD_NAMESPACE
+              valueFrom:
+                configMapKeyRef: { name: keycloak-realm-settings, key: WORKLOAD_NAMESPACE }
+            - name: SPA_ORIGIN
+              valueFrom:
+                configMapKeyRef: { name: keycloak-realm-settings, key: SPA_ORIGIN }
+            - name: GRAFANA_ORIGIN
+              valueFrom:
+                configMapKeyRef: { name: keycloak-realm-settings, key: GRAFANA_ORIGIN }
+            # Secrets.
+            - name: LDAP_BIND_DN
+              valueFrom:
+                secretKeyRef: { name: oms-ad-bind, key: bind-upn }
+            - name: LDAP_BIND_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: oms-ad-bind, key: bind-password }
+            - name: GRAFANA_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: { name: grafana-oauth, key: client-secret }
+          volumeMounts:
+            - name: realm
+              mountPath: /config
+              readOnly: true
+            - name: truststore
+              mountPath: /truststore
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: realm
+          configMap:
+            name: keycloak-realm
+        # Only the CA from Keycloak's certificate Secret, not its key.
+        - name: keycloak-ca
+          secret:
+            secretName: keycloak-tls
+            items:
+              - key: ca.crt
+                path: ca.crt
+        - name: truststore
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

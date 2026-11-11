@@ -1,0 +1,35 @@
+{
+  "vhosts": [
+    { "name": "/" }
+  ],
+  "queues": [
+    {
+      "name": "orders",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": { "x-queue-type": "quorum" }
+    },
+    {
+      "name": "orders.dead-letter",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": { "x-queue-type": "quorum" }
+    }
+  ],
+  "policies": [
+    {
+      "vhost": "/",
+      "name": "orders-dead-letter",
+      "pattern": "^orders$",
+      "apply-to": "quorum_queues",
+      "priority": 0,
+      "definition": {
+        "dead-letter-exchange": "",
+        "dead-letter-routing-key": "orders.dead-letter",
+        "delivery-limit": 9
+      }
+    }
+  ]
+}

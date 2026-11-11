@@ -26,6 +26,7 @@ const msalApp = cfg.clientId ? new PublicClientApplication({
     authority: cfg.authority,
     knownAuthorities: cfg.knownAuthorities,
     protocolMode: cfg.protocolMode,
+      ...(cfg.protocolMode === "OIDC" ? { OIDCOptions: { defaultScopes: ["openid", "profile"] } } : {}),
     redirectUri: `${window.location.origin}/`,
     postLogoutRedirectUri: `${window.location.origin}/`
   },
@@ -67,6 +68,11 @@ class ApiError extends Error {
 }
 
 async function api(method, path, body) {
+  const response = await send(method, path, body);
+  return response === null || response.status === 204 ? null : response.json();
+}
+
+async function send(method, path, body) {
   const headers = { Authorization: `Bearer ${await getAccessToken()}` };
   if (body !== undefined) {
     headers["Content-Type"] = "application/json";
@@ -85,7 +91,7 @@ async function api(method, path, body) {
     }
     throw new ApiError(response.status, detail);
   }
-  return response.status === 204 ? null : response.json();
+  return response;
 }
 
 function showSignInError(error) {
@@ -176,13 +182,27 @@ const lookFor = (sku) => productLook[sku.split("-")[0]] ?? { category: "Supplies
 
 let products = [];
 let canCreate = false;
+let canManageInventory = false;
+
+const maxOrderable = (product) => Math.min(100, Math.max(0, product.available));
+
+function stockLabel(product) {
+  if (product.available <= 0) {
+    return el("span", "stock out", "Sold out");
+  }
+  const low = product.available <= product.reorderLevel;
+  return el("span", `stock${low ? " low" : ""}`, low ? `Only ${product.available} left` : `${product.available} in stock`);
+}
 
 function renderCatalog() {
+  // Keep what the user has picked when stock is refreshed underneath them.
+  const picked = new Map(selectedItems().map((item) => [item.sku, item.quantity]));
   const grid = $("catalog");
   grid.replaceChildren();
   for (const product of products) {
     const look = lookFor(product.sku);
-    const card = el("article", "product");
+    const soldOut = product.available <= 0;
+    const card = el("article", soldOut ? "product sold-out" : "product");
     card.dataset.sku = product.sku;
 
     const top = el("div", "product-top");
@@ -190,24 +210,25 @@ function renderCatalog() {
     badge.append(icon(look.paths));
     top.append(badge, el("span", "category", look.category));
 
+    const max = maxOrderable(product);
     const input = el("input", "qty");
     input.type = "number";
     input.min = "0";
-    input.max = "100";
-    input.value = "0";
+    input.max = String(max);
+    input.value = String(Math.min(max, picked.get(product.sku) ?? 0));
     input.inputMode = "numeric";
     input.dataset.sku = product.sku;
     input.setAttribute("aria-label", `Quantity of ${product.name}`);
-    input.disabled = !canCreate;
+    input.disabled = !canCreate || soldOut;
     input.addEventListener("input", updateSummary);
 
     const step = (delta, label, text) => {
       const button = el("button", "", text);
       button.type = "button";
-      button.disabled = !canCreate;
+      button.disabled = !canCreate || soldOut;
       button.setAttribute("aria-label", `${label} ${product.name}`);
       button.addEventListener("click", () => {
-        input.value = String(Math.min(100, Math.max(0, (Number.parseInt(input.value, 10) || 0) + delta)));
+        input.value = String(Math.min(max, Math.max(0, (Number.parseInt(input.value, 10) || 0) + delta)));
         updateSummary();
       });
       return button;
@@ -218,10 +239,67 @@ function renderCatalog() {
     const bottom = el("div", "product-bottom");
     bottom.append(el("span", "price", money.format(product.unitPrice)), stepper);
 
-    card.append(top, el("div", "product-name", product.name), el("div", "product-sku", product.sku), bottom);
+    card.append(top, el("div", "product-name", product.name), el("div", "product-sku", product.sku), stockLabel(product), bottom);
     grid.append(card);
   }
   updateSummary();
+  renderInventory();
+}
+
+async function loadProducts() {
+  const response = await send("GET", "/api/products");
+  products = (response ? await response.json() : null) ?? [];
+  $("stock-banner").hidden = true;
+  renderCatalog();
+}
+
+// ---- Inventory (restock) ----------------------------------------------------------------------
+
+function renderInventory() {
+  $("inventory-panel").hidden = !canManageInventory;
+  if (!canManageInventory) {
+    return;
+  }
+  const body = $("inventory");
+  body.replaceChildren();
+  for (const product of products) {
+    const input = el("input", "qty");
+    input.type = "number";
+    input.min = "1";
+    input.max = "10000";
+    input.value = "10";
+    input.inputMode = "numeric";
+    input.setAttribute("aria-label", `Units of ${product.name} to add`);
+
+    const button = el("button", "button secondary", "Restock");
+    button.type = "button";
+    button.addEventListener("click", () => restock(product, Number.parseInt(input.value, 10) || 0, button));
+
+    const form = el("div", "restock-form");
+    form.append(input, button);
+
+    const row = el("tr");
+    row.append(cell(product.name), cell(product.sku, "mono"), cell(stockLabel(product), "num"), cell(String(product.reorderLevel), "num"), cell(form, "num"));
+    body.append(row);
+  }
+}
+
+async function restock(product, quantity, button) {
+  button.disabled = true;
+  try {
+    const updated = await api("POST", `/api/inventory/${encodeURIComponent(product.sku)}/restock`, { quantity });
+    if (!updated) {
+      throw new ApiError(404, `Unknown product ${product.sku}.`);
+    }
+    products = products.map((candidate) => candidate.sku === updated.sku ? updated : candidate);
+    renderCatalog();
+    toast(`Added ${quantity} \u00d7 ${updated.name}; ${updated.available} available.`, "ok");
+  } catch (error) {
+    toast(error.status === 403
+      ? "You are not allowed to restock (requires the Inventory.Manage role)."
+      : `Could not restock: ${error.message}`, "error");
+    button.disabled = false;
+  }
 }
 
 function selectedItems() {
@@ -313,7 +391,8 @@ function renderOrders(freshId) {
       items.append(el("span", "more", ` +${order.lines.length - 2} more`));
     }
 
-    const status = el("span", `status ${order.status.toLowerCase()}`, order.status);
+    const statusText = order.status === "Rejected" && order.statusReason ? `Rejected: ${order.statusReason}` : order.status;
+    const status = el("span", `status ${order.status.toLowerCase()}`, statusText);
     const placed = cell(timeAgo(order.placedAt));
     placed.title = dateTime.format(new Date(order.placedAt));
 
@@ -324,9 +403,12 @@ function renderOrders(freshId) {
   $("orders-empty").hidden = rows.length > 0;
   $("history-count").textContent = rows.length === 1 ? "1 order" : `${rows.length} orders`;
   $("kpi-orders").textContent = String(rows.length);
-  $("kpi-processed").textContent = String(processed.length);
+  $("kpi-processed").textContent = String(processed.filter((order) => order.status === "Processed").length);
   $("kpi-progress").textContent = String(inFlight.length);
-  $("kpi-value").textContent = money.format(rows.reduce((sum, order) => sum + order.total, 0));
+  // Rejected orders are not fulfilled, so they add nothing to the value.
+  $("kpi-value").textContent = money.format(rows
+    .filter((order) => order.status !== "Rejected")
+    .reduce((sum, order) => sum + order.total, 0));
 }
 
 async function loadOrders() {
@@ -334,16 +416,25 @@ async function loadOrders() {
   renderOrders();
 }
 
-// The order is accepted onto the queue at once and recorded by the processor moments later.
+// The order is accepted onto the queue at once and recorded by the processor once it has reserved
+// the stock. That takes moments, or up to about an hour while the inventory service is down, so the
+// page checks less often as time goes on.
 async function trackOrder(orderId) {
-  for (let attempt = 0; attempt < 60; attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+  const giveUpAt = Date.now() + 60 * 60 * 1000;
+  for (let delay = 2000; Date.now() < giveUpAt; delay = Math.min(delay * 2, 30000)) {
+    await new Promise((resolve) => setTimeout(resolve, delay));
     const order = await api("GET", `/api/orders/${orderId}`).catch(() => null);
     if (order) {
       pending.delete(orderId);
       processed = [order, ...processed.filter((existing) => existing.orderId !== orderId)];
       renderOrders(orderId);
-      toast(`Order ${orderId.slice(0, 8)} has been processed.`, "ok");
+      if (order.status === "Rejected") {
+        toast(`Order ${orderId.slice(0, 8)} was rejected: ${order.statusReason ?? "unknown reason"}.`, "error");
+      } else {
+        toast(`Order ${orderId.slice(0, 8)} has been processed.`, "ok");
+      }
+      // Stock changed with the order.
+      await loadProducts().catch(() => {});
       return;
     }
   }
@@ -358,8 +449,8 @@ $("sign-in").addEventListener("click", () => {
 // OIDC providers such as Keycloak require id_token_hint to honour the post-logout redirect.
 $("sign-out").addEventListener("click", () => msalApp.logoutRedirect({ account, idTokenHint: account?.idToken }));
 $("place-order").addEventListener("click", placeOrder);
-$("refresh").addEventListener("click", () => loadOrders()
-  .then(() => toast("Order history refreshed."))
+$("refresh").addEventListener("click", () => Promise.all([loadOrders(), loadProducts()])
+  .then(() => toast("Orders and stock refreshed."))
   .catch((error) => toast(`Could not refresh: ${error.message}`, "error")));
 
 if (!msalApp) {
@@ -373,9 +464,11 @@ if (!msalApp) {
   try {
     const me = await api("GET", "/api/me");
     canCreate = me.canCreate;
+    canManageInventory = me.canManageInventory === true;
     $("user-name").textContent = me.name;
     $("user-avatar").textContent = initials(me.name);
-    $("user-role").textContent = canCreate ? "Can place orders" : me.canRead ? "Read-only access" : "No order access";
+    const access = canCreate ? "Can place orders" : me.canRead ? "Read-only access" : "No order access";
+    $("user-role").textContent = canManageInventory ? `${access} \u00b7 Inventory manager` : access;
     $("user-area").hidden = false;
 
     if (!me.canRead) {
@@ -386,8 +479,10 @@ if (!msalApp) {
       $("role-banner").hidden = false;
     }
 
-    products = await api("GET", "/api/products");
-    renderCatalog();
+    await loadProducts().catch((error) => {
+      $("stock-banner").textContent = `Products are unavailable: ${error.message} Your orders are below; try Refresh shortly.`;
+      $("stock-banner").hidden = false;
+    });
     renderSkeleton();
     showView("orders-view");
     if (me.canRead) {

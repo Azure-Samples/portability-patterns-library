@@ -1,0 +1,29 @@
+# Helm values for the CloudNativePG operator on Azure Local. It runs the PostgreSQL clusters that the
+# PostgreSQL Recipe and Keycloak declare: replicas on separate nodes, automatic failover, rolling
+# updates, TLS and backups. Install with:
+#
+#   helm upgrade --install cnpg cloudnative-pg --repo https://cloudnative-pg.github.io/charts `
+#     --version 0.29.1 --namespace cnpg-system --create-namespace `
+#     --values infra/azurelocal/operators/cloudnative-pg/operator/values.yaml
+#
+# Change the marked values for your site first. scripts/infra/azurelocal/provision-operators.ps1
+# does this for you.
+
+# Pulls from the in-cluster connected registry, so the operator restarts while the link to Azure
+# is down.
+image:
+  repository: <connected-registry-address>/cloudnative-pg/cloudnative-pg  # the connected registry's ClusterIP
+  tag: "1.30.1"
+imagePullSecrets:
+  - name: azurelocal-registry
+
+# Watches every namespace: the app's database is in oms-azurelocal, Keycloak's in identity.
+config:
+  clusterWide: true
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 512Mi

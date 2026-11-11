@@ -11,6 +11,17 @@
       "credentials": [ { "type": "password", "value": "demo", "temporary": false } ],
       "realmRoles": [ "default-roles-oms" ],
       "groups": [ "/oms-app-readers", "/oms-app-writers" ]
+    },
+    {
+      "username": "manager",
+      "enabled": true,
+      "firstName": "Inventory",
+      "lastName": "Manager",
+      "email": "manager@example.com",
+      "emailVerified": true,
+      "credentials": [ { "type": "password", "value": "manager", "temporary": false } ],
+      "realmRoles": [ "default-roles-oms" ],
+      "groups": [ "/oms-inventory-admins" ]
     }
   ]
 }

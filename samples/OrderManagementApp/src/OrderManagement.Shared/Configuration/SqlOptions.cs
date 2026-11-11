@@ -1,105 +1,79 @@
+using System.ComponentModel.DataAnnotations;
 using Microsoft.Data.SqlClient;
-using Microsoft.Extensions.Configuration;
-using OrderManagement.Shared.Identity;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace OrderManagement.Shared.Configuration;
 
 /// <summary>
-/// Settings for the <c>sql</c> connection, backed by the built-in
-/// <c>Radius.Data/sqlServerDatabases</c> Resource Type.
-///
-/// The platform decides how the application authenticates: on Azure an Entra workload identity is
-/// attached, so the application connects to Azure SQL Database with an Entra ID access token.
-/// Otherwise, as on Azure Local, it uses the SQL login the connection carries.
+/// The <c>sql</c> connection, backed by the built-in <c>Radius.Data/sqlServerDatabases</c> Resource
+/// Type (Azure SQL Database on Azure, a SQL Server container on Azure Local), and the client's
+/// tunables from the <c>Sql</c> section. Only the target comes from the connection: each service signs
+/// in as its own least-privilege principal (<see cref="Identity.DatabaseLogin"/>).
 /// </summary>
 public sealed class SqlOptions
 {
-    public required string Host { get; init; }
-    public required int Port { get; init; }
-    public required string Database { get; init; }
-    public string? Username { get; init; }
-    public string? Password { get; init; }
+    public const string ConnectionName = "sql";
+    public const string SectionName = "Sql";
+
+    [Required]
+    public string? Host { get; set; }
+
+    [Range(1, 65535)]
+    public int Port { get; set; } = 1433;
+
+    [Required]
+    public string? Database { get; set; }
 
     /// <summary>
-    /// Path to a file holding the password. Preferred over <see cref="Password"/> wherever a vault
-    /// or secret store supplies the credential: a mounted file tracks rotation, an environment
-    /// variable cannot change under a running process.
+    /// <c>CONNECTION_SQL_TLS</c>: <c>required</c> (default) encrypts the connection and verifies the
+    /// server's certificate against the CAs the process trusts; on Azure Local that is the site CA the
+    /// platform gives every pod. <c>optional</c> is only for a local server without a certificate.
     /// </summary>
-    public string? PasswordFile { get; init; }
+    public bool TlsRequired { get; set; } = true;
+
+    [Range(1, 600)]
+    public int ConnectTimeoutSeconds { get; set; } = 30;
+
+    [Range(1, 3600)]
+    public int CommandTimeoutSeconds { get; set; } = 60;
 
     /// <summary>
-    /// True when the platform attached an Entra workload identity to the pod. The Resource Type
-    /// always carries a SQL login, but where an Entra identity exists it is used instead.
+    /// SqlClient's own retry of opening a connection, on the errors it knows to be transient (an Azure
+    /// SQL failover or reconfiguration, for example), with exponential backoff.
     /// </summary>
-    public bool HasWorkloadIdentity { get; init; }
+    [Range(1, 60)]
+    public int OpenRetries { get; set; } = 5;
 
-    /// <summary>
-    /// True when the application authenticates to SQL with an Entra ID token obtained through
-    /// Workload Identity rather than a SQL login.
-    /// </summary>
-    public bool UseEntraId => HasWorkloadIdentity ||
-        (string.IsNullOrWhiteSpace(Password) && string.IsNullOrWhiteSpace(PasswordFile));
+    public TimeSpan OpenRetryDelay { get; set; } = TimeSpan.FromSeconds(1);
 
-    /// <summary>
-    /// Reads the password as it stands now. Called for every connection so a credential that was
-    /// rotated since the process started, or since the last connection, is still honoured.
-    /// </summary>
-    public string? ResolvePassword() =>
-        string.IsNullOrWhiteSpace(PasswordFile) ? Password : File.ReadAllText(PasswordFile).Trim();
+    public TimeSpan OpenRetryMaxDelay { get; set; } = TimeSpan.FromSeconds(30);
 
-    /// <summary>Entra ID scope used when requesting an access token for Azure SQL.</summary>
-    public const string EntraScope = "https://database.windows.net/.default";
-
-    public static SqlOptions FromConfiguration(IConfiguration configuration, string connectionName = "sql")
+    public SqlConnectionStringBuilder CreateConnectionStringBuilder(string? database = null) => new()
     {
-        var values = new ConnectionValues(configuration, connectionName);
+        DataSource = $"tcp:{Host},{Port}",
+        InitialCatalog = database ?? Database,
+        Encrypt = TlsRequired ? SqlConnectionEncryptOption.Mandatory : SqlConnectionEncryptOption.Optional,
+        TrustServerCertificate = false,
+        ConnectTimeout = ConnectTimeoutSeconds,
+        CommandTimeout = CommandTimeoutSeconds,
+        ApplicationName = "OrderManagement"
+    };
 
-        return new SqlOptions
+    public SqlRetryLogicBaseProvider CreateOpenRetryProvider() =>
+        SqlConfigurableRetryFactory.CreateExponentialRetryProvider(new SqlRetryLogicOption
         {
-            Host = values.GetRequired("host"),
-            Port = values.GetInt32("port", 1433),
-            Database = values.Get("database") ?? "omsdb",
-            Username = values.Get("username"),
-            Password = values.Get("password"),
-            PasswordFile = values.Get("passwordFile"),
-            HasWorkloadIdentity = AzureCredentialFactory.HasWorkloadIdentity
-        };
-    }
+            NumberOfTries = OpenRetries,
+            DeltaTime = OpenRetryDelay,
+            MaxTimeInterval = OpenRetryMaxDelay
+        });
 
-    public string BuildConnectionString() => BuildConnectionString(Database, ResolvePassword());
-
-    /// <summary>
-    /// Connection string pointed at <c>master</c>, used only to create the application database on a
-    /// freshly provisioned SQL Server container.
-    /// </summary>
-    public string BuildMasterConnectionString() => BuildConnectionString("master", ResolvePassword());
-
-    private string BuildConnectionString(string database, string? password)
-    {
-        var builder = new SqlConnectionStringBuilder
+    public static OptionsBuilder<SqlOptions> Add(IServiceCollection services) =>
+        services.AddConnectionOptions<SqlOptions>(ConnectionName, SectionName, (options, values) =>
         {
-            DataSource = $"tcp:{Host},{Port}",
-            InitialCatalog = database,
-            Encrypt = true,
-            ConnectTimeout = 30,
-            CommandTimeout = 60,
-            ApplicationName = "OrderManagement"
-        };
-
-        if (UseEntraId)
-        {
-            // No credentials in the connection string. The access token is attached per-connection
-            // from the Workload Identity federated credential.
-            return builder.ConnectionString;
-        }
-
-        builder.UserID = Username ?? throw new InvalidOperationException(
-            "A SQL username is required when a SQL password is configured.");
-        builder.Password = password;
-
-        // The SQL Server container uses a self-signed certificate.
-        builder.TrustServerCertificate = true;
-
-        return builder.ConnectionString;
-    }
+            options.Host = values.Get("host");
+            options.Port = values.GetInt32("port") ?? options.Port;
+            options.Database = values.Get("database");
+            options.TlsRequired = values.GetTlsRequired();
+        });
 }

@@ -6,6 +6,9 @@
     "resourceGroupName": { "value": "rg-${AZURE_ENV_NAME}" },
     "clusterName": { "value": "aks-${AZURE_ENV_NAME}" },
     "nodeVmSize": { "value": "${AKS_NODE_VM_SIZE=Standard_D4s_v7}" },
-    "clusterAdminObjectIds": { "value": [ "${AZURE_PRINCIPAL_ID}" ] }
+    "nodeOsUpgradeDay": { "value": "${AKS_NODE_OS_UPGRADE_DAY=Sunday}" },
+    "nodeOsUpgradeStartTime": { "value": "${AKS_NODE_OS_UPGRADE_START=02:00}" },
+    "clusterAdminObjectIds": { "value": [ "${AZURE_PRINCIPAL_ID}" ] },
+    "alertEmail": { "value": "${ALERT_EMAIL=}" }
   }
 }

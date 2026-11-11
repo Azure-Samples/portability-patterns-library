@@ -1,11 +1,13 @@
-# Keycloak with a PostgreSQL database, in the identity namespace.
+# Keycloak in the identity namespace: two replicas on separate nodes, sharing the database in
+# database/ and clustering through it, so sign-in survives losing a node. Users reach it on the load
+# balancer address in service.yaml. The realm comes from realm-config.yaml, not from Keycloak itself.
 #
 # Expects these to exist in the identity namespace (see README.md in this folder):
-#   Secret keycloak-admin           username, password    bootstrap admin
-#   Secret keycloak-db              username, password    database login
-#   Secret keycloak-tls             tls.crt, tls.key      Keycloak's serving certificate, from cert-manager
+#   Secret keycloak-admin-client    client-id, client-secret   temporary admin service account, for realm-config.yaml
+#   Secret keycloak-db              username, password    database login (type kubernetes.io/basic-auth)
+#   Secret keycloak-tls             tls.crt, tls.key, ca.crt   Keycloak's serving certificate, from cert-manager
+#   Secret keycloak-db-tls          ca.crt                the CA behind the database's certificate, from cert-manager
 #   Secret cluster-ca               cluster-ca.pem        the cluster's CA, to verify service account tokens
-#   Secret oms-ad-bind              bind-upn, bind-password   read-only directory account
 #   Secret oms-ad-ca                ca.crt                directory CA, for LDAPS (optional)
 #   ConfigMap keycloak-realm-settings                     site values from realm-settings.env
 #   Secret azurelocal-registry      image pull secret, when pulling from a private registry
@@ -25,84 +27,17 @@ subjects:
     name: default
     namespace: identity
 ---
-apiVersion: v1
-kind: Service
-metadata:
-  name: keycloak-db
-  namespace: identity
-spec:
-  selector:
-    app: keycloak-db
-  ports:
-    - port: 5432
-      targetPort: 5432
----
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: keycloak-db
-  namespace: identity
-spec:
-  serviceName: keycloak-db
-  replicas: 1
-  selector:
-    matchLabels:
-      app: keycloak-db
-  template:
-    metadata:
-      labels:
-        app: keycloak-db
-    spec:
-      imagePullSecrets:
-        - name: azurelocal-registry
-      containers:
-        - name: postgres
-          image: docker.io/library/postgres
-          env:
-            - name: POSTGRES_DB
-              value: keycloak
-            - name: POSTGRES_USER
-              valueFrom:
-                secretKeyRef: { name: keycloak-db, key: username }
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: keycloak-db, key: password }
-            - name: PGDATA
-              value: /var/lib/postgresql/data/pgdata
-          ports:
-            - containerPort: 5432
-          readinessProbe:
-            exec:
-              command: ["pg_isready", "-U", "keycloak", "-d", "keycloak"]
-            initialDelaySeconds: 10
-            periodSeconds: 10
-          volumeMounts:
-            - name: data
-              mountPath: /var/lib/postgresql/data
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 8Gi
----
-# Reached on every node's address at port 30443, so the issuer URL is https://<node address>:30443/realms/oms.
-apiVersion: v1
-kind: Service
+# Keeps one Keycloak serving while a node is drained.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
 metadata:
   name: keycloak
   namespace: identity
 spec:
-  type: NodePort
+  minAvailable: 1
   selector:
-    app: keycloak
-  ports:
-    - name: https
-      port: 8443
-      targetPort: 8443
-      nodePort: 30443
+    matchLabels:
+      app: keycloak
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -110,7 +45,14 @@ metadata:
   name: keycloak
   namespace: identity
 spec:
-  replicas: 1
+  replicas: 2
+  # One pod at a time, and the new one ready before an old one stops, so the cluster always has a
+  # member to join and sign-in never pauses.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: keycloak
@@ -121,31 +63,57 @@ spec:
     spec:
       imagePullSecrets:
         - name: azurelocal-registry
+      # Lets a stopping pod leave the cluster cleanly and hand its sessions over.
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: keycloak
       containers:
         - name: keycloak
           image: quay.io/keycloak/keycloak
-          args: ["start", "--import-realm", "--optimized=false"]
-          # Site values for the ${...} placeholders in realm.json.
-          envFrom:
-            - configMapRef:
-                name: keycloak-realm-settings
+          args: ["start", "--optimized=false"]
+          # Keycloak builds itself for the options below when it starts, into /opt/keycloak/lib, so
+          # its root filesystem stays writable.
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           env:
-            - name: LDAP_BIND_DN
+            # Keycloak's own address, which tokens name as their issuer. Keycloak reads it only when
+            # it starts.
+            - name: KC_HOSTNAME
               valueFrom:
-                secretKeyRef: { name: oms-ad-bind, key: bind-upn }
-            - name: LDAP_BIND_PASSWORD
+                configMapKeyRef: { name: keycloak-realm-settings, key: KC_HOSTNAME }
+            # The admin console is served for this address only, which is not on the site network:
+            # administrators reach it with `kubectl port-forward` (see README.md).
+            - name: KC_HOSTNAME_ADMIN
+              value: https://localhost:8443
+            # A temporary admin service account, created in the master realm on Keycloak's first
+            # start. realm-config.yaml signs in with it; there is no admin user.
+            - name: KC_BOOTSTRAP_ADMIN_CLIENT_ID
               valueFrom:
-                secretKeyRef: { name: oms-ad-bind, key: bind-password }
-            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+                secretKeyRef: { name: keycloak-admin-client, key: client-id }
+            - name: KC_BOOTSTRAP_ADMIN_CLIENT_SECRET
               valueFrom:
-                secretKeyRef: { name: keycloak-admin, key: username }
-            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: keycloak-admin, key: password }
+                secretKeyRef: { name: keycloak-admin-client, key: client-secret }
             - name: KC_DB
               value: postgres
+            # The read-write Service: CloudNativePG's follows the primary through a failover, and
+            # database/postgres.yaml's has the same name. The server's certificate is checked
+            # against the CA that issued it, and its name against the address.
             - name: KC_DB_URL
-              value: jdbc:postgresql://keycloak-db:5432/keycloak
+              value: jdbc:postgresql://keycloak-db-rw:5432/keycloak?sslmode=verify-full&sslrootcert=/opt/keycloak/conf/db-ca/ca.crt
             - name: KC_DB_USERNAME
               valueFrom:
                 secretKeyRef: { name: keycloak-db, key: username }
@@ -160,14 +128,12 @@ spec:
             # its next read, with no restart.
             - name: KC_HTTPS_CERTIFICATES_RELOAD_PERIOD
               value: 10m
-            - name: KC_HOSTNAME_STRICT
-              value: "false"
             - name: KC_HEALTH_ENABLED
               value: "true"
-            # One replica, so no clustering. Otherwise a restarted pod waits on its predecessor's
-            # membership row in the database and never finishes starting.
+            # The replicas find each other through the database (the default jdbc-ping stack) and
+            # share sessions, so either one can serve any user.
             - name: KC_CACHE
-              value: local
+              value: ispn
             # Exchanging a Kubernetes service account token needs this feature, at v1.
             - name: KC_FEATURES
               value: kubernetes-service-accounts:v1
@@ -175,29 +141,55 @@ spec:
             - name: KC_TRUSTSTORE_PATHS
               value: /opt/keycloak/conf/truststores
           ports:
-            - containerPort: 8443
+            - name: https
+              containerPort: 8443
+            - name: jgroups
+              containerPort: 7800
+            - name: jgroups-fd
+              containerPort: 57800
+          # Health is on the management port. The first start builds Keycloak and creates the
+          # database schema, which can take minutes; after that, a pod that stops answering is
+          # restarted.
+          startupProbe:
+            httpGet:
+              path: /health/started
+              port: 9000
+              scheme: HTTPS
+            periodSeconds: 10
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 9000
+              scheme: HTTPS
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
           readinessProbe:
             httpGet:
               path: /health/ready
               port: 9000
               scheme: HTTPS
-            initialDelaySeconds: 30
             periodSeconds: 10
-            failureThreshold: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 768Mi
+            limits:
+              memory: 1536Mi
           volumeMounts:
-            - name: realm
-              mountPath: /opt/keycloak/data/import
-              readOnly: true
             - name: truststore
               mountPath: /opt/keycloak/conf/truststores
               readOnly: true
             - name: tls
               mountPath: /opt/keycloak/conf/tls
               readOnly: true
+            - name: db-ca
+              mountPath: /opt/keycloak/conf/db-ca
+              readOnly: true
       volumes:
-        - name: realm
-          configMap:
-            name: keycloak-realm
         - name: truststore
           projected:
             sources:
@@ -209,3 +201,10 @@ spec:
         - name: tls
           secret:
             secretName: keycloak-tls
+        # Only the CA from the database's certificate Secret, not its key.
+        - name: db-ca
+          secret:
+            secretName: keycloak-db-tls
+            items:
+              - key: ca.crt
+                path: ca.crt

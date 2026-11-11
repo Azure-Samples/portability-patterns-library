@@ -11,6 +11,7 @@ public static class OrderRoles
 {
     public const string Read = "Orders.Read";
     public const string Create = "Orders.Create";
+    public const string ManageInventory = "Inventory.Manage";
     public const string ApiScope = "access_as_user";
 }
 
@@ -18,17 +19,19 @@ public static class OrderPolicies
 {
     public const string Read = "Orders.Read";
     public const string Create = "Orders.Create";
+    public const string ManageInventory = "Inventory.Manage";
 }
 
 public static class UserIdentity
 {
-    /// <summary>Stable per-user key: Entra's <c>oid</c>, falling back to <c>sub</c>.</summary>
+    /// <summary>Stable, opaque per-user key: Entra's <c>oid</c>, falling back to <c>sub</c>. Safe to log.</summary>
     public static string CustomerId(ClaimsPrincipal user) =>
         user.GetObjectId()
         ?? user.FindFirstValue("sub")
         ?? user.FindFirstValue(ClaimTypes.NameIdentifier)
-        ?? throw new InvalidOperationException("The access token carries no user identifier.");
+        ?? throw new MissingUserIdentifierException();
 
+    /// <summary>The user's name or e-mail address, shown to the user and stored with the order. Never logged.</summary>
     public static string DisplayName(ClaimsPrincipal user) =>
         user.FindFirstValue("preferred_username")
         ?? user.FindFirstValue("name")

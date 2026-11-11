@@ -1,0 +1,31 @@
+# cert-manager's controller, which the Certificate Management for Azure Arc extension runs in
+# namespace cert-manager (Deployment cert-manager), serves metrics on 9402. A PodMonitor reaches the
+# pods directly, whether or not the extension created a Service for that port, and adds nothing to a
+# namespace the extension owns. The labels are the ones cert-manager's chart puts on the controller;
+# provision-observability.ps1 checks the Deployment has them.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: cert-manager
+  namespace: observability
+spec:
+  namespaceSelector:
+    matchNames:
+      - cert-manager
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cert-manager
+      app.kubernetes.io/component: controller
+  podMetricsEndpoints:
+    # HTTPS, with the certificate checked against cert-manager's metrics CA
+    # (cert-manager-metrics-ca.yaml) and the name it's issued for.
+    - portNumber: 9402
+      path: /metrics
+      scheme: https
+      tlsConfig:
+        ca:
+          configMap:
+            name: cert-manager-metrics-ca
+            key: ca.crt
+        serverName: cert-manager.cert-manager.svc
+      interval: 60s

@@ -23,6 +23,9 @@ param sshPublicKey string
 param adminGroupObjectIds array
 param loadBalancerName string
 param loadBalancerAddresses string
+
+@description('Turn on the OIDC issuer and workload identity, which only take effect when the cluster is created.')
+param enableWorkloadIdentity bool
 param kubernetesRuntimeObjectId string
 param tags object
 
@@ -88,9 +91,10 @@ resource logicalNetwork 'Microsoft.AzureStackHCI/logicalNetworks@2024-01-01' = {
 }
 
 // The Arc representation of the cluster. AKS Arc creates its own Arc agent certificate, so
-// agentPublicKeyCertificate stays empty. Workload identity and the OIDC issuer stay off: workloads
-// authenticate to an identity provider on site with the cluster's own ServiceAccount tokens, which
-// needs no Azure round trip.
+// agentPublicKeyCertificate stays empty. Workloads authenticate to an identity provider on site
+// with the cluster's own ServiceAccount tokens, which needs no Azure round trip. Workload identity
+// and the OIDC issuer are only for reaching Azure while connected, such as the Key Vault Secret
+// Store extension syncing secrets into the cluster; they can only be turned on at creation.
 resource connectedCluster 'Microsoft.Kubernetes/connectedClusters@2024-12-01-preview' = {
   name: clusterName
   location: location
@@ -109,11 +113,11 @@ resource connectedCluster 'Microsoft.Kubernetes/connectedClusters@2024-12-01-pre
     }
     securityProfile: {
       workloadIdentity: {
-        enabled: false
+        enabled: enableWorkloadIdentity
       }
     }
     oidcIssuerProfile: {
-      enabled: false
+      enabled: enableWorkloadIdentity
     }
   }
 }
@@ -176,6 +180,21 @@ resource provisionedCluster 'Microsoft.HybridContainerService/provisionedCluster
       }
     }
   }
+}
+
+// The cluster's one cert-manager (with trust-manager), in namespace cert-manager. The connected
+// registry, the site CA's certificate issuer and the Key Vault Secret Store extension all use it.
+resource certManagement 'Microsoft.KubernetesConfiguration/extensions@2023-05-01' = {
+  name: 'azure-cert-management'
+  scope: connectedCluster
+  properties: {
+    extensionType: 'microsoft.certmanagement'
+    autoUpgradeMinorVersion: true
+    releaseTrain: 'stable'
+  }
+  dependsOn: [
+    provisionedCluster
+  ]
 }
 
 // Arc load balancer: the arcnetworking extension (MetalLB) plus an address range it answers ARP for.

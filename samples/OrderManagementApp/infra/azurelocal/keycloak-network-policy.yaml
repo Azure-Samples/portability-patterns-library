@@ -1,0 +1,94 @@
+# Network policies for namespace identity: Keycloak and its database. Applied by
+# scripts/infra/azurelocal/keycloak.ps1 before Keycloak, and by hand with:
+#
+#   kubectl apply -f infra/azurelocal/keycloak-network-policy.yaml
+#
+# Nothing may reach a pod in the namespace unless a policy below allows it:
+#   - Keycloak serves sign-in on 8443 to anyone on the site: browsers, through its load balancer
+#     address, and the app's pods, RabbitMQ and Grafana; its cluster ports (7800, 57800) only to the
+#     other Keycloak pods;
+#   - its database only to Keycloak: the standalone server (Availability 'standard', app=keycloak-db)
+#     or the CloudNativePG cluster ('high', cnpg.io/cluster=keycloak-db), whose instances also
+#     replicate from each other, whose operator (namespace cnpg-system) checks each instance on 8000
+#     and whose metrics Prometheus (namespace observability) scrapes.
+# Kubelet health probes aren't affected.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: identity
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: keycloak
+  namespace: identity
+spec:
+  podSelector:
+    matchLabels: { app: keycloak }
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - { port: 8443, protocol: TCP }
+    # JGroups clustering and its failure detection, between the replicas only.
+    - from:
+        - podSelector:
+            matchLabels: { app: keycloak }
+      ports:
+        - { port: 7800, protocol: TCP }
+        - { port: 57800, protocol: TCP }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: keycloak-db-standalone
+  namespace: identity
+spec:
+  podSelector:
+    matchLabels: { app: keycloak-db }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: keycloak }
+      ports:
+        - { port: 5432, protocol: TCP }
+---
+# The cnpg.io/cluster label is on the instances and on the jobs that create them, which copy the
+# data from the primary.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: keycloak-db-cluster
+  namespace: identity
+spec:
+  podSelector:
+    matchLabels: { cnpg.io/cluster: keycloak-db }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: keycloak }
+      ports:
+        - { port: 5432, protocol: TCP }
+    - from:
+        - podSelector:
+            matchLabels: { cnpg.io/cluster: keycloak-db }
+      ports:
+        - { port: 5432, protocol: TCP }
+        - { port: 8000, protocol: TCP }
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: cnpg-system }
+      ports:
+        - { port: 8000, protocol: TCP }
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: observability }
+          podSelector:
+            matchLabels: { app.kubernetes.io/name: prometheus }
+      ports:
+        - { port: 9187, protocol: TCP }

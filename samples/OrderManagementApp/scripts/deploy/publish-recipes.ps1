@@ -8,8 +8,8 @@
     *from the cluster*, not just from your workstation.
 
     Recipes live at the repository root in recipes/<capability>/<platform>/<implementation>/. Each
-    is published as <Registry>/recipes/<file name>:<Tag>, which is what the Recipe Packs in
-    recipe-packs/ reference.
+    is published as <Registry>/recipes/<implementation>/<file name>:<Tag>, which is what the Recipe
+    Packs in recipe-packs/ reference.
 
 .PARAMETER Registry
     Registry host, for example 'myregistry.azurecr.io'.
@@ -41,7 +41,7 @@ $recipes = Get-LibraryRecipe -Platform $Platform
 if (-not $recipes) { throw "No Recipes found for platform '$Platform' under $LibraryRecipeRoot." }
 
 foreach ($recipe in $recipes) {
-    $target = "br:$Registry/recipes/$($recipe.BaseName):$Tag"
+    $target = "br:$Registry/$(Get-LibraryRecipeRepository $recipe):$Tag"
     Write-Host "Publishing $($recipe.Name) -> $target" -ForegroundColor Cyan
 
     $radArgs = @('bicep', 'publish', '--file', $recipe.FullName, '--target', $target)

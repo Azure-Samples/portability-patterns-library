@@ -1,123 +1,72 @@
-using Azure.Core;
-using OrderManagement.Shared.Configuration;
-using OrderManagement.Shared.Diagnostics;
-using OrderManagement.Shared.Identity;
-using Dapper;
 using Microsoft.Data.SqlClient;
-using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using OrderManagement.Shared.Configuration;
+using OrderManagement.Shared.Identity;
 
 namespace OrderManagement.Shared.Persistence;
 
 /// <summary>
-/// Opens connections to Azure SQL Database (Entra ID access token obtained through Workload Identity)
-/// or to a containerized SQL Server (SQL login). Shared by every SQL-backed store.
+/// Opens connections to Azure SQL Database (Entra ID token from the workload identity) or to a SQL
+/// Server container (SQL login). Shared by every SQL-backed store. The schema belongs to dbsetup; the
+/// principals this opens connections as can only read and write rows.
 /// </summary>
 public sealed class SqlConnectionFactory
 {
     private readonly SqlOptions _options;
-    private readonly ILogger<SqlConnectionFactory> _logger;
-    private readonly TokenCredential? _credential;
+    private readonly DatabaseLogin _login;
+    private readonly SqlRetryLogicBaseProvider _openRetry;
+    private readonly Func<SqlAuthenticationParameters, CancellationToken, Task<SqlAuthenticationToken>>? _tokenCallback;
 
-    public SqlConnectionFactory(SqlOptions options, ILogger<SqlConnectionFactory> logger)
+    public SqlConnectionFactory(IOptions<SqlOptions> options, DatabaseLogin login)
     {
-        _options = options;
-        _logger = logger;
+        _options = options.Value;
+        _login = login;
+        _openRetry = _options.CreateOpenRetryProvider();
 
-        if (options.UseEntraId)
-        {
-            _logger.LogInformation(
-                "Using Entra ID authentication for SQL host {Host} through workload identity",
-                options.Host);
-            _credential = AzureCredentialFactory.Create();
-        }
-        else
-        {
-            _logger.LogInformation("Using SQL authentication for SQL host {Host}", options.Host);
-        }
-    }
-
-    // Built per connection rather than once, so a password rotated by a vault or secret store is
-    // picked up without restarting the worker. The token path already re-reads for the same reason.
-    public Task<SqlConnection> OpenAsync(CancellationToken cancellationToken) =>
-        OpenAsync(_options.BuildConnectionString(), cancellationToken);
-
-    private async Task<SqlConnection> OpenAsync(string connectionString, CancellationToken cancellationToken)
-    {
-        var connection = new SqlConnection(connectionString);
-
-        if (_credential is not null)
-        {
-            var token = await _credential.GetTokenAsync(
-                new TokenRequestContext([SqlOptions.EntraScope]),
-                cancellationToken).ConfigureAwait(false);
-
-            connection.AccessToken = token.Token;
-        }
-
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        return connection;
-    }
-
-    /// <summary>
-    /// Creates the application database when missing, then runs an idempotent schema script.
-    /// Retries because on a cold environment the SQL container may still be starting.
-    /// </summary>
-    public async Task EnsureSchemaAsync(string schemaSql, string description, CancellationToken cancellationToken)
-    {
-        const int maxAttempts = 30;
-        for (var attempt = 1; ; attempt++)
-        {
-            try
+        // One callback for the factory's lifetime: SqlClient pools connections per callback, and asks
+        // it for a token only when it opens a new physical connection.
+        _tokenCallback = login.UsesToken
+            ? async (_, cancellationToken) =>
             {
-                await EnsureDatabaseExistsAsync(cancellationToken).ConfigureAwait(false);
-
-                await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-                await connection.ExecuteAsync(new CommandDefinition(schemaSql, cancellationToken: cancellationToken))
-                    .ConfigureAwait(false);
-
-                _logger.LogInformation("SQL schema for {Description} ready on database {Database}",
-                    description, _options.Database);
-                return;
+                var token = await login.GetTokenAsync(cancellationToken).ConfigureAwait(false);
+                return new SqlAuthenticationToken(token.Token, token.ExpiresOn);
             }
-            catch (Exception ex) when (attempt < maxAttempts && !cancellationToken.IsCancellationRequested)
-            {
-                var delay = TimeSpan.FromSeconds(Math.Min(10, attempt * 2));
-
-                // Summarised at warning; the full exception is available at debug level.
-                _logger.LogWarning(
-                    "SQL not ready for {Description} (attempt {Attempt}/{MaxAttempts}): {Reason}. Retrying in {Delay}",
-                    description, attempt, maxAttempts, ExceptionSummary.Describe(ex), delay);
-                _logger.LogDebug(ex, "SQL initialization attempt {Attempt} failed", attempt);
-
-                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
-            }
-        }
+            : null;
     }
 
-    /// <summary>
-    /// Creates the application database when it does not exist. Required for the local SQL Server
-    /// container, which starts with only the system databases. On Azure SQL the database is created
-    /// by the Recipe and the principal usually cannot create databases, so failures are tolerated.
-    /// </summary>
-    private async Task EnsureDatabaseExistsAsync(CancellationToken cancellationToken)
+    public SqlOptions Options => _options;
+
+    /// <param name="database">Another database on the same server, such as <c>master</c>; null for the application database.</param>
+    public SqlConnection CreateConnection(string? database = null)
     {
+        var builder = _options.CreateConnectionStringBuilder(database);
+        if (!_login.UsesToken)
+        {
+            builder.UserID = _login.UserName;
+            builder.Password = _login.Password;
+        }
+
+        return new SqlConnection(builder.ConnectionString)
+        {
+            AccessTokenCallback = _tokenCallback,
+            RetryLogicProvider = _openRetry
+        };
+    }
+
+    public Task<SqlConnection> OpenAsync(CancellationToken cancellationToken) => OpenAsync(null, cancellationToken);
+
+    public async Task<SqlConnection> OpenAsync(string? database, CancellationToken cancellationToken)
+    {
+        var connection = CreateConnection(database);
         try
         {
-            await using var connection = await OpenAsync(
-                _options.BuildMasterConnectionString(), cancellationToken).ConfigureAwait(false);
-
-            // The database name cannot be parameterized in CREATE DATABASE, so it is quoted instead.
-            var quoted = _options.Database.Replace("]", "]]", StringComparison.Ordinal);
-            var sql = $"IF DB_ID(@database) IS NULL CREATE DATABASE [{quoted}];";
-
-            await connection.ExecuteAsync(new CommandDefinition(
-                sql, new { database = _options.Database }, cancellationToken: cancellationToken))
-                .ConfigureAwait(false);
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            return connection;
         }
-        catch (Exception ex)
+        catch
         {
-            _logger.LogDebug(ex, "Could not ensure database {Database} exists; assuming it is managed externally",
-                _options.Database);
+            await connection.DisposeAsync().ConfigureAwait(false);
+            throw;
         }
     }
 }

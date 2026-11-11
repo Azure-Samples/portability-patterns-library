@@ -16,3 +16,11 @@ function Get-LibraryRecipe {
     Get-ChildItem -Path $LibraryRecipeRoot -Filter *.bicep -Recurse |
         Where-Object { $_.Directory.Name -eq 'kubernetes' -or $platforms -contains $_.Directory.Parent.Name }
 }
+
+# Where a Recipe is published: recipes/<implementation>/<name>, the path the Recipe Packs reference.
+# The implementation folder is part of it, so two implementations of a capability can share a name.
+function Get-LibraryRecipeRepository {
+    param([Parameter(Mandatory = $true)][System.IO.FileInfo]$Recipe)
+
+    "recipes/$($Recipe.Directory.Name)/$($Recipe.BaseName)"
+}
