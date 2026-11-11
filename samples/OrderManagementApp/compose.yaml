@@ -199,9 +199,11 @@ services:
     ports:
       - "127.0.0.1:15672:15672"   # management UI
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
-      interval: 10s
-      retries: 12
+      # Healthy once the management API listens: rabbitmq-setup imports the queue's definitions
+      # through it. `ping` answers about 15 seconds earlier, while the broker is still starting.
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_listener", "15672"]
+      interval: 5s
+      retries: 24
 
   # The queue, its dead-letter queue and the delivery limit, as the platform declares them on Azure
   # Local: the app never declares them. delivery-limit is CONNECTION_QUEUE_MAXDELIVERYCOUNT - 1, so a
