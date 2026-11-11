@@ -10,4 +10,11 @@
     <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
   </PropertyGroup>
 
+  <!-- Patched versions of transitive dependencies with known vulnerabilities (Microsoft.Data.SqlClient,
+       ASP.NET Core Data Protection and Microsoft.Identity.Web pull older ones). -->
+  <ItemGroup>
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.15" />
+    <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.15" />
+  </ItemGroup>
+
 </Project>
