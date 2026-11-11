@@ -42,7 +42,7 @@ jobs:
 
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
-          dotnet-version: 9.0.320
+          dotnet-version: 10.0.404
 
       # The database setup against SQL Server and PostgreSQL in containers. With CI=true, as here,
       # they fail rather than skip when there is no container engine.
@@ -61,7 +61,7 @@ jobs:
       # For the development certificate Keycloak serves.
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
-          dotnet-version: 9.0.320
+          dotnet-version: 10.0.404
       # The same steps a developer follows in the README to run the app locally, with a password
       # for this run only.
       - name: Start the app with docker compose

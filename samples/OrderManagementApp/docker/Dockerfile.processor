@@ -1,7 +1,7 @@
 # Build from the sample root:
 #   docker build -f docker/Dockerfile.processor -t oms-processor:local .
 
-FROM mcr.microsoft.com/dotnet/sdk:9.0.321 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0.404 AS build
 WORKDIR /src
 
 # NuGet.Config is optional (redirects restore where nuget.org is unreachable). Paired with a file
@@ -15,7 +15,7 @@ COPY src/ src/
 RUN dotnet publish src/OrderManagement.Processor/OrderManagement.Processor.csproj -c Release -o /app --no-restore
 
 # A worker that serves HTTP only for its health probes, so it needs the ASP.NET Core runtime.
-FROM mcr.microsoft.com/dotnet/aspnet:9.0.23 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.15 AS runtime
 WORKDIR /app
 COPY --from=build /app ./
 EXPOSE 8080
