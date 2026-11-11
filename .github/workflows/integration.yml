@@ -1,11 +1,16 @@
 # Runs the Order Management app against real services: the integration tests against SQL Server and
 # PostgreSQL in containers, then the whole app with docker compose, signing in and placing an order.
-# Slower than the pull request checks (checks.yml) and dependent on the runner's container engine, so
-# it runs on main, nightly and on request rather than on every pull request. Run it on a branch from
-# the Actions tab (Run workflow).
+# A separate workflow from the pull request checks (checks.yml) because it is slower and depends on
+# the runner's container engine: it runs alongside them and reports as its own check. It also runs on
+# main, nightly (to catch changes in the images and packages it pulls), and on request from the
+# Actions tab (Run workflow).
 name: Integration
 
 on:
+  pull_request:
+    paths:
+      - samples/OrderManagementApp/**
+      - .github/workflows/integration.yml
   push:
     branches: [main]
     paths:
