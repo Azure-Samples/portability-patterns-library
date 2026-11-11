@@ -183,17 +183,25 @@ resource natGateway 'Microsoft.Network/natGateways@2024-05-01' = {
 // The cluster's network. Declared here, rather than left to AKS, so it can be planned, peered and
 // secured like any other network. With Azure CNI Overlay only the nodes take addresses from the
 // subnet; pods get theirs from podCidr.
+//
+// The private endpoint subnet is always declared, even with usePrivateEndpoints off: subnets are
+// declared inline, so dropping it from this list would try to delete it, which Azure refuses while
+// endpoints are still in it (InUseSubnetCannotBeDeleted). Whether the Recipes use it is the
+// privateEndpoints tag, which deploy/azure.ps1 reads: turning it off removes the endpoints on the
+// next application deployment, and the empty subnet stays.
 resource virtualNetwork 'Microsoft.Network/virtualNetworks@2024-05-01' = {
   name: 'vnet-${clusterName}'
   location: location
-  tags: tags
+  tags: union(tags, {
+    privateEndpoints: usePrivateEndpoints ? 'enabled' : 'disabled'
+  })
   properties: {
     addressSpace: {
       addressPrefixes: [
         virtualNetworkAddressPrefix
       ]
     }
-    subnets: concat([
+    subnets: [
       {
         name: 'aks-nodes'
         properties: {
@@ -206,14 +214,13 @@ resource virtualNetwork 'Microsoft.Network/virtualNetworks@2024-05-01' = {
           }
         }
       }
-    ], usePrivateEndpoints ? [
       {
         name: 'private-endpoints'
         properties: {
           addressPrefix: privateEndpointSubnetAddressPrefix
         }
       }
-    ] : [])
+    ]
   }
 }
 

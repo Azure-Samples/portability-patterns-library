@@ -143,8 +143,10 @@ param dnsServiceIP string = '10.0.0.10'
 
 @description('''
 Reach Blob Storage, Azure SQL and PostgreSQL through private endpoints in the virtual network, with
-their public access turned off. Creates a subnet and private DNS zones here; the Recipes create the
-endpoints. Service Bus and the registry stay public: their private endpoints need the Premium tier.
+their public access turned off. Creates private DNS zones here; the Recipes create the endpoints on
+the next application deployment. The endpoint subnet exists either way, so this can be turned off
+again: the next application deployment then removes the endpoints and turns public access back on.
+Service Bus and the registry stay public: their private endpoints need the Premium tier.
 ''')
 param usePrivateEndpoints bool = false
 

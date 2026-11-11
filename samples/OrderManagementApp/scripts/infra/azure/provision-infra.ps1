@@ -60,8 +60,8 @@ param(
     [string]$NodeVmSize = 'Standard_D4s_v7',
     [ValidateSet('Basic', 'Standard', 'Premium')][string]$RegistrySku = 'Standard',
 
-    # Private endpoints for Blob Storage, Azure SQL and PostgreSQL: a subnet and private DNS zones
-    # here, the endpoints from the Recipes. Takes effect on the next deploy.ps1 run.
+    # Private endpoints for Blob Storage, Azure SQL and PostgreSQL: private DNS zones here, the
+    # endpoints from the Recipes. Takes effect, both ways, on the next deploy.ps1 run.
     [bool]$UsePrivateEndpoints = $false,
 
     # Resource ID of a hub virtual network in the same subscription to peer the cluster's with.

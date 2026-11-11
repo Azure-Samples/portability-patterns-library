@@ -311,10 +311,13 @@ try {
     $alertActionGroupId = Invoke-Checked 'az monitor action-group list' {
         az monitor action-group list --resource-group $ResourceGroup --query '[0].id' --output tsv
     }
-    # Private endpoints, when the platform was provisioned with -UsePrivateEndpoints: its subnet and
-    # private DNS zones decide whether the Recipes create them.
+    # Private endpoints, when the platform was provisioned with -UsePrivateEndpoints. The platform
+    # always keeps the subnet, so its privateEndpoints tag is what says whether to use it. Turned
+    # off, the Recipes run without endpoint parameters, and Radius deletes the endpoints they
+    # created before, as resources the Recipes no longer produce.
     $privateEndpointSubnetId = Invoke-Checked 'az network vnet list' {
-        az network vnet list --resource-group $ResourceGroup --query "[0].subnets[?name=='private-endpoints'].id | [0]" --output tsv
+        az network vnet list --resource-group $ResourceGroup `
+            --query "[?tags.privateEndpoints=='enabled'] | [0].subnets[?name=='private-endpoints'].id | [0]" --output tsv
     }
     $privateDnsZoneIds = @{ blob = ''; sql = ''; postgres = '' }
     if ($privateEndpointSubnetId) {
