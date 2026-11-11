@@ -54,6 +54,10 @@ param(
     # the database setup job).
     [Parameter(Mandatory = $true)][string]$ResourceGroup,
 
+    # The AKS cluster in -ResourceGroup. Its node pool's subnet identifies the platform's virtual
+    # network, whatever else the resource group holds. Empty: the only cluster in -ResourceGroup.
+    [string]$ClusterName,
+
     # The Azure resource group that Radius Recipes provision application infrastructure into
     # (Service Bus, Storage account, Azure SQL, PostgreSQL). Empty uses -ResourceGroup. It must
     # already exist: Radius does not create it.
@@ -312,12 +316,31 @@ try {
         az monitor action-group list --resource-group $ResourceGroup --query '[0].id' --output tsv
     }
     # Private endpoints, when the platform was provisioned with -UsePrivateEndpoints. The platform
-    # always keeps the subnet, so its privateEndpoints tag is what says whether to use it. Turned
-    # off, the Recipes run without endpoint parameters, and Radius deletes the endpoints they
-    # created before, as resources the Recipes no longer produce.
-    $privateEndpointSubnetId = Invoke-Checked 'az network vnet list' {
-        az network vnet list --resource-group $ResourceGroup `
-            --query "[?tags.privateEndpoints=='enabled'] | [0].subnets[?name=='private-endpoints'].id | [0]" --output tsv
+    # always keeps the subnet, so its virtual network's privateEndpoints tag is what says whether to
+    # use it. Turned off, the Recipes run without endpoint parameters, and Radius deletes the
+    # endpoints they created before, as resources the Recipes no longer produce.
+    # The virtual network is the one the cluster's nodes are in, not the first in the resource
+    # group, which may also hold a hub or another network.
+    if (-not $ClusterName) {
+        $clusters = @(Invoke-Checked 'az aks list' {
+                az aks list --resource-group $ResourceGroup --query '[].name' --output json
+            } | ConvertFrom-Json)
+        if ($clusters.Count -ne 1) { throw "Found $($clusters.Count) AKS clusters in '$ResourceGroup'. Pass -ClusterName." }
+        $ClusterName = $clusters[0]
+    }
+    $nodeSubnetId = Invoke-Checked "az aks show $ClusterName" {
+        az aks show --resource-group $ResourceGroup --name $ClusterName --query 'agentPoolProfiles[0].vnetSubnetId' --output tsv
+    }
+    $privateEndpointSubnetId = ''
+    if ($nodeSubnetId) {
+        $network = Invoke-Checked 'az network vnet show' {
+            az network vnet show --ids ($nodeSubnetId -replace '/subnets/[^/]+$', '') `
+                --query "{enabled: tags.privateEndpoints, subnetId: subnets[?name=='private-endpoints'].id | [0]}" --output json
+        } | ConvertFrom-Json
+        if ($network.enabled -eq 'enabled') {
+            if (-not $network.subnetId) { throw "The cluster's virtual network has private endpoints enabled but no 'private-endpoints' subnet. Run scripts/infra/azure/provision-infra.ps1." }
+            $privateEndpointSubnetId = $network.subnetId
+        }
     }
     $privateDnsZoneIds = @{ blob = ''; sql = ''; postgres = '' }
     if ($privateEndpointSubnetId) {

@@ -82,6 +82,7 @@ hooks:
         Location                    = $env:AZURE_LOCATION
         Registry                    = $env:registryLoginServer
         ResourceGroup               = $env:resourceGroupName
+        ClusterName                 = $env:clusterName
         KubeContext                 = $env:clusterName
         WorkspaceName               = $env:AZURE_ENV_NAME
         OrdersApiAppName            = "oms-api-$env:AZURE_ENV_NAME"
