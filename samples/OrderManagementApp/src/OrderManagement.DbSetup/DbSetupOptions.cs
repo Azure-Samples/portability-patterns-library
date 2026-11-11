@@ -20,7 +20,10 @@ public sealed class DbSetupOptions
 
     /// <summary>
     /// Retries opening the first connection while the failure is transient, with backoff. Other
-    /// failures, such as a wrong password or a missing permission, fail at once.
+    /// failures, such as a wrong password or a missing permission, fail at once. A SQL Server that is
+    /// still starting can accept a connection and then end the login without saying why: SqlClient
+    /// reports that as error 0 ("A severe error occurred"), which it doesn't count as transient, so it
+    /// is retried here too.
     /// </summary>
     /// <param name="retryLoginFailure">
     /// Also retry a login failure (18456): for an Entra token login to Azure SQL, whose newly set
@@ -31,7 +34,9 @@ public sealed class DbSetupOptions
             .AddRetry(new RetryStrategyOptions
             {
                 ShouldHandle = new PredicateBuilder().Handle<Exception>(exception =>
-                    TransientFailures.IsTransient(exception) || (retryLoginFailure && exception is SqlException { Number: 18456 })),
+                    TransientFailures.IsTransient(exception)
+                    || exception is SqlException { Number: 0 }
+                    || (retryLoginFailure && exception is SqlException { Number: 18456 })),
                 BackoffType = DelayBackoffType.Exponential,
                 Delay = TimeSpan.FromSeconds(2),
                 MaxDelay = TimeSpan.FromSeconds(10),
