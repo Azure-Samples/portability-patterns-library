@@ -4,7 +4,7 @@
 
 This repository hosts samples and references for running Azure workloads on Azure Local. For each Azure resource it describes what carries over, what changes and which alternatives were evaluated, with sample applications that run on Azure and Azure Local.
 
-It supports the scenario *Redeploy from Sovereign Public Cloud to Sovereign Private Cloud*: same container images, same application definition, only the infrastructure changes, with documented degradations.
+This repository addresses the scenario [Redeploy from Sovereign Public Cloud to Sovereign Private Cloud](https://learn.microsoft.com/azure/azure-sovereign-clouds/sovereign-business-continuity/scenario-patterns#scenario-2-redeploy-from-sovereign-public-cloud-to-sovereign-private-cloud): the same container images and application definition run on Azure and on Azure Local, only the infrastructure changes, and the guides document what's lost. Because the same application runs on both, the work also applies to [Extend Sovereign Public Cloud with Sovereign Private Cloud](https://learn.microsoft.com/azure/azure-sovereign-clouds/sovereign-business-continuity/scenario-patterns#scenario-3-extend-sovereign-public-cloud-with-sovereign-private-cloud), where it could run on both at the same time. Implementation details depend on each customer's environment.
 
 All content is sample and reference material. Customers remain responsible for their production implementation and operation.
 
@@ -36,7 +36,7 @@ The repository provides samples and references. Customers remain responsible for
 
 ### Infrastructure scope
 
-- Infrastructure automation, such as scripts that set up Azure Local, AKS, Radius, ingress, a registry or identity, is sample code. It is not official or prescriptive deployment guidance.
+- Use your own Azure Local instance; the samples don't create one. The sample's scripts set up what the sample needs on it, such as AKS, Radius, ingress, a registry and identity. They're sample code and could be used as references, not official or prescriptive deployment guidance.
 - For any prerequisites and environment setup, see the official Microsoft documentation: [Azure Local](https://learn.microsoft.com/en-us/azure/azure-local/), [AKS enabled by Azure Arc](https://learn.microsoft.com/en-us/azure/aks/aksarc/) and [Radius](https://docs.radapp.io/).
 - Customers must adapt the samples to their environment, tools, security requirements and production standards.
 
