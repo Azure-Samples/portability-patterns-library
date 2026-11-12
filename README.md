@@ -16,7 +16,7 @@ portability-patterns-library/
 │       └── alternatives/                     # One page per alternative
 ├── targets/                                  # One page per target environment
 ├── recipes/                                  # <capability>/<platform>/<implementation>
-│   └── object-storage/azure-local/azurite/   # Recipe source, README, test app
+│   └── object-storage/azure-local/seaweedfs/ # Recipe source
 ├── recipe-packs/                             # One pack per environment, e.g. azure-local
 └── samples/                                  # End-to-end apps, e.g. OrderManagementApp
 ```
