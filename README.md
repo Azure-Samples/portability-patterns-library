@@ -13,8 +13,7 @@ portability-patterns-library/
 ├── resources/                                # One folder per Azure resource
 │   └── <slug>/                               # e.g. service-bus, blob-storage, postgresql
 │       ├── README.md                         # Guide
-│       ├── alternatives/                     # One page per alternative
-│       └── examples/                         # Smallest single-resource deployment per target
+│       └── alternatives/                     # One page per alternative
 ├── targets/                                  # One page per target environment
 ├── recipes/                                  # <capability>/<platform>/<implementation>
 │   └── object-storage/azure-local/azurite/   # Recipe source, README, test app
@@ -29,7 +28,7 @@ portability-patterns-library/
 | [`recipe-packs/`](./recipe-packs) | One Recipe Pack per platform, choosing the Recipe for each resource. |
 | [`samples/`](./samples) | End-to-end applications that use the Recipes and Recipe Packs on Azure and on Azure Local. |
 
-Some folders, such as `targets/` and `examples/`, are planned and not there yet. [Repository structure](./docs/repository-structure.md) explains each building block, the guide format and the labels the guides use.
+Some folders, such as `targets/`, are planned and not there yet. [Repository structure](./docs/repository-structure.md) explains each building block, the guide format and the labels the guides use.
 
 ## Getting started
 
