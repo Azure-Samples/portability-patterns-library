@@ -10,7 +10,7 @@ All content is sample and reference material. Customers remain responsible for t
 
 ## 2. Building blocks
 
-The samples build on [Radius](https://docs.radapp.io/), an open-source application platform that lets the same application definition run in different environments. Resource Type, Recipe and Recipe Pack are Radius terms.
+The approach is derived from the [Adaptive apps](https://learn.microsoft.com/azure/architecture/solution-ideas/articles/adaptive-apps) solution idea. The samples build on [Radius](https://docs.radapp.io/), an open-source application platform that lets the same application definition run in different environments. Resource Type, Recipe and Recipe Pack are Radius terms. Radius is in preview at the time of writing. Check its latest release status before using it in production.
 
 | Block | What it is | Example |
 |---|---|---|
@@ -67,7 +67,7 @@ portability-patterns-library/
 
 Every Azure resource has one guide, `resources/<slug>/README.md`. It summarizes the resource across all targets and alternatives, and links to `alternatives/` for detail and to a sample or `examples/` for working code.
 
-An **alternative** is how the capability is provided on a target. It can be a different product (RabbitMQ in place of Service Bus), the same engine hosted by the customer (SQL Server in a container), or the Azure service itself where it is still reachable.
+An **alternative** is how the capability is provided on a target. It can be a different product (for example, RabbitMQ in place of Service Bus), the same engine hosted by the customer (for example, SQL Server in a container or virtual machine), or the Azure service itself where it is still reachable.
 
 The open-source alternatives in a guide are ones this project chose to explore. They aren't recommendations or endorsements by Microsoft, and other alternatives may exist. Guides state what was observed, without ranking or recommending one alternative over another. Each guide says this in a short note under its introduction.
 
@@ -80,7 +80,7 @@ Illustrative example (not final content):
 > | Azure Local | [RabbitMQ](./alternatives/rabbitmq.md) | `adapter-required` | Sample available | Self-hosted broker with its own addressing, authentication and failure handling. |
 > | Azure Local | [Apache Kafka](https://kafka.apache.org/documentation/) | — | Documentation available | Not evaluated by this project. See the linked documentation. |
 >
-> **What carries over:** queue semantics, message payloads, application logic.
+> **What carries over:** the queue semantics the sample uses, message payloads, application logic.
 >
 > **Required application changes:** a second broker implementation behind the same publish and subscribe interfaces, and code to choose it at startup.
 >
