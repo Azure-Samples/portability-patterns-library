@@ -1,62 +1,35 @@
 using System.Text.Json;
-using OrderManagement.Shared.Models;
 using Dapper;
-using Microsoft.Data.SqlClient;
+using OrderManagement.Shared.Models;
 
 namespace OrderManagement.Shared.Persistence;
 
 /// <summary>SQL Server and Azure SQL Database implementation of <see cref="IOrderStore"/>.</summary>
 public sealed class SqlOrderStore(SqlConnectionFactory connections) : IOrderStore
 {
-    // SQL Server error 208: invalid object name. The processor creates the table on start-up, so a
-    // reader that gets here first has simply nothing to show yet.
-    private const int InvalidObjectName = 208;
-
-    private const string CreateTableSql = """
-        IF OBJECT_ID(N'dbo.Orders', N'U') IS NULL
-        BEGIN
-            CREATE TABLE dbo.Orders
-            (
-                OrderId         UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
-                CustomerId      NVARCHAR(128)    NOT NULL,
-                CustomerName    NVARCHAR(256)    NOT NULL,
-                LineCount       INT              NOT NULL,
-                Total           DECIMAL(18, 2)   NOT NULL,
-                Currency        NCHAR(3)         NOT NULL,
-                LinesJson       NVARCHAR(MAX)    NOT NULL,
-                PlacedAt        DATETIMEOFFSET   NOT NULL,
-                ArchiveUri      NVARCHAR(1000)   NOT NULL,
-                ProcessedAt     DATETIMEOFFSET   NOT NULL
-            );
-
-            CREATE INDEX IX_Orders_Customer_PlacedAt ON dbo.Orders (CustomerId, PlacedAt DESC);
-        END
-        """;
-
-    private const string UpsertSql = """
-        MERGE dbo.Orders AS target
+    // Inserts the order once: a redelivered message finds it there and changes nothing. HOLDLOCK
+    // keeps the key range locked from the check to the insert, so two deliveries of the same order at
+    // once can't both find it missing.
+    private const string RecordSql = """
+        MERGE dbo.Orders WITH (HOLDLOCK) AS target
         USING (SELECT @OrderId AS OrderId) AS source
         ON target.OrderId = source.OrderId
         WHEN NOT MATCHED THEN
             INSERT (OrderId, CustomerId, CustomerName, LineCount, Total, Currency, LinesJson,
-                    PlacedAt, ArchiveUri, ProcessedAt)
+                    PlacedAt, ArchiveUri, ProcessedAt, Status, StatusReason)
             VALUES (@OrderId, @CustomerId, @CustomerName, @LineCount, @Total, @Currency, @LinesJson,
-                    @PlacedAt, @ArchiveUri, @ProcessedAt);
+                    @PlacedAt, @ArchiveUri, @ProcessedAt, @Status, @StatusReason);
         """;
 
     private const string SelectColumns = """
-        OrderId, CustomerName, Total, Currency, LinesJson, PlacedAt, ArchiveUri, ProcessedAt
+        OrderId, CustomerName, Total, Currency, LinesJson, PlacedAt, ArchiveUri, ProcessedAt, Status, StatusReason
         """;
 
-    public Task InitializeAsync(CancellationToken cancellationToken) =>
-        connections.EnsureSchemaAsync(CreateTableSql, "orders", cancellationToken);
-
-    public async Task RecordAsync(Order order, string archiveUri, CancellationToken cancellationToken)
+    public async Task RecordAsync(
+        Order order, string archiveUri, string status, string? statusReason, CancellationToken cancellationToken)
     {
         await using var connection = await connections.OpenAsync(cancellationToken).ConfigureAwait(false);
-
-        // MERGE keeps the processor idempotent: queue redelivery must not create duplicate rows.
-        await connection.ExecuteAsync(new CommandDefinition(UpsertSql, new
+        await connection.ExecuteAsync(new CommandDefinition(RecordSql, new
         {
             order.OrderId,
             order.CustomerId,
@@ -67,7 +40,9 @@ public sealed class SqlOrderStore(SqlConnectionFactory connections) : IOrderStor
             LinesJson = JsonSerializer.Serialize(order.Lines, Order.SerializerOptions),
             order.PlacedAt,
             ArchiveUri = archiveUri,
-            ProcessedAt = DateTimeOffset.UtcNow
+            ProcessedAt = DateTimeOffset.UtcNow,
+            Status = status,
+            StatusReason = statusReason
         }, cancellationToken: cancellationToken)).ConfigureAwait(false);
     }
 
@@ -88,16 +63,9 @@ public sealed class SqlOrderStore(SqlConnectionFactory connections) : IOrderStor
 
     private async Task<IEnumerable<OrderRow>> QueryAsync(string sql, object parameters, CancellationToken cancellationToken)
     {
-        try
-        {
-            await using var connection = await connections.OpenAsync(cancellationToken).ConfigureAwait(false);
-            return await connection.QueryAsync<OrderRow>(
-                new CommandDefinition(sql, parameters, cancellationToken: cancellationToken)).ConfigureAwait(false);
-        }
-        catch (SqlException ex) when (ex.Number == InvalidObjectName)
-        {
-            return [];
-        }
+        await using var connection = await connections.OpenAsync(cancellationToken).ConfigureAwait(false);
+        return await connection.QueryAsync<OrderRow>(
+            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken)).ConfigureAwait(false);
     }
 
     private static StoredOrder ToStoredOrder(OrderRow row) => new()
@@ -109,7 +77,9 @@ public sealed class SqlOrderStore(SqlConnectionFactory connections) : IOrderStor
         Currency = row.Currency.Trim(),
         PlacedAt = row.PlacedAt,
         ProcessedAt = row.ProcessedAt,
-        ArchiveUri = row.ArchiveUri
+        ArchiveUri = row.ArchiveUri,
+        Status = row.Status,
+        StatusReason = row.StatusReason
     };
 
     private sealed class OrderRow
@@ -122,5 +92,7 @@ public sealed class SqlOrderStore(SqlConnectionFactory connections) : IOrderStor
         public DateTimeOffset PlacedAt { get; init; }
         public string ArchiveUri { get; init; } = string.Empty;
         public DateTimeOffset ProcessedAt { get; init; }
+        public string Status { get; init; } = OrderStatus.Processed;
+        public string? StatusReason { get; init; }
     }
 }

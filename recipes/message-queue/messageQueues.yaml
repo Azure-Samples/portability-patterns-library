@@ -30,7 +30,7 @@ types:
               description: "(Optional) Name of the queue to create. Defaults to the name of the Radius resource."
             maxDeliveryCount:
               type: integer
-              description: "(Optional) How many times a message is redelivered before it is dead-lettered. Defaults to 10."
+              description: "(Optional) How many times a message is delivered before it is dead-lettered. Defaults to 10. The Recipe returns the value in effect, which connected containers receive as CONNECTION_<NAME>_MAXDELIVERYCOUNT."
             provider:
               type: string
               description: "(Read Only) The broker backing this queue: `rabbitmq` or `servicebus`. Set by the Recipe."
@@ -38,6 +38,10 @@ types:
             endpoint:
               type: string
               description: "(Read Only) Where to reach the broker: `host:port` for RabbitMQ, the namespace host name for Azure Service Bus. Set by the Recipe."
+              readOnly: true
+            tls:
+              type: string
+              description: "(Read Only) `required` when the broker accepts only TLS connections, which the client verifies against the CAs it trusts; `optional` otherwise. Set by the Recipe."
               readOnly: true
             secrets:
               type: object

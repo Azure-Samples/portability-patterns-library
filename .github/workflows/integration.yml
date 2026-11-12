@@ -1,0 +1,156 @@
+# Runs the Order Management app against real services: the integration tests against SQL Server and
+# PostgreSQL in containers, then the whole app with docker compose, signing in and placing an order.
+# A separate workflow from the pull request checks (checks.yml) because it is slower and depends on
+# the runner's container engine: it runs alongside them and reports as its own check. It also runs on
+# main, nightly (to catch changes in the images and packages it pulls), and on request from the
+# Actions tab (Run workflow).
+name: Integration
+
+on:
+  pull_request:
+    paths:
+      - samples/OrderManagementApp/**
+      - .github/workflows/integration.yml
+  push:
+    branches: [main]
+    paths:
+      - samples/OrderManagementApp/**
+      - .github/workflows/integration.yml
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SAMPLE: samples/OrderManagementApp
+
+jobs:
+  integration-tests:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ env.SAMPLE }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: 10.0.404
+
+      # The database setup against SQL Server and PostgreSQL in containers. With CI=true, as here,
+      # they fail rather than skip when there is no container engine.
+      - name: Integration tests
+        run: dotnet test OrderManagement.sln --configuration Release --filter "FullyQualifiedName~OrderManagement.Tests.Integration"
+
+  end-to-end:
+    name: App end to end with docker compose
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ env.SAMPLE }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # For the development certificate Keycloak serves.
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: 10.0.404
+      # The same steps a developer follows in the README to run the app locally, with a password
+      # for this run only.
+      - name: Start the app with docker compose
+        run: |
+          password="Ci-$(openssl rand -hex 16)-A1"
+          echo "::add-mask::$password"
+          echo "LOCAL_PASSWORD=$password" >> "$GITHUB_ENV"
+          export LOCAL_PASSWORD="$password"
+          dotnet dev-certs https --export-path local/certs/localhost.crt --format Pem --no-password
+          # Keycloak's container user must be able to read the certificate and key.
+          chmod 644 local/certs/localhost.*
+          docker compose up --build --detach --wait --wait-timeout 900
+
+      - name: Check the app answers and sign-in is wired up
+        run: |
+          set -x
+          curl -fsS http://localhost:8080/healthz
+          curl -fsS http://localhost:8080/healthz/ready
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/me)" = 401
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/products)" = 401
+          issuer=$(curl -fsSk https://localhost:8443/realms/oms/.well-known/openid-configuration | jq -r .issuer)
+          test "$issuer" = https://localhost:8443/realms/oms
+          # dbsetup and the queue's topology ran before the services started.
+          test "$(docker compose ps --all dbsetup --format '{{.ExitCode}}')" = 0
+          test "$(docker compose ps --all rabbitmq-setup --format '{{.ExitCode}}')" = 0
+          # The processor and the inventory service are internal; ask them from inside the network.
+          inside() { docker run --rm --network order-management_default docker.io/curlimages/curl:8.11.1 -fsS "$1"; }
+          inside http://processor:8080/healthz/ready
+          inside http://inventory:8080/healthz/ready
+          test "$(inside http://inventory:8080/api/products | jq 'length')" = 5
+          # The processor created its bucket with the S3 keys it was given.
+          docker compose exec -T seaweedfs sh -c 'echo s3.bucket.list | weed shell' | grep -w orders
+
+      # Signs in as the local demo user the way the browser app does (authorization code with PKCE),
+      # places an order through the API, and waits for the processor to reserve its stock, archive
+      # it and record it.
+      - name: Place an order end to end
+        run: |
+          realm=https://localhost:8443/realms/oms/protocol/openid-connect
+          redirect=http://localhost:8080/
+          jar="$RUNNER_TEMP/keycloak-cookies"
+          verifier=$(openssl rand -hex 48)
+          challenge=$(printf '%s' "$verifier" | openssl dgst -sha256 -binary | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+          form=$(curl -fsSk -c "$jar" -G "$realm/auth" \
+            --data-urlencode client_id=oms-spa --data-urlencode response_type=code \
+            --data-urlencode "redirect_uri=$redirect" --data-urlencode "scope=openid api://oms-api/access_as_user" \
+            --data-urlencode "code_challenge=$challenge" --data-urlencode code_challenge_method=S256)
+          action=$(printf '%s' "$form" | grep -o 'action="[^"]*"' | head -n 1 | sed -e 's/^action="//' -e 's/"$//' -e 's/&amp;/\&/g')
+          location=$(curl -sk -b "$jar" -o /dev/null -w '%{redirect_url}' \
+            --data-urlencode username=demo --data-urlencode password=demo "$action")
+          code=$(printf '%s' "$location" | sed -n 's/.*[?&]code=\([^&]*\).*/\1/p')
+          test -n "$code"
+          token=$(curl -fsSk "$realm/token" -d grant_type=authorization_code -d client_id=oms-spa \
+            --data-urlencode "redirect_uri=$redirect" --data-urlencode "code=$code" --data-urlencode "code_verifier=$verifier" |
+            jq -r .access_token)
+          echo "::add-mask::$token"
+
+          api() { curl -fsS -H "Authorization: Bearer $token" -H 'Content-Type: application/json' "$@"; }
+          order=$(api -d '{"items":[{"sku":"GEN-500","quantity":1}]}' http://localhost:8080/api/orders | jq -r .orderId)
+          echo "Placed order $order"
+          for attempt in $(seq 1 60); do
+            status=$(curl -sS -H "Authorization: Bearer $token" "http://localhost:8080/api/orders/$order" | jq -r '.status // empty')
+            echo "Attempt $attempt: ${status:-not recorded yet}"
+            [ "$status" = Processed ] && break
+            sleep 5
+          done
+          test "$status" = Processed
+          test "$(api http://localhost:8080/api/products | jq '.[] | select(.sku == "GEN-500") | .available')" = 24
+
+      # dbsetup runs on every deployment, so a second run must find everything in place: the same
+      # migrations, data and grants.
+      - name: Run dbsetup again and check it changes nothing
+        run: |
+          pg() { docker compose exec -T postgres psql -U postgres -d inventory -AtX -c "$1"; }
+          sql() { docker compose exec -T sql /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -d omsdb -h -1 -W -b -Q "SET NOCOUNT ON; $1"; }
+          snapshot() {
+            pg "SELECT scriptname FROM public.schemaversions ORDER BY 1"
+            pg "SELECT sku, available FROM inventory.products ORDER BY 1"
+            pg "SELECT table_name, privilege_type FROM information_schema.role_table_grants WHERE grantee = 'inventory' ORDER BY 1, 2"
+            sql "SELECT ScriptName FROM dbo.SchemaVersions ORDER BY 1"
+            sql "SELECT OrderId, Status FROM dbo.Orders ORDER BY 1"
+            sql "SELECT pr.name, pe.permission_name FROM sys.database_permissions AS pe JOIN sys.database_principals AS pr ON pe.grantee_principal_id = pr.principal_id WHERE pr.name IN ('api', 'processor') ORDER BY 1, 2"
+          }
+          before=$(snapshot)
+          docker compose run --rm --no-deps dbsetup
+          after=$(snapshot)
+          echo "$after"
+          test "$before" = "$after"
+
+      - name: Logs
+        if: failure()
+        run: docker compose logs --no-color

@@ -1,45 +1,105 @@
 # Runs the whole app on your machine, with the same backing services as Azure Local:
-# RabbitMQ for the queue, SQL Server, Azurite for blob storage and Keycloak for sign-in.
+# RabbitMQ for the queue, SQL Server for orders, PostgreSQL for the inventory, SeaweedFS for object
+# storage (S3) and Keycloak for sign-in.
+#
+# Once, before the first run:
+#   - Keycloak serves sign-in over HTTPS with the .NET development certificate:
+#       dotnet dev-certs https --trust
+#       dotnet dev-certs https --export-path local/certs/localhost.crt --format Pem --no-password
+#   - Choose a password for the local containers (their administrators and the services' logins),
+#     at least 8 characters with upper and lower case letters and digits, in LOCAL_PASSWORD. Compose
+#     also reads it from a .env file next to this one, which git ignores:
+#       LOCAL_PASSWORD=<your password>
 #
 #   docker compose up --build
 #
-# Once, before the first run: Keycloak serves sign-in over HTTPS with the .NET development certificate.
-#   dotnet dev-certs https --trust
-#   dotnet dev-certs https --export-path local/certs/localhost.crt --format Pem --no-password
-#
-# Then open http://localhost:8080 and sign in as demo / demo.
+# Then open http://localhost:8080 and sign in as demo / demo (places orders) or as
+# manager / manager (inventory admin: sees orders and can restock). Every port is published on
+# 127.0.0.1 only: nothing here is reachable from other machines.
 #
 # The app gets its connections from CONNECTION_* environment variables, the same ones Radius sets
 # from the Recipes' outputs on Azure and Azure Local. Nothing in the app is specific to this file.
+# As there, the platform owns the queue's topology (rabbitmq-setup below), dbsetup runs first as the
+# database administrator, and each service then signs in as its own least-privilege principal (SQL
+# logins api and processor, PostgreSQL role inventory). Two settings exist only here, for servers
+# without certificates from a CA this machine trusts: CONNECTION_SQL_TLS and the TLS values of the
+# queue and the inventory database are 'optional'. And the inventory service runs in Development,
+# the only environment where it accepts calls without a service token: locally the services call
+# each other without one.
 
 name: order-management
 
-x-connections: &connections
-  # The queue: Portability.Messaging/messageQueues
-  CONNECTION_QUEUE_PROVIDER: rabbitmq
-  CONNECTION_QUEUE_ENDPOINT: rabbitmq:5672
-  CONNECTION_QUEUE_QUEUENAME: orders
-  CONNECTION_QUEUE_USERNAME: oms
-  CONNECTION_QUEUE_PASSWORD: ${LOCAL_PASSWORD:-Local-only-Passw0rd}
+x-sql: &sql
   # The database: Radius.Data/sqlServerDatabases
   CONNECTION_SQL_HOST: sql
   CONNECTION_SQL_PORT: "1433"
   CONNECTION_SQL_DATABASE: omsdb
-  CONNECTION_SQL_USERNAME: sa
-  CONNECTION_SQL_PASSWORD: ${LOCAL_PASSWORD:-Local-only-Passw0rd}
-  # Blob storage: Radius.Storage/objectStorage. Azurite's well-known development account.
+  # Local only: the SQL Server container has no certificate this machine trusts. Every deployed
+  # environment gets 'required', and the app verifies the server's certificate.
+  CONNECTION_SQL_TLS: optional
+
+x-inventorydb: &inventorydb
+  # Locally, telemetry stays in each process: there is no collector.
+  Telemetry__Exporter: None
+  # The inventory database: PostgreSQL. The local server has no TLS.
+  CONNECTION_INVENTORYDB_HOST: postgres
+  CONNECTION_INVENTORYDB_PORT: "5432"
+  CONNECTION_INVENTORYDB_DATABASE: inventory
+  CONNECTION_INVENTORYDB_TLS: optional
+
+x-connections: &connections
+  <<: *sql
+  # Locally, telemetry stays in each process: there is no collector.
+  Telemetry__Exporter: None
+  # The queue: Portability.Messaging/messageQueues. The local broker has no TLS and no token issuer,
+  # so the services sign in with a login.
+  CONNECTION_QUEUE_PROVIDER: rabbitmq
+  CONNECTION_QUEUE_ENDPOINT: rabbitmq:5672
+  CONNECTION_QUEUE_TLS: optional
+  CONNECTION_QUEUE_QUEUENAME: orders
+  CONNECTION_QUEUE_MAXDELIVERYCOUNT: "10"
+  CONNECTION_QUEUE_USERNAME: oms
+  CONNECTION_QUEUE_PASSWORD: ${LOCAL_PASSWORD:?Set LOCAL_PASSWORD, see compose.yaml}
+  # Object storage: Radius.Storage/objectStorage, an S3 bucket, as on Azure Local.
+  Archive__Provider: S3
+  CONNECTION_ARCHIVE_ENDPOINT: http://seaweedfs:8333
   CONNECTION_ARCHIVE_CONTAINERNAME: orders
-  CONNECTION_ARCHIVE_CONNECTIONSTRING: DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;
+  CONNECTION_ARCHIVE_ACCESSKEYID: oms
+  CONNECTION_ARCHIVE_SECRETACCESSKEY: ${LOCAL_PASSWORD:?Set LOCAL_PASSWORD, see compose.yaml}
+  # The inventory service, called without a token here.
+  Inventory__BaseUrl: http://inventory:8080
+
+# The app's containers: a non-root user (set by the images), no capabilities, no privilege
+# escalation and a read-only file system.
+x-hardened: &hardened
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+
+# Healthy once the service answers /healthz/ready, that is, once it reaches what it depends on.
+# Without a check, `compose up --wait` counts a started container as healthy before .NET listens.
+# The images have bash but no curl, so the check speaks HTTP over bash's /dev/tcp.
+x-ready: &ready
+  test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /healthz/ready HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q ' 200 '"]
+  interval: 5s
+  timeout: 5s
+  retries: 36
 
 services:
   api:
+    <<: *hardened
     build:
       context: .
       dockerfile: docker/Dockerfile.api
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
+    healthcheck: *ready
     environment:
       <<: *connections
+      OTEL_SERVICE_NAME: api
+      SQL_USERNAME: api
+      SQL_PASSWORD: ${LOCAL_PASSWORD:?Set LOCAL_PASSWORD, see compose.yaml}
       # Sign-in, as on Azure Local. The browser reaches Keycloak at localhost:8443 and the API
       # reaches it at keycloak:8080; the token's issuer is the browser's address in both cases.
       AzureAd__Authority: https://localhost:8443/realms/oms
@@ -56,60 +116,167 @@ services:
       Spa__IdentityProvider: Keycloak
       Spa__Environment: Local
     depends_on:
-      rabbitmq: { condition: service_healthy }
+      dbsetup: { condition: service_completed_successfully }
+      rabbitmq-setup: { condition: service_completed_successfully }
       sql: { condition: service_healthy }
-      azurite: { condition: service_started }
       keycloak: { condition: service_healthy }
+      inventory: { condition: service_healthy }
 
   processor:
+    <<: *hardened
     build:
       context: .
       dockerfile: docker/Dockerfile.processor
+    healthcheck: *ready
     environment:
       <<: *connections
+      OTEL_SERVICE_NAME: processor
+      SQL_USERNAME: processor
+      SQL_PASSWORD: ${LOCAL_PASSWORD:?Set LOCAL_PASSWORD, see compose.yaml}
     depends_on:
-      rabbitmq: { condition: service_healthy }
+      dbsetup: { condition: service_completed_successfully }
+      rabbitmq-setup: { condition: service_completed_successfully }
       sql: { condition: service_healthy }
-      azurite: { condition: service_started }
+      seaweedfs: { condition: service_healthy }
+      inventory: { condition: service_healthy }
+
+  inventory:
+    <<: *hardened
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.inventory
+    healthcheck: *ready
+    environment:
+      <<: *inventorydb
+      OTEL_SERVICE_NAME: inventory
+      POSTGRES_USERNAME: inventory
+      POSTGRES_PASSWORD: ${LOCAL_PASSWORD:?Set LOCAL_PASSWORD, see compose.yaml}
+      # No InventoryAuth__Authority: service tokens are not checked locally, which the inventory
+      # service allows only in Development.
+      ASPNETCORE_ENVIRONMENT: Development
+    depends_on:
+      dbsetup: { condition: service_completed_successfully }
+      postgres: { condition: service_healthy }
+
+  # Creates the databases, tables, seed data and the services' logins, then exits.
+  dbsetup:
+    <<: *hardened
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dbsetup
+    environment:
+      <<: [*sql, *inventorydb]
+      SQL_ADMIN_USERNAME: sa
+      SQL_ADMIN_PASSWORD: ${LOCAL_PASSWORD:?Set LOCAL_PASSWORD, see compose.yaml}
+      SQL_API_PASSWORD: ${LOCAL_PASSWORD:?Set LOCAL_PASSWORD, see compose.yaml}
+      SQL_PROCESSOR_PASSWORD: ${LOCAL_PASSWORD:?Set LOCAL_PASSWORD, see compose.yaml}
+      POSTGRES_ADMIN_USERNAME: postgres
+      POSTGRES_ADMIN_PASSWORD: ${LOCAL_PASSWORD:?Set LOCAL_PASSWORD, see compose.yaml}
+      INVENTORY_DB_PASSWORD: ${LOCAL_PASSWORD:?Set LOCAL_PASSWORD, see compose.yaml}
+    depends_on:
+      sql: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+
+  postgres:
+    image: docker.io/library/postgres:17.11-alpine3.24
+    security_opt: [no-new-privileges:true]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${LOCAL_PASSWORD:?Set LOCAL_PASSWORD, see compose.yaml}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      retries: 24
 
   rabbitmq:
-    image: docker.io/library/rabbitmq:4-management-alpine
+    image: docker.io/library/rabbitmq:4.3.7-management-alpine
     # Runs as the image's own user, so it can create its data folder on any container engine.
     user: rabbitmq
+    security_opt: [no-new-privileges:true]
     environment:
       RABBITMQ_DEFAULT_USER: oms
-      RABBITMQ_DEFAULT_PASS: ${LOCAL_PASSWORD:-Local-only-Passw0rd}
+      RABBITMQ_DEFAULT_PASS: ${LOCAL_PASSWORD:?Set LOCAL_PASSWORD, see compose.yaml}
     ports:
-      - "15672:15672"   # management UI
+      - "127.0.0.1:15672:15672"   # management UI
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
-      interval: 10s
-      retries: 12
+      # Healthy once the management API listens: rabbitmq-setup imports the queue's definitions
+      # through it. `ping` answers about 15 seconds earlier, while the broker is still starting.
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_listener", "15672"]
+      interval: 5s
+      retries: 24
+
+  # The queue, its dead-letter queue and the delivery limit, as the platform declares them on Azure
+  # Local: the app never declares them. delivery-limit is CONNECTION_QUEUE_MAXDELIVERYCOUNT - 1, so a
+  # message is delivered as many times as on Service Bus. Imported through the management API, as
+  # definitions loaded at boot would stop the broker creating its login; the password is expanded by
+  # curl from the environment, so it is not on any command line.
+  rabbitmq-setup:
+    image: docker.io/curlimages/curl:8.11.1
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
+    environment:
+      LOCAL_PASSWORD: ${LOCAL_PASSWORD:?Set LOCAL_PASSWORD, see compose.yaml}
+    command:
+      - --fail-with-body
+      - --silent
+      - --show-error
+      - --variable
+      - "%LOCAL_PASSWORD"
+      - --expand-user
+      - "oms:{{LOCAL_PASSWORD}}"
+      - --header
+      - "Content-Type: application/json"
+      - --data
+      - "@/definitions.json"
+      - http://rabbitmq:15672/api/definitions
+    volumes:
+      - ./local/rabbitmq-definitions.json:/definitions.json:ro
+    depends_on:
+      rabbitmq: { condition: service_healthy }
 
   sql:
-    image: mcr.microsoft.com/mssql/server:2022-latest
+    image: mcr.microsoft.com/mssql/server:2022-CU27-GDR1-ubuntu-22.04
+    security_opt: [no-new-privileges:true]
     environment:
       ACCEPT_EULA: "Y"
-      MSSQL_SA_PASSWORD: ${LOCAL_PASSWORD:-Local-only-Passw0rd}
+      MSSQL_SA_PASSWORD: ${LOCAL_PASSWORD:?Set LOCAL_PASSWORD, see compose.yaml}
+      # sqlcmd reads the password from here, so the health check doesn't pass it on its command line.
+      SQLCMDPASSWORD: ${LOCAL_PASSWORD:?Set LOCAL_PASSWORD, see compose.yaml}
     healthcheck:
-      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1' || exit 1"]
+      test: ["CMD", "/opt/mssql-tools18/bin/sqlcmd", "-C", "-S", "localhost", "-U", "sa", "-Q", "SELECT 1", "-b"]
       interval: 10s
       retries: 18
 
-  azurite:
-    image: mcr.microsoft.com/azure-storage/azurite:3.35.0
-    command: azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck
+  # One SeaweedFS process (master, volume server, filer and S3 together): the store Azure Local runs
+  # replicated. The keys below make an S3 identity that may do everything.
+  seaweedfs:
+    image: docker.io/chrislusf/seaweedfs:4.51
+    security_opt: [no-new-privileges:true]
+    command: ["server", "-dir=/data", "-s3", "-ip.bind=0.0.0.0", "-master.telemetry=false"]
+    environment:
+      AWS_ACCESS_KEY_ID: oms
+      AWS_SECRET_ACCESS_KEY: ${LOCAL_PASSWORD:?Set LOCAL_PASSWORD, see compose.yaml}
+      # One volume at a time per bucket rather than seven. Volume slots are counted from free disk
+      # (1 GB each), so on a small disk the first bucket would take them all and the next couldn't
+      # store anything.
+      WEED_MASTER_VOLUME_GROWTH_COPY_1: "1"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8333/status"]
+      interval: 5s
+      retries: 24
 
-  # The same realm as on Azure Local (infra/azurelocal/keycloak/realm.json), plus a local test user.
+  # The same realm as on Azure Local (infra/azurelocal/keycloak/realm.json), plus local test users.
   # Its Active Directory connection points nowhere here; local users don't need it.
   keycloak:
-    image: quay.io/keycloak/keycloak:26.8
+    image: quay.io/keycloak/keycloak:26.8.1
+    security_opt: [no-new-privileges:true]
     command: ["start-dev", "--import-realm"]
     ports:
-      - "8443:8443"
+      - "127.0.0.1:8443:8443"
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
-      KC_BOOTSTRAP_ADMIN_PASSWORD: ${LOCAL_PASSWORD:-Local-only-Passw0rd}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${LOCAL_PASSWORD:?Set LOCAL_PASSWORD, see compose.yaml}
       KC_HEALTH_ENABLED: "true"
       KC_HTTP_MANAGEMENT_SCHEME: http
       # Tokens carry the browser's address as issuer; calls from other containers still work.
@@ -124,7 +291,12 @@ services:
       LDAP_BIND_DN: unused
       LDAP_BIND_PASSWORD: unused
       KUBERNETES_ISSUER: https://kubernetes.default.svc.cluster.local
-      WORKLOAD_SUBJECT: unused
+      # No cluster locally: nothing to fetch signing keys from.
+      KUBERNETES_ISSUER_DISCOVERY_URL: ""
+      WORKLOAD_NAMESPACE: unused
+      # Grafana is not part of the local run.
+      GRAFANA_ORIGIN: http://localhost:3000
+      GRAFANA_CLIENT_SECRET: unused
     volumes:
       - ./infra/azurelocal/keycloak/realm.json:/opt/keycloak/data/import/oms-realm.json:ro
       - ./local/keycloak-users.json:/opt/keycloak/data/import/oms-users-0.json:ro

@@ -1,5 +1,5 @@
 # Checks that the samples and the Recipes they use still fit together: every template compiles
-# against the Radius types, the app builds and runs, and the setup assets render.
+# against the Radius types, the app builds and its unit tests pass, and the setup assets render.
 name: Checks
 
 on:
@@ -31,14 +31,23 @@ jobs:
     name: Bicep templates and Recipes
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install the Radius and Bicep CLIs
+        # Pinned releases, each checked against the SHA-256 of the binary this workflow was
+        # written for, rather than an install script from a moving branch.
+        env:
+          RADIUS_SHA256: 8683feb46a2fd8c38e702ca8a0134813d48976410b9d74e690589ae6362ddfec
+          BICEP_SHA256: aed90eb2c69a6ee2bd70dc0d4354408ac4d04fd9911d3ec8e0cd74ad173e7139
         run: |
-          curl -fsSL https://raw.githubusercontent.com/radius-project/radius/main/deploy/install.sh |
-            /bin/bash -s -- --version "$RADIUS_VERSION" --install-dir "$HOME/.local/bin"
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSLo "$HOME/.local/bin/rad" "https://github.com/radius-project/radius/releases/download/v$RADIUS_VERSION/rad_linux_amd64"
           curl -fsSLo "$HOME/.local/bin/bicep" "https://github.com/Azure/bicep/releases/download/$BICEP_VERSION/bicep-linux-x64"
-          chmod +x "$HOME/.local/bin/bicep"
+          printf '%s  %s\n' "$RADIUS_SHA256" "$HOME/.local/bin/rad" "$BICEP_SHA256" "$HOME/.local/bin/bicep" | sha256sum --check --strict
+          chmod +x "$HOME/.local/bin/rad" "$HOME/.local/bin/bicep"
+          # rad runs Bicep from its own folder, where its install script would have put it.
+          mkdir -p "$HOME/.rad/bin"
+          ln -s "$HOME/.local/bin/bicep" "$HOME/.rad/bin/bicep"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       # The app and Recipes use the Portability.Messaging/messageQueues type through this extension.
@@ -56,43 +65,27 @@ jobs:
           exit $status
 
   app:
-    name: App build and local run
+    name: App build and unit tests
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ${{ env.SAMPLE }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
-          dotnet-version: 9.0.x
+          dotnet-version: 10.0.404
 
       - name: Build
-        run: dotnet build OrderManagement.sln --configuration Release
+        run: dotnet build OrderManagement.sln --configuration Release -warnaserror
 
-      # The same steps a developer follows in the README to run the app locally.
-      - name: Start the app with docker compose
-        run: |
-          dotnet dev-certs https --export-path local/certs/localhost.crt --format Pem --no-password
-          # Keycloak's container user must be able to read the certificate and key.
-          chmod 644 local/certs/localhost.*
-          docker compose up --build --detach --wait --wait-timeout 600
+      # Unit tests and the API and inventory authorization tests: no containers, so they are fast and
+      # don't depend on the runner. The integration tests and the end-to-end run of the app are in
+      # integration.yml.
+      - name: Unit tests
+        run: dotnet test OrderManagement.sln --configuration Release --no-build --filter "FullyQualifiedName!~OrderManagement.Tests.Integration"
 
-      - name: Check the app answers and sign-in is wired up
-        run: |
-          set -x
-          curl -fsS http://localhost:8080/healthz
-          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/me)" = 401
-          issuer=$(curl -fsSk https://localhost:8443/realms/oms/.well-known/openid-configuration | jq -r .issuer)
-          test "$issuer" = https://localhost:8443/realms/oms
-          # The processor exits if it can't reach the queue, the database or blob storage.
-          sleep 30
-          test "$(docker compose ps processor --format '{{.State}}')" = running
-
-      - name: Logs
-        if: failure()
-        run: docker compose logs --no-color
 
   assets:
     name: Setup assets and scripts
@@ -101,12 +94,25 @@ jobs:
       run:
         working-directory: ${{ env.SAMPLE }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Keycloak manifests and realm
         run: |
           kubectl kustomize infra/azurelocal/keycloak > /dev/null
           jq empty infra/azurelocal/keycloak/realm.json local/keycloak-users.json
+
+      - name: Operators and object store
+        run: |
+          kubectl kustomize infra/azurelocal/operators/rabbitmq/cluster-operator > /dev/null
+          kubectl kustomize infra/azurelocal/operators/rabbitmq/messaging-topology-operator > /dev/null
+          helm template cnpg cloudnative-pg --repo https://cloudnative-pg.github.io/charts \
+            --version 0.29.1 --values infra/azurelocal/operators/cloudnative-pg/operator/values.yaml > /dev/null
+          helm template barman-cloud plugin-barman-cloud --repo https://cloudnative-pg.github.io/charts \
+            --version 0.8.1 --values infra/azurelocal/operators/cloudnative-pg/plugin-barman-cloud/values.yaml > /dev/null
+          helm template cert-manager-csi-driver cert-manager-csi-driver --repo https://charts.jetstack.io \
+            --version v0.16.1 --values infra/azurelocal/operators/rabbitmq/cert-manager-csi-driver/values.yaml > /dev/null
+          helm template seaweedfs seaweedfs --repo https://seaweedfs.github.io/seaweedfs/helm \
+            --version 4.51.0 --values infra/azurelocal/object-store/values.yaml > /dev/null
 
       - name: Ingress values
         run: |

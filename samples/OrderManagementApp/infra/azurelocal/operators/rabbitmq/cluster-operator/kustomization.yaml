@@ -1,0 +1,29 @@
+# The RabbitMQ Cluster Operator, from the RabbitMQ team's release. It runs the RabbitMQ clusters the
+# queue Recipe declares: three nodes, rolling upgrades, and nodes that rejoin after a restart.
+# Its webhook certificate comes from the cluster's cert-manager. Apply with:
+#
+#   kubectl apply -k infra/azurelocal/operators/rabbitmq/cluster-operator
+#
+# On a site that pulls from its own registry, point the image at it first, for example:
+#   kustomize edit set image ghcr.io/rabbitmq/cluster-operator=<registry>/rabbitmq/cluster-operator:2.23.2
+# scripts/infra/azurelocal/provision-operators.ps1 does this for you.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - https://github.com/rabbitmq/cluster-operator/releases/download/v2.23.2/cluster-operator.yml
+
+images:
+  - name: ghcr.io/rabbitmq/cluster-operator
+    newTag: "2.23.2"
+
+# The connected registry needs credentials; connected-registry.ps1 writes them into rabbitmq-system.
+patches:
+  - target:
+      kind: Deployment
+      namespace: rabbitmq-system
+    patch: |-
+      - op: add
+        path: /spec/template/spec/imagePullSecrets
+        value:
+          - name: azurelocal-registry

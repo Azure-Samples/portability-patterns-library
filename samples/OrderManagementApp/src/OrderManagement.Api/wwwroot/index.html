@@ -78,6 +78,7 @@
       </div>
 
       <p id="role-banner" class="alert warning" role="status" hidden></p>
+      <p id="stock-banner" class="alert warning" role="status" hidden></p>
 
       <section class="kpis" aria-label="Order statistics">
         <div class="kpi"><span class="kpi-label">Orders</span><span id="kpi-orders" class="kpi-value">0</span></div>
@@ -123,6 +124,21 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5 12 3l8.5 4.5v9L12 21l-8.5-4.5z"/><path d="M3.5 7.5 12 12l8.5-4.5M12 12v9"/></svg>
           <strong>No orders yet</strong>
           <span class="muted">Orders you place will appear here with their live status.</span>
+        </div>
+      </section>
+
+      <section id="inventory-panel" class="panel" aria-labelledby="inventory-title" hidden>
+        <div class="panel-header">
+          <h2 id="inventory-title">Inventory</h2>
+          <span class="muted small">Restock products &middot; requires Inventory.Manage</span>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr><th>Product</th><th>SKU</th><th class="num">Available</th><th class="num">Reorder level</th><th class="num">Restock</th></tr>
+            </thead>
+            <tbody id="inventory"></tbody>
+          </table>
         </div>
       </section>
     </main>

@@ -9,10 +9,12 @@
     ingress (see recipe-packs/azure.bicep at the repository root), so deploy/app.bicep is the same as on Azure Local.
 
       1. Gives the managed ingress's public IP the DNS name <DnsLabel>.<region>.cloudapp.azure.com.
-      2. Installs cert-manager and a ClusterIssuer: Let's Encrypt with HTTP-01 challenges answered
-         through the same ingress, or with -PrivateCa a CA kept in the cluster. Use -PrivateCa where
-         policy blocks inbound internet traffic (Let's Encrypt cannot reach the challenge); trust the
-         CA printed at the end on the machines that open the app.
+      2. Installs cert-manager and a ClusterIssuer for the ingress: Let's Encrypt with HTTP-01
+         challenges answered through the same ingress, or with -PrivateCa a CA kept in the cluster.
+         Use -PrivateCa where policy blocks inbound internet traffic (Let's Encrypt cannot reach the
+         challenge); trust the CA printed at the end on the machines that open the app.
+      3. Creates that CA in the cluster either way: it issues the certificates of the app's own
+         services, which only callers in the cluster reach.
 
     Idempotent. Run after scripts/infra/azure/provision-infra.ps1.
 
@@ -28,7 +30,7 @@ param(
     [ValidatePattern('^[a-z][a-z0-9-]{1,61}[a-z0-9]$')]
     [string]$DnsLabel,
 
-    [string]$KubeContext = 'bcd-aks-demo',
+    [Parameter(Mandatory = $true)][string]$KubeContext,
     [string]$IngressClassName = 'webapprouting.kubernetes.azure.com',
     [string]$CertManagerVersion = 'v1.21.2',
     [string]$IssuerName = 'letsencrypt',
@@ -60,21 +62,25 @@ spec:
 "@ | kubectl apply --context $KubeContext -f - | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Configuring the managed ingress controller failed.' }
 
+# The add-on creates the controller's Service, and Azure then gives it a public IP.
 $deadline = (Get-Date).AddMinutes(10)
 do {
     Start-Sleep -Seconds 10
-    $ip = kubectl get service nginx -n app-routing-system --context $KubeContext -o 'jsonpath={.status.loadBalancer.ingress[0].ip}' 2>$null
+    $ip = kubectl get service nginx -n app-routing-system --context $KubeContext --ignore-not-found -o 'jsonpath={.status.loadBalancer.ingress[0].ip}'
+    if ($LASTEXITCODE -ne 0) { throw 'Reading the managed ingress Service failed.' }
 } while (-not $ip -and (Get-Date) -lt $deadline)
-if (-not $ip) { throw 'The managed ingress has no public IP yet.' }
+if (-not $ip) { throw 'The managed ingress got no public IP within 10 minutes.' }
 
-$location = (kubectl get nodes --context $KubeContext -o 'jsonpath={.items[0].metadata.labels.topology\.kubernetes\.io/region}')
+$location = Invoke-Checked 'reading the cluster region' {
+    kubectl get nodes --context $KubeContext -o 'jsonpath={.items[0].metadata.labels.topology\.kubernetes\.io/region}'
+}
 $fqdn = "$DnsLabel.$location.cloudapp.azure.com"
 Write-Host "    $fqdn -> $ip" -ForegroundColor DarkGray
 
 Write-Host "==> cert-manager $CertManagerVersion" -ForegroundColor Cyan
 # AKS's admissions enforcer edits the webhook after install, so re-applying the same release
 # conflicts; an installed release at this version is left alone.
-$installed = helm list -n cert-manager --kube-context $KubeContext --filter '^cert-manager$' -o json 2>$null | ConvertFrom-Json
+$installed = Invoke-Checked 'helm list' { helm list -n cert-manager --kube-context $KubeContext --filter '^cert-manager$' -o json } | ConvertFrom-Json
 if ($installed -and $installed[0].chart -eq "cert-manager-$CertManagerVersion" -and $installed[0].status -eq 'deployed') {
     Write-Host '    already installed' -ForegroundColor DarkGray
 }
@@ -106,9 +112,8 @@ spec:
 "@ | kubectl apply --context $KubeContext -f - | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Creating the ClusterIssuer failed.' }
 
-if ($PrivateCa) {
-    Write-Host "==> ClusterIssuer '$PrivateIssuerName' (CA '$PrivateCaCommonName' kept in the cluster)" -ForegroundColor Cyan
-    @"
+Write-Host "==> ClusterIssuer '$PrivateIssuerName' (CA '$PrivateCaCommonName' kept in the cluster)" -ForegroundColor Cyan
+@"
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
@@ -141,12 +146,15 @@ spec:
   ca:
     secretName: $PrivateIssuerName
 "@ | kubectl apply --context $KubeContext -f - | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Creating the private CA failed.' }
-    Invoke-Checked 'wait for the private CA' {
-        kubectl wait certificate/$PrivateIssuerName -n cert-manager --for=condition=Ready --timeout=120s --context $KubeContext | Out-Null
-    }
-    $caPem = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(
-            (kubectl get secret $PrivateIssuerName -n cert-manager --context $KubeContext -o 'jsonpath={.data.ca\.crt}')))
+if ($LASTEXITCODE -ne 0) { throw 'Creating the private CA failed.' }
+Invoke-Checked 'wait for the private CA' {
+    kubectl wait certificate/$PrivateIssuerName -n cert-manager --for=condition=Ready --timeout=120s --context $KubeContext | Out-Null
+}
+
+if ($PrivateCa) {
+    $caPem = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((Invoke-Checked 'reading the private CA' {
+                    kubectl get secret $PrivateIssuerName -n cert-manager --context $KubeContext -o 'jsonpath={.data.ca\.crt}'
+                })))
     $caFile = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path 'bcd-azure-ca.crt'
     [IO.File]::WriteAllText($caFile, $caPem)
     $IssuerName = $PrivateIssuerName

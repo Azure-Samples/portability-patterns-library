@@ -55,8 +55,10 @@ return options.Provider switch
 };
 ```
 
-Everything else in the app sees only `IMessagePublisher` / `IMessageSubscriber`. Storage and SQL work
-the same way; [How authentication works](./authentication.md#workloads) shows how each picks its
+Everything else in the app sees only `IMessageQueue`. Object storage picks its client the same way,
+from `Archive__Provider` (`AzureBlob` or `S3`), which each environment's Recipe Pack sets, since the
+built-in `Radius.Storage/objectStorage` type doesn't say which store backs it. SQL picks only its
+credential; [How authentication works](./authentication.md#workloads) shows how each picks its
 credential. [compose.yaml](../compose.yaml) sets the same variables to run the app locally.
 
 Sign-in stays an ordinary Entra app: MSAL.js in the browser and Microsoft.Identity.Web in the API.
@@ -71,10 +73,22 @@ sample uses them as they are.
 
 | Resource | Azure Recipe | Azure Local Recipe |
 |---|---|---|
-| Queue | [servicebus-queue.bicep](../../../recipes/message-queue/azure/service-bus/servicebus-queue.bicep) | [rabbitmq-queue.bicep](../../../recipes/message-queue/azure-local/rabbitmq/rabbitmq-queue.bicep) |
-| Object storage | [blob-objectstorage.bicep](../../../recipes/object-storage/azure/blob-storage/blob-objectstorage.bicep) | [azurite-objectstorage.bicep](../../../recipes/object-storage/azure-local/azurite/azurite-objectstorage.bicep) |
+| Queue | [servicebus-queue.bicep](../../../recipes/message-queue/azure/service-bus/servicebus-queue.bicep) | [rabbitmq-cluster-operator/rabbitmq-queue.bicep](../../../recipes/message-queue/azure-local/rabbitmq-cluster-operator/rabbitmq-queue.bicep), or [rabbitmq/rabbitmq-queue.bicep](../../../recipes/message-queue/azure-local/rabbitmq/rabbitmq-queue.bicep) |
+| Object storage | [blob-objectstorage.bicep](../../../recipes/object-storage/azure/blob-storage/blob-objectstorage.bicep) | [seaweedfs-objectstorage.bicep](../../../recipes/object-storage/azure-local/seaweedfs/seaweedfs-objectstorage.bicep) |
 | SQL | [azuresql-database.bicep](../../../recipes/sql-database/azure/azure-sql/azuresql-database.bicep) | [mssql-database.bicep](../../../recipes/sql-database/azure-local/sql-server/mssql-database.bicep) |
+| PostgreSQL | [postgres-flexible-database.bicep](../../../recipes/postgresql-database/azure/flexible-server/postgres-flexible-database.bicep) | [cloudnative-pg/postgres-database.bicep](../../../recipes/postgresql-database/azure-local/cloudnative-pg/postgres-database.bicep), or [postgres/postgres-database.bicep](../../../recipes/postgresql-database/azure-local/postgres/postgres-database.bicep) |
 | Containers | [kubernetes-containers.bicep](../../../recipes/kubernetes/kubernetes-containers.bicep) (shared) | same |
+| Routes (what users reach) | [kubernetes-routes.bicep](../../../recipes/kubernetes/kubernetes-routes.bicep) (shared): an Ingress for the platform's ingress class | same |
+
+A container is only reachable from outside the cluster through a route the app declares. In this
+sample that's one route, `web`, from `/` to the API; the inventory service and the processor have
+none. The Recipe Pack decides how routes are published: ingress class, host name, certificate.
+
+On Azure a Recipe asks the cloud for a managed service. On Azure Local the queue and PostgreSQL
+Recipes declare a cluster that an operator runs ([Operators on Azure Local](../infra/azurelocal/operators/README.md)).
+With `Availability` `standard`, the pack picks the [rabbitmq](../../../recipes/message-queue/azure-local/rabbitmq/)
+and [postgres](../../../recipes/postgresql-database/azure-local/postgres/) Recipes instead: one
+container each, returning the same values, so the app doesn't change.
 
 ## 4. Bind them per platform with a Recipe Pack and an Environment
 

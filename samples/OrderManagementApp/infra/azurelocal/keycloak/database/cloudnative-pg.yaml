@@ -1,0 +1,110 @@
+# Keycloak's database when Availability is 'high': a PostgreSQL cluster the CloudNativePG operator
+# runs, in the identity namespace. Two instances on separate nodes, so the database fails over rather
+# than taking sign-in down with it; Keycloak connects to the read-write Service, keycloak-db-rw. The
+# write-ahead log and a daily base backup go to the site's object store
+# (infra/azurelocal/object-store), kept 30 days. With 'standard', postgres.yaml here is used instead.
+#
+# Expects in the identity namespace:
+#   Secret keycloak-db           username, password (type kubernetes.io/basic-auth)   the database login
+#   Secret keycloak-db-tls       tls.crt, tls.key, ca.crt   the server's certificate from the site CA, for
+#                                keycloak-db-rw; labelled cnpg.io/reload so a renewed one is picked up
+#   Secret backup-object-store   ACCESS_KEY_ID, ACCESS_SECRET_KEY, ca.crt   from provision-object-store.ps1
+#   Secret azurelocal-registry   image pull secret, when pulling from a private registry
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: keycloak-db
+spec:
+  instances: 2
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.11-202611020810-standard-trixie
+  imagePullSecrets:
+    - name: azurelocal-registry
+  # The server certificate comes from the site CA, as with postgres.yaml, so Keycloak checks either
+  # database against the same CA. CloudNativePG still issues the replication certificates itself.
+  certificates:
+    serverTLSSecret: keycloak-db-tls
+    serverCASecret: keycloak-db-tls
+  storage:
+    size: 4Gi
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
+    podAntiAffinityType: preferred
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  bootstrap:
+    initdb:
+      database: keycloak
+      owner: keycloak
+      secret:
+        name: keycloak-db
+  enableSuperuserAccess: false
+  # A stopping primary waits this long for Keycloak's pooled connections to close before a replica
+  # takes over; the default is 180 seconds.
+  smartShutdownTimeout: 15
+  # A commit returns only once the replica has it too, so a failover loses no committed change.
+  # 'preferred': while the replica is down, commits don't wait, so sign-in carries on.
+  postgresql:
+    synchronous:
+      method: any
+      number: 1
+      dataDurability: preferred
+    # Refuses unencrypted connections over the network. CloudNativePG's own rules come first and
+    # its default 'host' rule after these, so without this a client could skip TLS.
+    pg_hba:
+      - hostnossl all all all reject
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: keycloak-db-backups
+---
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: keycloak-db-backups
+spec:
+  configuration:
+    destinationPath: s3://postgres-identity/
+    endpointURL: https://seaweedfs-s3.object-store.svc.cluster.local:8443
+    # The store's certificate is checked against this CA, which provision-object-store.ps1 put here.
+    endpointCA:
+      name: backup-object-store
+      key: ca.crt
+    s3Credentials:
+      accessKeyId:
+        name: backup-object-store
+        key: ACCESS_KEY_ID
+      secretAccessKey:
+        name: backup-object-store
+        key: ACCESS_SECRET_KEY
+    wal:
+      compression: gzip
+    data:
+      compression: gzip
+  retentionPolicy: 30d
+  # Newer AWS clients add checksums that some S3-compatible stores reject.
+  instanceSidecarConfiguration:
+    env:
+      - name: AWS_REQUEST_CHECKSUM_CALCULATION
+        value: when_required
+      - name: AWS_RESPONSE_CHECKSUM_VALIDATION
+        value: when_required
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: keycloak-db-daily
+spec:
+  schedule: "0 30 2 * * *"
+  immediate: true
+  backupOwnerReference: self
+  cluster:
+    name: keycloak-db
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io

@@ -4,5 +4,6 @@
 .vs/
 .idea/
 # Credentials the Azure Local scripts hand between machines, and site settings: never build context.
+# Current scripts no longer write scripts/.handover/, but an existing checkout may still have one.
 scripts/.handover/
 scripts/settings.json

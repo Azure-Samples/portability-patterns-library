@@ -1,0 +1,20 @@
+# cert-manager (the Certificate Management for Azure Arc extension) serves its metrics over HTTPS,
+# with a certificate from its own CA, kept in Secret cert-manager/cert-manager-metrics-ca and
+# rotated by cert-manager. Prometheus can only read a CA from its own namespace, so trust-manager,
+# which comes with the extension, copies the CA into ConfigMap cert-manager-metrics-ca in the
+# observability namespace and keeps it current. cert-manager-podmonitor.yaml verifies against it.
+apiVersion: trust.cert-manager.io/v1alpha1
+kind: Bundle
+metadata:
+  name: cert-manager-metrics-ca
+spec:
+  sources:
+    - secret:
+        name: cert-manager-metrics-ca
+        key: ca.crt
+  target:
+    configMap:
+      key: ca.crt
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: observability

@@ -1,0 +1,53 @@
+# The RabbitMQ Messaging Topology Operator, from the RabbitMQ team's release. It creates the queues
+# and policies the queue Recipe declares (the orders queue, its dead-letter queue and the policy
+# between them) in the cluster the Cluster Operator runs. Install it after the Cluster Operator; its
+# webhook certificate comes from the cluster's cert-manager. It reaches the brokers' management API over
+# HTTPS and trusts the site CA, from Secret oms-site-ca in rabbitmq-system, which
+# provision-operators.ps1 copies there. Apply with:
+#
+#   kubectl apply -k infra/azurelocal/operators/rabbitmq/messaging-topology-operator
+#
+# On a site that pulls from its own registry, point the image at it first, for example:
+#   kustomize edit set image ghcr.io/rabbitmq/messaging-topology-operator=<registry>/rabbitmq/messaging-topology-operator:1.20.5
+# scripts/infra/azurelocal/provision-operators.ps1 does this for you.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - https://github.com/rabbitmq/messaging-topology-operator/releases/download/v1.20.5/messaging-topology-operator-with-certmanager.yaml
+
+images:
+  - name: ghcr.io/rabbitmq/messaging-topology-operator
+    newTag: "1.20.5"
+
+patches:
+  - target:
+      kind: Deployment
+      namespace: rabbitmq-system
+    patch: |-
+      - op: add
+        path: /spec/template/spec/imagePullSecrets
+        value:
+          - name: azurelocal-registry
+  # Trusts the CA that signs the brokers' certificates, and nothing else.
+  - target:
+      kind: Deployment
+      name: messaging-topology-operator
+    patch: |-
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: site-ca
+          secret:
+            secretName: oms-site-ca
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value:
+          name: site-ca
+          mountPath: /etc/site-ca
+          readOnly: true
+      - op: add
+        path: /spec/template/spec/containers/0/env
+        value:
+          - name: SSL_CERT_FILE
+            value: /etc/site-ca/ca.crt

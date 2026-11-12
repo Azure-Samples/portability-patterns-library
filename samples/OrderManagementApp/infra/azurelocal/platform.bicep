@@ -93,15 +93,15 @@ param podCidr string = '10.244.0.0/16'
 ])
 param controlPlaneCount int = 1
 
-@description('VM size of the control plane nodes. List sizes with: az aksarc vmsize list --custom-location <id>')
-param controlPlaneVmSize string = 'Standard_A4_v2'
+@description('VM size of the control plane nodes: 4 vCPUs and 6 GB, the smallest AKS Arc allows. List sizes with: az aksarc vmsize list --custom-location <id>')
+param controlPlaneVmSize string = 'Standard_K8S3_v1'
 
-@description('Number of worker nodes.')
+@description('Number of worker nodes. Three lets the RabbitMQ cluster and the databases\' replicas each run on a different node, so losing one node loses no service.')
 @minValue(1)
-param nodeCount int = 2
+param nodeCount int = 3
 
-@description('VM size of the worker nodes.')
-param nodeVmSize string = 'Standard_A4_v2'
+@description('VM size of the worker nodes: 4 vCPUs and 16 GB, so two workers hold everything while the third is down or being upgraded. With standard availability, Standard_A4_v2 (8 GB) is enough.')
+param nodeVmSize string = 'Standard_D4s_v3'
 
 @description('Kubernetes version. List versions with: az aksarc get-versions --custom-location <id>')
 param kubernetesVersion string
@@ -123,6 +123,12 @@ Address range the load balancer hands out on the site network, as <first>-<last>
 subnet and outside the node IP pool. Empty skips the load balancer.
 ''')
 param loadBalancerAddresses string = ''
+
+@description('''
+Turn on the cluster's OIDC issuer and workload identity (preview on Azure Local), so it can reach Azure
+services while connected, such as Key Vault for secrets. Only takes effect when the cluster is created.
+''')
+param enableWorkloadIdentity bool = true
 
 @description('Tags applied to every Azure resource.')
 param tags object = {
@@ -200,6 +206,7 @@ module platform 'platform-resources.bicep' = {
     ]
     loadBalancerName: loadBalancerName
     loadBalancerAddresses: loadBalancerAddresses
+    enableWorkloadIdentity: enableWorkloadIdentity
     kubernetesRuntimeObjectId: kubernetesRuntimeRp.id
     tags: tags
   }

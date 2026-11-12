@@ -1,0 +1,183 @@
+# Helm values for SeaweedFS on Azure Local: S3-compatible object storage inside the cluster. It holds
+# the application's object storage buckets and the PostgreSQL clusters' backups. Every component is
+# replicated, each copy on its own node, so the store keeps serving when a node or pod fails:
+#
+#   - 3 masters, which keep the cluster map by Raft consensus, so it survives losing one;
+#   - 3 volume servers; every object has 2 copies, on two of them (replication placement 001), so
+#     reads and writes carry on with one down;
+#   - 2 filers, each with its own metadata store kept in step with the other's;
+#   - 2 S3 gateways, which clients reach over HTTPS.
+#
+# Nothing crosses the network in the clear: clients use HTTPS with a certificate from the site CA,
+# the components talk to each other over mutual TLS with certificates from the store's own CA (both
+# issued by cert-manager), and the gateways encrypt every chunk of an object before it goes to a
+# volume server, so the volume servers and their disks only ever hold ciphertext.
+#
+# Install with:
+#
+#   helm upgrade --install seaweedfs seaweedfs --repo https://seaweedfs.github.io/seaweedfs/helm `
+#     --version 4.51.0 --namespace object-store --create-namespace `
+#     --values infra/azurelocal/object-store/values.yaml
+#
+# then, since the chart has no PodDisruptionBudgets of its own:
+#
+#   kubectl apply -f infra/azurelocal/object-store/pod-disruption-budgets.yaml
+#
+# Before installing, create in namespace object-store:
+#   - Secret object-store-s3-config (key seaweedfs_s3_config): the S3 identities and what each may
+#     do, as in README.md here;
+#   - Secret seaweedfs-s3-tls: the gateways' certificate, for the names of Service seaweedfs-s3, from
+#     the site CA;
+#   - Secret seaweedfs-jwt-signing-key (key signing-key): the key that signs the volume servers'
+#     write tokens, 32 random bytes, base64-encoded. Generate it once and keep it.
+# Change the marked values for your site first. scripts/infra/azurelocal/provision-object-store.ps1
+# does all of this for you.
+#
+# Every component runs as the image's seaweed user (uid 1000), never root, with no capabilities, no
+# privilege escalation, the runtime's default seccomp profile and a read-only root filesystem; the
+# chart gives each one a writable /tmp. The chart's commands start /usr/bin/weed directly, skipping
+# the image's entrypoint that would otherwise drop from root, so this is what keeps them unprivileged.
+
+global:
+  imageRegistry: <connected-registry-address>  # the connected registry's ClusterIP
+  imagePullSecrets: azurelocal-registry
+  seaweedfs:
+    enableReplication: true
+    replicationPlacement: "001"  # a second copy on another server in the same rack
+    # Mutual TLS between all components, and signed write tokens for the volume servers.
+    enableSecurity: true
+    # The write-token signing key, from a Secret. The chart also writes a short random key into
+    # ConfigMap seaweedfs-security-config; this variable overrides it in every component, so that
+    # one is never used.
+    extraEnvironmentVars:
+      WEED_JWT_SIGNING_KEY:
+        secretKeyRef:
+          name: seaweedfs-jwt-signing-key
+          key: signing-key
+
+image:
+  tag: "4.51"
+
+# The same security context for every component. The bucket creation job takes the filer's.
+x-pod-security-context: &podSecurityContext
+  enabled: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+x-container-security-context: &containerSecurityContext
+  enabled: true
+  runAsNonRoot: true
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+  seccompProfile:
+    type: RuntimeDefault
+
+master:
+  podSecurityContext: *podSecurityContext
+  containerSecurityContext: *containerSecurityContext
+  replicas: 3
+  data:
+    type: persistentVolumeClaim
+    size: 1Gi
+    storageClass: null  # null uses the cluster's default storage class
+  logs:
+    type: ""  # to stdout
+  # No usage reports to telemetry.seaweedfs.com: the site may be offline, and data stays on site.
+  extraArgs:
+    - -telemetry=false
+  extraEnvironmentVars:
+    # Volumes are created two at a time per bucket rather than six, so a few buckets don't take
+    # every volume slot on the disks.
+    WEED_MASTER_VOLUME_GROWTH_COPY_2: "2"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+volume:
+  podSecurityContext: *podSecurityContext
+  containerSecurityContext: *containerSecurityContext
+  replicas: 3
+  dataDirs:
+    - name: data1
+      type: persistentVolumeClaim
+      size: 10Gi
+      storageClass: null
+      maxVolumes: 0  # as many as fit on the disk
+  # Grows the volumes when dataDirs' size changes. It runs another image; grow them by hand instead.
+  resizeHook:
+    enabled: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 1Gi
+
+filer:
+  podSecurityContext: *podSecurityContext
+  containerSecurityContext: *containerSecurityContext
+  replicas: 2
+  data:
+    type: persistentVolumeClaim
+    size: 2Gi
+    storageClass: null
+  logs:
+    type: ""
+  # Encrypts what the filer itself writes to the volume servers.
+  encryptVolumeData: true
+  s3:
+    enabled: false  # the gateways below serve S3
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 1Gi
+
+s3:
+  podSecurityContext: *podSecurityContext
+  containerSecurityContext: *containerSecurityContext
+  enabled: true
+  replicas: 2
+  port: 8333  # plain HTTP, for the kubelet's probes only; the network policy lets no client in
+  httpsPort: 8443
+  tlsSecret: seaweedfs-s3-tls
+  # Every request is signed with an identity from the config Secret; nothing is anonymous.
+  enableAuth: true
+  existingConfigSecret: object-store-s3-config
+  # One backup bucket per namespace whose databases back up; provision-object-store.ps1 sets the
+  # list. Application buckets are created by the applications.
+  createBuckets:
+    - name: postgres-oms-azurelocal
+    - name: postgres-identity
+  # Encrypts every object's chunks before they go to the volume servers.
+  extraArgs:
+    - -encryptVolumeData
+  lancePort: 0  # no Lance namespace API
+  logs:
+    type: ""
+  affinity: |
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: {{ template "seaweedfs.name" . }}
+                app.kubernetes.io/instance: {{ .Release.Name }}
+                app.kubernetes.io/component: s3
+            topologyKey: kubernetes.io/hostname
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi

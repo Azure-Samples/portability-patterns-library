@@ -15,7 +15,7 @@ The samples build on [Radius](https://docs.radapp.io/), an open-source applicati
 | Block | What it is | Example |
 |---|---|---|
 | **Resource Type** | What the app needs, independent of any product. | `objectStorage` |
-| **Recipe** | How one platform provides it. | Azurite; RabbitMQ |
+| **Recipe** | How one platform provides it. | SeaweedFS; RabbitMQ |
 | **Recipe Pack** | All recipes for one environment. | `azure-local` |
 | **Sample** | An app that combines several resources. | Order Management System |
 | **Resource guide** | One page per Azure resource: what carries over, what changes, alternatives evaluated. | `resources/service-bus/` |
@@ -52,7 +52,7 @@ portability-patterns-library/
 │       └── examples/                         # Only when no sample covers the resource
 ├── targets/                                  # One page per target environment
 ├── recipes/                                  # <capability>/<platform>/<implementation>
-│   └── object-storage/azure-local/azurite/   # Recipe source, README, test app
+│   └── object-storage/azure-local/seaweedfs/ # Recipe source
 ├── recipe-packs/                             # One pack per environment, e.g. azure-local
 └── samples/                                  # End-to-end apps, e.g. OrderManagementApp
 ```

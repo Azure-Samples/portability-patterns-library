@@ -56,7 +56,7 @@ param serviceClusterIp string
 param storageClassName string = 'default'
 
 @description('Size of the connected registry volume.')
-param storageRequest string = '40Gi'
+param storageRequest string = '25Gi'
 
 resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
   name: registryName
@@ -151,7 +151,9 @@ resource connectedRegistry 'Microsoft.ContainerRegistry/registries/connectedRegi
   ]
 }
 
-// Brings cert-manager and distributes the registry's CA to every node, so kubelet trusts it.
+// Distributes the registry's CA to every node, so kubelet trusts it. Its certificate comes from the
+// cluster's cert-manager (the Certificate Management extension, see platform-resources.bicep), so it
+// doesn't install a second one.
 resource extension 'Microsoft.KubernetesConfiguration/extensions@2023-05-01' = if (!empty(syncConnectionString)) {
   name: extensionName
   scope: connectedCluster
@@ -171,6 +173,7 @@ resource extension 'Microsoft.KubernetesConfiguration/extensions@2023-05-01' = i
       'service.clusterIP': serviceClusterIp
       'pvc.storageClassName': storageClassName
       'pvc.storageRequest': storageRequest
+      'cert-manager.install': 'false'
     }
     configurationProtectedSettings: {
       connectionString: syncConnectionString

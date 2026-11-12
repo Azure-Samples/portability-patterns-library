@@ -1,28 +1,25 @@
+// Local build of the stock Radius Kubernetes container Recipe (radius-project/resource-types-contrib,
+// Compute/containers). Changes from it are marked LOCAL ADDITION, and its Dapr sidecar support is
+// removed: no application in this library uses Dapr. The upstream Recipe is licensed under the
+// Apache License 2.0, which covers this file too: see kubernetes-containers.LICENSE.
 @description('Radius context object passed into the recipe.')
 param context object
 
-// LOCAL ADDITION. How users reach a container is a platform decision, so the Recipe Pack sets these
-// rather than the application: an ingress class enables an Ingress for each port-exposing container.
-@description('Ingress class that publishes port-exposing containers. Empty keeps them cluster-internal.')
-param ingressClassName string = ''
-
-@description('Host name the Ingress answers on. Empty answers on any host, such as a bare IP address.')
-param ingressHost string = ''
-
-@description('Existing TLS Secret in the application namespace that the Ingress serves.')
-param ingressTlsSecretName string = ''
-
-@description('Annotations for the Ingress, for example a certificate issuer for the ingress class.')
-param ingressAnnotations object = {}
-
-// LOCAL ADDITION. How a workload proves its identity and pulls its images is also a platform
+// LOCAL ADDITION. How a workload proves its identity and pulls its images is a platform
 // decision. The Recipe Pack sets these once per environment and every container gets them, so the
 // application definition never mentions service accounts, pull secrets, volumes or certificates.
-@description('Kubernetes ServiceAccount the pods run as. Empty uses the namespace default.')
+//
+// `{resource}` in serviceAccountName, in containerEnv values and in containerEnvFromSecrets stands
+// for the container resource's name, so each service gets its own identity and credentials from
+// one setting. A service account name with the placeholder is created by this Recipe.
+@description('Kubernetes ServiceAccount the pods run as. Empty uses the namespace default. May contain {resource}.')
 param serviceAccountName string = ''
 
 @description('Label pods for Microsoft Entra Workload ID, so its webhook injects AZURE_CLIENT_ID and the federated token.')
 param azureWorkloadIdentity bool = false
+
+@description('Client ID of each resource\'s managed identity, by resource name, for the service account this Recipe creates.')
+param workloadClientIds object = {}
 
 @description('Existing image pull secret in the application namespace, for a registry that requires authentication.')
 param imagePullSecretName string = ''
@@ -37,8 +34,52 @@ param platformPodVolumes array = []
 @description('Volume mounts, as Kubernetes volumeMount objects, added to every container. Usually mount platformPodVolumes.')
 param containerVolumeMounts array = []
 
-@description('Environment variables, as Kubernetes EnvVar objects, added to every container.')
+@description('Environment variables, as Kubernetes EnvVar objects, added to every container. Values may contain {resource}.')
 param containerEnv array = []
+
+@description('''
+Kubernetes Secrets, by name, whose keys become environment variables of every container. Names may
+contain {resource}, for credentials that differ per service. A missing Secret is skipped.
+''')
+param containerEnvFromSecrets array = []
+
+@description('''
+Kubernetes Secrets, by Resource Type, for credentials the platform issues instead of that type's
+Recipe, such as keys to a shared object store. A container connected to a resource of the type gets
+the Secret's keys as CONNECTION_<NAME>_<KEY> variables; other containers don't.
+''')
+param connectionSecretNames object = {}
+
+@description('Pod labels, by Resource Type, for pods connected to a resource of that type, so the platform\'s network policies can let them in.')
+param connectionPodLabels object = {}
+
+@description('''
+cert-manager ClusterIssuer that gives every container declaring a port named `https` a certificate
+for its Service's DNS names, so callers in the cluster reach it over TLS and can verify it. The
+certificate and key are mounted at /etc/service-tls, and TLS_CERT_FILE and TLS_KEY_FILE point to
+them. Empty issues none.
+''')
+param serviceCertificateIssuer string = ''
+
+@description('''
+Pod security context of every pod. The default meets the Kubernetes "restricted" Pod Security
+Standard: the image must run as a numeric non-root user. A resource can replace it through
+platformOptions.podSecurityContext.
+''')
+param podSecurityContext object = {
+  runAsNonRoot: true
+  seccompProfile: { type: 'RuntimeDefault' }
+}
+
+@description('''
+Security context of every container. The default meets the "restricted" Pod Security Standard. Add
+readOnlyRootFilesystem where the images allow it. A resource can replace it through
+platformOptions.containerSecurityContext.
+''')
+param containerSecurityContext object = {
+  allowPrivilegeEscalation: false
+  capabilities: { drop: [ 'ALL' ] }
+}
 
 extension kubernetes with {
   kubeConfig: ''
@@ -51,18 +92,6 @@ var normalizedName = toLower(resourceName)
 
 var resourceProperties = context.resource.?properties ?? {}
 var containerItems = items(resourceProperties.?containers ?? {})
-
-var daprSidecar = resourceProperties.?extensions.?daprSidecar
-var hasDaprSidecar = daprSidecar != null
-var effectiveDaprAppId = hasDaprSidecar && daprSidecar.?appId != null && string(daprSidecar.?appId) != '' ? string(daprSidecar.?appId) : normalizedName
-var podAnnotations = hasDaprSidecar ? union(
-  {
-    'dapr.io/enabled': 'true'
-    'dapr.io/app-id': effectiveDaprAppId
-  },
-  daprSidecar.?appPort != null ? { 'dapr.io/app-port': string(daprSidecar.?appPort) } : {},
-  (daprSidecar.?config != null && string(daprSidecar.?config) != '') ? { 'dapr.io/config': string(daprSidecar.?config) } : {}
-) : {}
 
 var environmentSegments = resourceProperties.environment != null ? split(string(resourceProperties.environment), '/') : []
 var environmentLabel = length(environmentSegments) > 0 ? last(environmentSegments) : ''
@@ -87,6 +116,8 @@ var labels = {
 //     serviceAccountName: 'my-service-account'
 //     podLabels: { 'azure.workload.identity/use': 'true' }
 //     imagePullSecrets: [ { name: 'my-registry' } ]
+//     podSecurityContext: { runAsNonRoot: true, runAsUser: 1000, seccompProfile: { type: 'RuntimeDefault' } }
+//     containerSecurityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ 'ALL' ] } }
 //   }
 //
 // The service account fixes the `sub` claim of the projected token an identity provider matches
@@ -99,15 +130,36 @@ var platformPodLabels = union(
   platformOptions.?podLabels ?? {},
   azureWorkloadIdentity ? { 'azure.workload.identity/use': 'true' } : {}
 )
-var platformServiceAccountName = platformOptions.?serviceAccountName ?? serviceAccountName
+var platformServiceAccountName = platformOptions.?serviceAccountName ?? replace(serviceAccountName, '{resource}', normalizedName)
+var createServiceAccount = !contains(platformOptions, 'serviceAccountName') && contains(serviceAccountName, '{resource}')
 var platformImagePullSecrets = platformOptions.?imagePullSecrets ?? (empty(imagePullSecretName) ? [] : [
   { name: imagePullSecretName }
 ])
+// LOCAL ADDITION. Every pod and container runs without privileges unless the resource says otherwise.
+var platformPodSecurityContext = platformOptions.?podSecurityContext ?? podSecurityContext
+var platformContainerSecurityContext = platformOptions.?containerSecurityContext ?? containerSecurityContext
 
 // Extra volumes, mounts and environment from the Recipe Pack, added to every pod and container.
 var platformVolumes = platformPodVolumes
 var platformVolumeMounts = containerVolumeMounts
-var platformEnvVars = containerEnv
+var platformEnvVars = map(containerEnv, envVar => contains(envVar, 'value')
+  ? union(envVar, { value: replace(string(envVar.value), '{resource}', normalizedName) })
+  : envVar)
+var platformEnvFrom = map(containerEnvFromSecrets, secretName => {
+  secretRef: {
+    name: replace(string(secretName), '{resource}', normalizedName)
+    optional: true
+  }
+})
+
+// LOCAL ADDITION. Service TLS: containers that declare an `https` port, and the certificate each
+// gets for its Service. The Secret has the same name as the Certificate.
+var serviceTlsDir = '/etc/service-tls'
+var serviceTlsContainers = empty(serviceCertificateIssuer) ? [] : filter(containerItems, item => contains(item.value.?ports ?? {}, 'https'))
+var serviceTlsVolumes = map(serviceTlsContainers, item => {
+  name: 'service-tls-${toLower(item.key)}'
+  secret: { secretName: '${normalizedName}-${toLower(item.key)}-tls' }
+})
 // Extract connection data from linked resources (merged with resource properties)
 var resourceConnections = context.resource.?connections ?? {}
 var connectionDefinitions = context.resource.properties.?connections ?? {}
@@ -203,6 +255,29 @@ var secretNameEnvFrom = reduce(items(resourceConnections), [], (acc, conn) =>
           : acc
 )
 
+// LOCAL ADDITION. Platform credentials and pod labels for connections to the Resource Types named in
+// connectionSecretNames and connectionPodLabels. The type comes from the resolved resource or, while it
+// is still updating, from the declared source ID (.../providers/<namespace>/<type>/<name>).
+var platformConnectionEnvFrom = reduce(items(resourceConnections), [], (acc, conn) =>
+  disableDefaultEnvVars[conn.key]
+    ? acc
+    : concat(acc, map(
+        filter(items(connectionSecretNames), typeSecret =>
+          toLower(string(conn.value.?type ?? '')) == toLower(typeSecret.key) || (contains(connectionDefinitions, conn.key) && contains(toLower(string(connectionDefinitions[conn.key].?source ?? '')), toLower('/providers/${typeSecret.key}/')))),
+        typeSecret => {
+          prefix: toUpper('CONNECTION_${conn.key}_')
+          secretRef: {
+            name: string(typeSecret.value)
+          }
+        }))
+)
+var platformConnectionPodLabels = reduce(items(resourceConnections), {}, (acc, conn) =>
+  union(acc, reduce(
+    filter(items(connectionPodLabels), typeLabels =>
+      toLower(string(conn.value.?type ?? '')) == toLower(typeLabels.key) || (contains(connectionDefinitions, conn.key) && contains(toLower(string(connectionDefinitions[conn.key].?source ?? '')), toLower('/providers/${typeLabels.key}/')))),
+    {}, (labelAcc, typeLabels) => union(labelAcc, typeLabels.value)))
+)
+
 // Ordinary top-level scalar values and nested producer properties become
 // CONNECTION_<CONNECTION_NAME>_<PROPERTY_NAME>.
 // Null-valued properties are skipped: sensitive properties (e.g. a database
@@ -245,6 +320,7 @@ var containerSpecs = reduce(containerItems, [], (acc, item) => concat(acc, [{
     {
       name: toLower(item.key)
       image: item.value.image
+      securityContext: platformContainerSecurityContext
     },
     // Add ports if they exist
     contains(item.value, 'ports') ? {
@@ -256,7 +332,7 @@ var containerSpecs = reduce(containerItems, [], (acc, item) => concat(acc, [{
     } : {},
     // Add environment variables from container definition and connections
     // Connection environment variables are automatically added from output values
-    (contains(item.value, 'env') || length(connectionEnvVars) > 0 || length(validatedSecretConnectionEnvVars) > 0 || length(platformEnvVars) > 0) ? {
+    (contains(item.value, 'env') || length(connectionEnvVars) > 0 || length(validatedSecretConnectionEnvVars) > 0 || length(platformEnvVars) > 0 || (!empty(serviceCertificateIssuer) && contains(item.value.?ports ?? {}, 'https'))) ? {
       // Kubelet expands $(VAR) in an env var's value ONLY against env vars defined
       // earlier in this container's ordered env list. Emit secret/valueFrom env vars
       // FIRST so plain value env vars can compose them via $(VAR) without leaking
@@ -289,21 +365,30 @@ var containerSpecs = reduce(containerItems, [], (acc, item) => concat(acc, [{
         // 4. Ordinary connection values, unless an explicit variable uses the same name.
         filter(connectionEnvVars, envVar => !contains(item.value.?env ?? {}, envVar.name)),
         // 5. Platform variables from the Recipe Pack, unless an explicit variable uses the same name.
-        filter(platformEnvVars, envVar => !contains(item.value.?env ?? {}, envVar.name))
+        filter(platformEnvVars, envVar => !contains(item.value.?env ?? {}, envVar.name)),
+        // 6. LOCAL ADDITION. Where the service's own certificate is, when it has one.
+        (!empty(serviceCertificateIssuer) && contains(item.value.?ports ?? {}, 'https')) ? [
+          { name: 'TLS_CERT_FILE', value: '${serviceTlsDir}/tls.crt' }
+          { name: 'TLS_KEY_FILE', value: '${serviceTlsDir}/tls.key' }
+        ] : []
       )
     } : {},
-    // Connections that surface secretName still inject that Kubernetes Secret via envFrom.
-    length(secretNameEnvFrom) > 0 ? {
-      envFrom: secretNameEnvFrom
+    // Connections that surface secretName still inject that Kubernetes Secret via envFrom, followed
+    // by the platform's Secrets. An explicit env entry wins over envFrom for the same name.
+    length(concat(secretNameEnvFrom, platformConnectionEnvFrom, platformEnvFrom)) > 0 ? {
+      envFrom: concat(secretNameEnvFrom, platformConnectionEnvFrom, platformEnvFrom)
     } : {},
-    // Add volume mounts, plus the platform's mounts
-    (contains(item.value, 'volumeMounts') || length(platformVolumeMounts) > 0) ? {
+    // Add volume mounts, plus the platform's mounts and the service's own certificate
+    (contains(item.value, 'volumeMounts') || length(platformVolumeMounts) > 0 || (!empty(serviceCertificateIssuer) && contains(item.value.?ports ?? {}, 'https'))) ? {
       volumeMounts: concat(
         reduce(item.value.?volumeMounts ?? [], [], (vmAcc, vm) => concat(vmAcc, [{
           name: toLower(vm.volumeName)
           mountPath: vm.mountPath
         }])),
-        platformVolumeMounts
+        platformVolumeMounts,
+        (!empty(serviceCertificateIssuer) && contains(item.value.?ports ?? {}, 'https')) ? [
+          { name: 'service-tls-${toLower(item.key)}', mountPath: serviceTlsDir, readOnly: true }
+        ] : []
       )
     } : {},
     // Add command if specified
@@ -424,7 +509,22 @@ var podVolumes = reduce(volumeItems, [], (acc, vol) => concat(acc, [union(
   } : {}
 )]))
 
+// LOCAL ADDITION. A service account per resource, so each service has its own identity: on Azure
+// its own managed identity (the webhook reads the client ID annotation), elsewhere its own subject
+// in the projected token that an identity provider such as Keycloak matches.
+resource serviceAccount 'core/ServiceAccount@v1' = if (createServiceAccount) {
+  metadata: {
+    name: platformServiceAccountName
+    namespace: namespace
+    labels: labels
+    annotations: contains(workloadClientIds, resourceName) ? {
+      'azure.workload.identity/client-id': string(workloadClientIds[resourceName])
+    } : {}
+  }
+}
+
 resource deployment 'apps/Deployment@v1' = {
+  dependsOn: [ serviceAccount ]
   metadata: {
     name: normalizedName
     namespace: namespace
@@ -438,14 +538,11 @@ resource deployment 'apps/Deployment@v1' = {
       }
     }
     template: {
-      metadata: union(
-        {
-          // Pod labels from platformOptions are merged in; the workload-identity webhook keys off
-          // `azure.workload.identity/use` here, on the pod, not on the ServiceAccount.
-          labels: union(labels, platformPodLabels)
-        },
-        hasDaprSidecar ? { annotations: podAnnotations } : {}
-      )
+      metadata: {
+        // Pod labels from platformOptions are merged in; the workload-identity webhook keys off
+        // `azure.workload.identity/use` here, on the pod, not on the ServiceAccount.
+        labels: union(labels, platformPodLabels, platformConnectionPodLabels)
+      }
       spec: union(
         {
           containers: podContainers
@@ -454,9 +551,24 @@ resource deployment 'apps/Deployment@v1' = {
           // which can override app-defined env vars that developers explicitly set.
           // DNS-based service discovery (the modern K8s approach) is unaffected by this setting.
           enableServiceLinks: false
+          // LOCAL ADDITION. No privileges, and replicas spread across nodes where there are enough
+          // of them, so a node drain or failure takes only some of them.
+          securityContext: platformPodSecurityContext
+          topologySpreadConstraints: [
+            {
+              maxSkew: 1
+              topologyKey: 'kubernetes.io/hostname'
+              whenUnsatisfiable: 'ScheduleAnyway'
+              labelSelector: {
+                matchLabels: {
+                  'radapp.io/resource': resourceName
+                }
+              }
+            }
+          ]
         },
         length(podInitContainers) > 0 ? { initContainers: podInitContainers } : {},
-        length(concat(podVolumes, platformVolumes)) > 0 ? { volumes: concat(podVolumes, platformVolumes) } : {},
+        length(concat(podVolumes, platformVolumes, serviceTlsVolumes)) > 0 ? { volumes: concat(podVolumes, platformVolumes, serviceTlsVolumes) } : {},
         contains(resourceProperties, 'restartPolicy') ? { restartPolicy: resourceProperties.restartPolicy } : {},
         // Binds the pod to the annotated ServiceAccount so Kubernetes mints a token whose `sub`
         // claim matches the federated identity credential.
@@ -500,47 +612,36 @@ resource services 'core/Service@v1' = [for svc in servicesConfig: {
   }
 }]
 
-var publishThroughIngress = !empty(ingressClassName)
-
-resource ingresses 'networking.k8s.io/Ingress@v1' = [for svc in (publishThroughIngress ? servicesConfig : []): {
+// LOCAL ADDITION. The certificate of each container with an `https` port, for every name its
+// Service answers to. cert-manager renews it a month before it expires.
+#disable-next-line BCP081
+resource serviceCertificates 'cert-manager.io/Certificate@v1' = [for item in serviceTlsContainers: {
   metadata: {
-    name: '${normalizedName}-${svc.normalizedContainerName}'
+    name: '${normalizedName}-${toLower(item.key)}-tls'
     namespace: namespace
-    labels: union(labels, {
-      container: svc.containerName
-    })
-    annotations: ingressAnnotations
+    labels: labels
   }
-  spec: union(
-    {
-      ingressClassName: ingressClassName
-      rules: [
-        union(empty(ingressHost) ? {} : { host: ingressHost }, {
-          http: {
-            paths: [
-              {
-                path: '/'
-                pathType: 'Prefix'
-                backend: {
-                  service: {
-                    name: '${normalizedName}-${svc.normalizedContainerName}'
-                    port: {
-                      number: svc.ports[0].port
-                    }
-                  }
-                }
-              }
-            ]
-          }
-        })
-      ]
-    },
-    empty(ingressTlsSecretName) ? {} : {
-      tls: [
-        union(empty(ingressHost) ? {} : { hosts: [ ingressHost ] }, { secretName: ingressTlsSecretName })
-      ]
+  spec: {
+    secretName: '${normalizedName}-${toLower(item.key)}-tls'
+    dnsNames: [
+      '${normalizedName}-${toLower(item.key)}'
+      '${normalizedName}-${toLower(item.key)}.${namespace}'
+      '${normalizedName}-${toLower(item.key)}.${namespace}.svc'
+      '${normalizedName}-${toLower(item.key)}.${namespace}.svc.cluster.local'
+    ]
+    usages: [ 'server auth' ]
+    duration: '2160h'
+    renewBefore: '720h'
+    privateKey: {
+      algorithm: 'ECDSA'
+      size: 256
+      rotationPolicy: 'Always'
     }
-  )
+    issuerRef: {
+      kind: 'ClusterIssuer'
+      name: serviceCertificateIssuer
+    }
+  }
 }]
 
 // Add Horizontal Pod Autoscaler (if autoScaling specified)
@@ -594,18 +695,48 @@ resource hpa 'autoscaling/HorizontalPodAutoscaler@v2' = if (hasAutoScaling) {
       kind: 'Deployment'
       name: normalizedName
     }
-    minReplicas: hasAutoScaling && contains(autoScaling, 'minReplicas') ? int(autoScaling.minReplicas) : replicaCount
+    minReplicas: minReplicas
     maxReplicas: hasAutoScaling && contains(autoScaling, 'maxReplicas') ? int(autoScaling.maxReplicas) : 10
     metrics: hpaMetrics
   }
 }
 
+// LOCAL ADDITION. With more than one replica, a node drain or upgrade takes them down one at a
+// time, so the service stays up. With one, a budget would only block the drain.
+var minReplicas = hasAutoScaling && contains(autoScaling, 'minReplicas') ? int(autoScaling.minReplicas) : replicaCount
+var useDisruptionBudget = minReplicas > 1
+
+resource disruptionBudget 'policy/PodDisruptionBudget@v1' = if (useDisruptionBudget) {
+  metadata: {
+    name: normalizedName
+    namespace: namespace
+    labels: labels
+  }
+  spec: {
+    // Kubernetes IntOrString: a count must be an integer, so the Bicep type warning is a false positive.
+    #disable-next-line BCP036
+    maxUnavailable: 1
+    selector: {
+      matchLabels: {
+        'radapp.io/resource': resourceName
+      }
+    }
+  }
+}
+
 var deploymentResource = '/planes/kubernetes/local/namespaces/${namespace}/providers/apps/Deployment/${normalizedName}'
 var serviceResources = reduce(servicesConfig, [], (acc, svc) => concat(acc, ['/planes/kubernetes/local/namespaces/${namespace}/providers/core/Service/${normalizedName}-${svc.normalizedContainerName}']))
-var ingressResources = publishThroughIngress ? reduce(servicesConfig, [], (acc, svc) => concat(acc, ['/planes/kubernetes/local/namespaces/${namespace}/providers/networking.k8s.io/Ingress/${normalizedName}-${svc.normalizedContainerName}'])) : []
 var hpaResource = hasAutoScaling ? ['/planes/kubernetes/local/namespaces/${namespace}/providers/autoscaling/HorizontalPodAutoscaler/${normalizedName}'] : []
+var disruptionBudgetResource = useDisruptionBudget ? ['/planes/kubernetes/local/namespaces/${namespace}/providers/policy/PodDisruptionBudget/${normalizedName}'] : []
 
-var allResources = concat([deploymentResource], serviceResources, ingressResources, hpaResource)
+var serviceAccountResource = createServiceAccount ? ['/planes/kubernetes/local/namespaces/${namespace}/providers/core/ServiceAccount/${platformServiceAccountName}'] : []
+
+var serviceTlsResources = reduce(serviceTlsContainers, [], (acc, item) => concat(acc, [
+  '/planes/kubernetes/local/namespaces/${namespace}/providers/cert-manager.io/Certificate/${normalizedName}-${toLower(item.key)}-tls'
+  '/planes/kubernetes/local/namespaces/${namespace}/providers/core/Secret/${normalizedName}-${toLower(item.key)}-tls'
+]))
+
+var allResources = concat([deploymentResource], serviceResources, hpaResource, disruptionBudgetResource, serviceAccountResource, serviceTlsResources)
 
 // Publish each port-exposing container's in-cluster Service DNS host as a read-only
 // output so peers can address it by reference instead of hardcoding a Service name.

@@ -1,0 +1,97 @@
+# Helm values for the Loki chart on Azure Local: the site's log store, one process with its chunks
+# and index on a volume, so it needs no object store and keeps working with no link to Azure.
+# The OpenTelemetry Collector sends it the app's logs over OTLP. Install with:
+#
+#   helm upgrade --install loki loki --repo https://grafana-community.github.io/helm-charts `
+#     --version 20.0.3 --namespace observability --create-namespace `
+#     --values infra/azurelocal/observability/loki/values.yaml
+#
+# Change the marked values for your site first; provision-observability.ps1 sets them for you.
+
+global:
+  imageRegistry: <connected-registry-address>  # the connected registry's ClusterIP
+imagePullSecrets:
+  - name: azurelocal-registry
+
+# One process for every Loki role. Fine for a site's few GB a day; the other modes need object storage.
+deploymentMode: Monolithic
+
+loki:
+  # One tenant, no authentication: Grafana and the collector are the only clients, both in this
+  # namespace, and the namespace's network policies (monitoring/network-policies.yaml) let no other
+  # pod reach Loki.
+  auth_enabled: false
+  commonConfig:
+    replication_factor: 1
+  storage:
+    type: filesystem
+  schemaConfig:
+    configs:
+      - from: "2024-04-01"
+        store: tsdb
+        object_store: filesystem
+        schema: v13
+        index:
+          prefix: index_
+          period: 24h
+  limits_config:
+    # How long logs are kept. The compactor deletes older chunks from the volume.
+    retention_period: 168h
+    # OTLP attributes that aren't labels are kept as structured metadata, which is where trace_id
+    # lands; Grafana links from it to the trace in Tempo.
+    allow_structured_metadata: true
+    volume_enabled: true
+  compactor:
+    retention_enabled: true
+    delete_request_store: filesystem
+    working_directory: /var/loki/compactor
+  analytics:
+    reporting_enabled: false
+
+singleBinary:
+  replicas: 1
+  # No rules sidecar: alerts live in Prometheus, not the Loki ruler.
+  sidecar: false
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClass: null  # null uses the cluster's default storage class
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+# Off: each would be another pod and image. Grafana talks to Loki directly, and the caches only pay
+# off at a much larger scale.
+gateway:
+  enabled: false
+chunksCache:
+  enabled: false
+resultsCache:
+  enabled: false
+memcached:
+  enabled: false
+memcachedExporter:
+  enabled: false
+lokiCanary:
+  enabled: false
+test:
+  enabled: false
+ruler:
+  enabled: false
+
+# The scalable targets stay at zero in Monolithic mode.
+write:
+  replicas: 0
+read:
+  replicas: 0
+backend:
+  replicas: 0
+
+# Prometheus scrapes Loki's own metrics.
+monitoring:
+  serviceMonitor:
+    enabled: true

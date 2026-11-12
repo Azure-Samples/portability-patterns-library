@@ -9,7 +9,12 @@ every `<...>` placeholder. Leave the other values as they are. Git ignores `sett
 | Setting | What to put |
 |---|---|
 | `Common.SubscriptionId` | The subscription your Azure Local instance is registered in: `az account show --query id -o tsv` |
+| `Common.ResourceGroup` | A new resource group for the cluster, its registry and the Key Vault (for secrets that already live in Azure), for example `bcd-azurelocal` |
+| `Common.ClusterName` | A name for the AKS cluster, for example `bcd-aksarc` |
+| `Common.KubeContext` | The kubectl context the scripts create for it; usually the cluster's name |
 | `Common.RegistryName` | A new, globally unique name for the container registry the scripts create: 5–50 lowercase letters and digits |
+| `Common.ApplicationNamespace` | The Kubernetes namespace the app runs in. Every step uses this one value: leave `oms-azurelocal` or choose your own. |
+| `Common.Availability` | `high` (the default): RabbitMQ, PostgreSQL, Keycloak's database and the object store are replicated across three workers, and the databases are backed up, with operators. `standard`: one copy of each, no operators, no backups; it needs fewer resources, but a service is down while its pod restarts and a lost volume loses its data. Pick it before the first deployment: changing it later doesn't move the data. |
 | `Images.Registry` | The same name followed by `.azurecr.io` |
 | `Cluster.Location` | Your Azure Local instance's region, for example `eastus`: `az resource list -g <its resource group> --resource-type Microsoft.AzureStackHCI/clusters --query [].location -o tsv` |
 
@@ -21,7 +26,13 @@ Your Azure Local administrator can give you these. To look them up yourself:
 |---|---|
 | `Cluster.AzureLocalResourceGroup` | The resource group of your Azure Local instance, on its Overview page in the Azure portal |
 | `Cluster.CustomLocationName` | `az customlocation list -g <that resource group> --query [].name -o tsv` |
-| `Cluster.VmSwitchName` | `az stack-hci-vm network lnet list -g <that resource group> --query [].properties.vmSwitchName -o tsv` |
+| `Cluster.VmSwitchName` | `az stack-hci-vm network lnet list -g <that resource group> --query [].properties.vmSwitchName -o tsv`. Instead, you can set `Cluster.SwitchSourceLogicalNetworkName` to an existing logical network that uses the switch; one of the two is required. |
+| `Registry.StorageClassName` | The storage class for the in-cluster registry's volume: `default` on AKS enabled by Arc (`kubectl get storageclass`) |
+
+The cluster gets a 4 vCPU / 6 GB control plane and three 4 vCPU / 16 GB workers (`Standard_D4s_v3`),
+so two workers hold everything while the third is down. With `standard`, set `Cluster.NodeVmSize` to
+`Standard_A4_v2` (8 GB). List your instance's sizes with
+`az aksarc vmsize list --custom-location <custom location ID>`.
 
 ## Network
 
@@ -35,7 +46,8 @@ free, and the three ranges must not overlap.
 | `Cluster.DnsServers` | Your Active Directory DNS servers, so the cluster can find the domain controller |
 | `Cluster.IpPoolStart`, `Cluster.IpPoolEnd` | A range for the cluster's VMs: at least one address per node, plus one spare for upgrades |
 | `Cluster.ControlPlaneIp` | One address outside that range, for the cluster's API |
-| `Cluster.LoadBalancerAddresses` | A small range, for example five addresses, as `<first>-<last>`. The app gets the first one. |
+| `Cluster.LoadBalancerAddresses` | A small range, for example five addresses, as `<first>-<last>`. The app gets the first one, Keycloak the next. To choose them, set `Ingress.IngressIp` and `Keycloak.KeycloakIp`. |
+| `Ingress.HostNames` | Optional: DNS names users reach the app by, such as `orders.contoso.local`. The app's certificate names the ingress address and these. |
 | `Registry.ServiceClusterIp` | An address inside the cluster for its registry, not on your network. `10.96.0.50` works unless your cluster uses a different service range. |
 
 ## Active Directory
@@ -44,6 +56,8 @@ free, and the three ranges must not overlap.
 |---|---|
 | `Keycloak.AdServer` | Your domain controller's full name, for example `dc01.contoso.local`. It must match the name on its LDAPS certificate. |
 | `Keycloak.AdDomain` | Your Active Directory domain, for example `contoso.local` |
+| `Keycloak.AdBindUpn` | The read-only account Keycloak reads the directory with, for example `svc-keycloak@contoso.local`. The first run asks for its password and keeps it in the cluster; it never goes in this file. |
+| `Keycloak.AdCaCertificatePath` | The certificate (PEM) of the CA that issued your domain controller's LDAPS certificate. It's public; on a domain-joined machine export it with `certutil -ca.cert ca.cer` and convert it with `certutil -encode ca.cer ca.crt`. |
 
 ## Check before you deploy
 

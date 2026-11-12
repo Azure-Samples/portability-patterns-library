@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Extensions.Configuration;
 
 namespace OrderManagement.Shared.Configuration;
@@ -8,39 +9,34 @@ namespace OrderManagement.Shared.Configuration;
 /// Radius injects one environment variable per property of the connected resource, named
 /// <c>CONNECTION_&lt;CONNECTION-NAME&gt;_&lt;PROPERTY-NAME&gt;</c>. For a connection named
 /// <c>queue</c> exposing an <c>endpoint</c> property the variable is <c>CONNECTION_QUEUE_ENDPOINT</c>.
-///
-/// A <c>OrderManagement:&lt;connection&gt;:&lt;property&gt;</c> configuration fallback is supported so the
-/// same binaries run under <c>dotnet run</c> without Radius.
 /// </summary>
 public sealed class ConnectionValues(IConfiguration configuration, string connectionName)
 {
-    private readonly IConfiguration _configuration = configuration;
-    private readonly string _connectionName = connectionName;
-
-    public string Name => _connectionName;
-
     public string? Get(string property)
     {
-        var radiusKey = $"CONNECTION_{_connectionName.ToUpperInvariant()}_{property.ToUpperInvariant()}";
-        var value = _configuration[radiusKey];
-        if (!string.IsNullOrWhiteSpace(value))
-        {
-            return value;
-        }
-
-        value = _configuration[$"OrderManagement:{_connectionName}:{property}"];
-        return string.IsNullOrWhiteSpace(value) ? null : value;
+        var value = configuration[Key(property)];
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
-    public string GetRequired(string property) =>
-        Get(property) ?? throw new InvalidOperationException(
-            $"Missing configuration for connection '{_connectionName}' property '{property}'. " +
-            $"Expected environment variable CONNECTION_{_connectionName.ToUpperInvariant()}_{property.ToUpperInvariant()} " +
-            $"or configuration key OrderManagement:{_connectionName}:{property}.");
+    /// <summary>The value, or null when it is not set; a value that isn't a whole number is an error.</summary>
+    public int? GetInt32(string property) =>
+        Get(property) is not { } value
+            ? null
+            : int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+                ? parsed
+                : throw new InvalidOperationException($"{Key(property)} must be a whole number, not '{value}'.");
 
-    public int GetInt32(string property, int defaultValue) =>
-        int.TryParse(Get(property), out var parsed) ? parsed : defaultValue;
+    /// <summary>
+    /// The connection's <c>tls</c> value: <c>required</c> (the default) or <c>optional</c>.
+    /// </summary>
+    public bool GetTlsRequired() => Get("tls")?.ToLowerInvariant() switch
+    {
+        null or "required" => true,
+        "optional" => false,
+        var other => throw new InvalidOperationException(
+            $"{Key("tls")} must be 'required' or 'optional', not '{other}'.")
+    };
 
-    public bool GetBoolean(string property, bool defaultValue) =>
-        bool.TryParse(Get(property), out var parsed) ? parsed : defaultValue;
+    public string Key(string property) =>
+        $"CONNECTION_{connectionName.ToUpperInvariant()}_{property.ToUpperInvariant()}";
 }

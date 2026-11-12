@@ -320,6 +320,16 @@ svg { flex: none; }
 
 .price { font-weight: 700; font-size: 1.05rem; }
 
+.stock { font-size: 0.8rem; font-weight: 600; color: var(--ok); }
+
+.stock.low { color: var(--pending); }
+
+.stock.out { color: var(--danger); }
+
+.product.sold-out { background: var(--surface-2); }
+
+.product.sold-out .product-name, .product.sold-out .price { color: var(--muted); }
+
 .stepper { display: inline-flex; align-items: center; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); overflow: hidden; }
 
 .stepper button {
@@ -423,6 +433,16 @@ svg { flex: none; }
 .status.processed { background: var(--ok-soft); color: var(--ok); }
 
 .status.processed::before { content: "\2713"; font-size: 0.75rem; }
+
+.status.rejected { background: var(--danger-soft); color: var(--danger); }
+
+.status.rejected::before { content: "\2715"; font-size: 0.75rem; }
+
+/* ---- Inventory (restock) ----------------------------------------------------------------- */
+
+.restock-form { display: inline-flex; gap: 0.5rem; align-items: center; justify-content: flex-end; }
+
+.restock-form .qty { width: 72px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); }
 
 @keyframes pulse { 50% { opacity: 0.25; } }
 

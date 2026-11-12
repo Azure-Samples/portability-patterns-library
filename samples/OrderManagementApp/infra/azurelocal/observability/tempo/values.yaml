@@ -1,0 +1,60 @@
+# Helm values for the Tempo chart on Azure Local: the site's trace store, one process with its
+# blocks on a volume, so it needs no object store and keeps working with no link to Azure.
+# The OpenTelemetry Collector sends it the app's traces over OTLP. Install with:
+#
+#   helm upgrade --install tempo tempo --repo https://grafana-community.github.io/helm-charts `
+#     --version 3.2.1 --namespace observability --create-namespace `
+#     --values infra/azurelocal/observability/tempo/values.yaml
+#
+# Change the marked values for your site first; provision-observability.ps1 sets them for you.
+
+global:
+  imageRegistry: <connected-registry-address>  # the connected registry's ClusterIP
+
+tempo:
+  pullSecrets:
+    - azurelocal-registry
+  # How long traces are kept. Tempo deletes older blocks from the volume.
+  retention: 72h
+  reportingEnabled: false
+  # The collector sends OTLP over gRPC to 4317. The chart's other receivers stay on, unused: its
+  # Service template fails without them.
+  storage:
+    trace:
+      backend: local
+      local:
+        path: /var/tempo/traces
+      wal:
+        path: /var/tempo/wal
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true  # it writes only to its volume, /var/tempo
+    capabilities:
+      drop: [ALL]
+    seccompProfile:
+      type: RuntimeDefault
+
+# The pod's: the image's tempo user, never root.
+securityContext:
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+persistence:
+  enabled: true
+  size: 5Gi
+  storageClassName: null  # null uses the cluster's default storage class
+
+# Prometheus scrapes Tempo's own metrics.
+serviceMonitor:
+  enabled: true
