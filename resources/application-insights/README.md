@@ -1,6 +1,6 @@
 # Application Insights and Log Analytics → Azure Local
 
-Application Insights and the Log Analytics workspace behind it run in Azure. A workload on Azure Local that has to keep working while the site is cut off from Azure also needs its telemetry on site. This guide describes the alternatives this project explored, what stays the same, and what you change in your workload.
+Application Insights and the Log Analytics workspace behind it run in Azure. A workload on Azure Local that has to keep working while the site is cut off from Azure also needs its telemetry on site. This guide describes the alternatives this project explored, what stayed the same and what changed when this project's sample moved from Azure to Azure Local. The [Sample](#sample) section links the code.
 
 > **About the alternatives:** the open-source alternatives in this guide are examples this project explored, not Microsoft recommendations, and other alternatives may exist. Evaluate any alternative against your own requirements.
 
@@ -10,35 +10,37 @@ Application Insights and the Log Analytics workspace behind it run in Azure. A w
 | Azure Local | [OpenTelemetry Collector with Prometheus, Jaeger and OpenSearch](https://opentelemetry.io/docs/collector/) | — | Documentation available | Not evaluated by this project. An all Apache-2.0 stack for organizations that don't allow AGPL. |
 | Azure Local | [Azure Monitor pipeline](https://learn.microsoft.com/azure/azure-monitor/data-collection/pipeline-overview) | — | Documentation available | Not evaluated by this project. Buffers telemetry on site and sends it to Azure Monitor when the link is up; analysis still happens in Azure. |
 
-## What carries over
+## What stayed the same in the sample
 
-- **The instrumentation**, if the application uses [OpenTelemetry](https://opentelemetry.io/docs/languages/dotnet/): traces, metrics and logs, including the automatic instrumentation for ASP.NET Core, HTTP clients and SQL.
+- **The instrumentation:** the sample uses [OpenTelemetry](https://opentelemetry.io/docs/languages/dotnet/) on both targets, for traces, metrics and logs, including the automatic instrumentation for ASP.NET Core, HTTP clients and SQL.
 - **Trace context** across services and queues, through the W3C `traceparent` header.
 - **Signals and names:** the same span names, metric names and log properties appear in both backends.
-- **What you monitor:** the same service-level indicators and alert conditions, rewritten in the new query language.
+- **What the sample monitors:** the same conditions raise alerts on both targets, written in each backend's query language.
 
-## What you need to change
+## What the sample needed to change
 
-1. **Use OpenTelemetry in the app.** On Azure, send it to Azure Monitor with the [Azure Monitor OpenTelemetry exporter or Distro](https://learn.microsoft.com/azure/azure-monitor/app/opentelemetry-enable). If the app still uses the classic Application Insights SDK, move to OpenTelemetry first.
-2. **Pick where telemetry goes at startup** from configuration: Azure Monitor on Azure, an OpenTelemetry Collector ([`OTEL_EXPORTER_OTLP_ENDPOINT`](https://opentelemetry.io/docs/specs/otel/configuration/sdk-environment-variables/)) on Azure Local. Use the same image on both targets.
-3. **Keep traces connected across queues,** so one request shows as one trace from start to end.
-4. **Rebuild dashboards, alerts and queries.** Workbooks and KQL alert rules don't carry over. Grafana uses PromQL for metrics, LogQL for logs and TraceQL for traces.
-5. **Run the stack yourself.** You set up storage, retention, upgrades and access control.
+1. **OpenTelemetry in every service.** On Azure, the sample sends it to Azure Monitor through [Azure Monitor's OpenTelemetry support](https://learn.microsoft.com/azure/azure-monitor/app/opentelemetry-enable). An app that still uses the classic Application Insights SDK would have to move to OpenTelemetry first.
+2. **The destination chosen at startup** from configuration: Azure Monitor on Azure, an OpenTelemetry Collector ([`OTEL_EXPORTER_OTLP_ENDPOINT`](https://opentelemetry.io/docs/specs/otel/configuration/sdk-environment-variables/)) on Azure Local. The images are the same on both targets.
+3. **Traces kept connected across the queue,** so one order shows as one trace from the API to the processor and the inventory service.
+4. **Alerts rebuilt.** Workbooks and KQL alert rules don't carry over. On Azure Local the sample uses Prometheus alert rules; Grafana uses PromQL for metrics, LogQL for logs and TraceQL for traces.
+5. **The stack run in the cluster.** The sample installs it from Helm charts. Storage, retention, upgrades and access control are left to whoever runs the site.
 
-How Application Insights features map to the stack, and how the sample uses it: [OpenTelemetry Collector with Prometheus, Loki, Tempo and Grafana](./alternatives/grafana-stack.md).
+How Application Insights features map to the stack, and the sample's code for each step: [OpenTelemetry Collector with Prometheus, Loki, Tempo and Grafana](./alternatives/grafana-stack.md).
 
-## Observed limitations
+## Limitations observed in the sample
+
+These are the limitations this project found while building the sample. It isn't a complete list.
 
 | Pattern | Limitation for this resource |
 |---|---|
 | [Observability](https://learn.microsoft.com/azure/well-architected/operational-excellence/observability) | The signals carry over through OpenTelemetry, but KQL, workbooks, Application Map, Live Metrics, smart detection and availability tests don't. Grafana provides dashboards, alerting and a service graph built from traces. |
-| [Workload identity](https://learn.microsoft.com/entra/workload-id/workload-identities-overview) | On Azure, the application can send telemetry with [Microsoft Entra authentication](https://learn.microsoft.com/azure/azure-monitor/app/azure-ad-authentication) instead of the connection string's key. On Azure Local, the collector inside the cluster receives telemetry on a cluster-internal endpoint; protect it with network policies or mutual TLS. |
-| [Reliability](https://learn.microsoft.com/azure/well-architected/reliability/) | You host, size, back up and scale the stack. Telemetry storage grows with retention, and the stack must stay up when the application has problems, which is when you need it. |
+| [Workload identity](https://learn.microsoft.com/entra/workload-id/workload-identities-overview) | On Azure, the sample sends telemetry with [Microsoft Entra authentication](https://learn.microsoft.com/azure/azure-monitor/app/azure-ad-authentication) instead of the connection string's key. On Azure Local, the collector receives telemetry on a cluster-internal endpoint without sign-in. The sample's network policy accepts it only from inside the cluster; mutual TLS is another option. |
+| [Reliability](https://learn.microsoft.com/azure/well-architected/reliability/) | The stack is hosted, sized, backed up and scaled on site. Telemetry storage grows with retention, and the stack has to stay up when the application has problems, which is when it's needed. |
 
 **Data:** telemetry already in Log Analytics stays there. The two backends don't share history.
 
-**Licence:** Grafana, Loki and Tempo are licensed under AGPL-3.0, and some organizations don't allow AGPL software. Check your organization's open-source policy. Because the application only speaks OpenTelemetry to the collector, those organizations can use the Apache-2.0 alternative above, or [Grafana Enterprise](https://grafana.com/licensing/), without changing the application.
+**Licence:** Grafana, Loki and Tempo are licensed under AGPL-3.0, and some organizations don't allow AGPL software. Because the sample's services only speak OpenTelemetry to the collector, an organization that doesn't allow AGPL could use the Apache-2.0 alternative above, or [Grafana Enterprise](https://grafana.com/licensing/), without changing the application.
 
 ## Sample
 
-The [Order Management sample](../../samples/OrderManagementApp/README.md) sends OpenTelemetry from the API, processor and inventory service: to Application Insights on Azure, and to the on-site stack on Azure Local, with equivalent alerts on both. [OpenTelemetry Collector with Prometheus, Loki, Tempo and Grafana](./alternatives/grafana-stack.md#how-the-order-management-sample-does-it) points to the code.
+The [Order Management sample](../../samples/OrderManagementApp/README.md) sends OpenTelemetry from the API, processor and inventory service: to Application Insights on Azure, and to the on-site stack on Azure Local, with equivalent alerts on both. [OpenTelemetry Collector with Prometheus, Loki, Tempo and Grafana](./alternatives/grafana-stack.md#how-the-order-management-sample-does-it) links the code for each change above.
