@@ -2,6 +2,8 @@
 
 [Keycloak](https://www.keycloak.org/documentation) is an open-source identity provider you run yourself, here in the Azure Local cluster. With [federated client authentication](https://www.keycloak.org/2026/01/federated-client-authentication), it validates a pod's Kubernetes service account token and issues an access token, as Entra ID does through a federated identity credential. Applications request the token with standard OAuth 2.0 rather than the Azure SDK.
 
+> **Scope:** this page covers how services sign in without a secret. In the sample, the same Keycloak also signs users in; see [Keycloak with Active Directory](../../entra-id/alternatives/keycloak.md).
+
 ## Entra concepts in Keycloak
 
 | Entra ID (Azure) | Keycloak (Azure Local) | Notes |

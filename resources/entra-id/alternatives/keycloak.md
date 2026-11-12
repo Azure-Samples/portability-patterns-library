@@ -2,6 +2,8 @@
 
 [Keycloak](https://www.keycloak.org/documentation) is an open-source identity provider (Apache-2.0) you run yourself, here in the Azure Local cluster. It reads users and groups from Active Directory over LDAPS and signs users in with OpenID Connect. With the right claims in its tokens, apps written for Entra ID with MSAL.js and Microsoft.Identity.Web work against it with different settings only.
 
+> **Scope:** this page covers user sign-in and the roles apps check. In the sample, the same Keycloak also gives services their identity; see [Keycloak for workload identity](../../workload-identity/alternatives/keycloak.md).
+
 ## Entra concepts in Keycloak
 
 | Entra ID (Azure) | Keycloak (Azure Local) | Notes |
