@@ -18,9 +18,9 @@ On Azure, users sign in to web apps and APIs through Microsoft Entra ID: app reg
 
 ## What the sample needed to change
 
-1. **An identity provider on site.** The sample runs Keycloak in the cluster, with its own database and TLS. Backups and high availability are left to whoever runs the site.
-2. **A connection to Active Directory** over LDAPS, with a read-only account that sees only the users and groups the app needs.
-3. **Each app registration recreated as a client.** The browser app became a public client with PKCE and its redirect URIs. The API became a client that tokens are issued for, and its scope became a client scope.
+1. **An identity provider on site.** The sample runs Keycloak in the cluster, with its own database, and TLS certificates issued by the site's certificate authority (PKI), which the site has to run. Backups and high availability are left to whoever runs the site.
+2. **Keycloak connected to Active Directory** over LDAPS, with a read-only account that sees only the users and groups the app needs. The app itself doesn't connect to Active Directory.
+3. **Each app registration recreated as a client.** The browser app became a public client (no client secret, like an Entra single-page app) with PKCE and its redirect URIs. The API became a client that tokens are issued for, and its scope became a client scope.
 4. **App roles recreated** in Keycloak, and granted to Active Directory groups.
 5. **Tokens with the same claims as Entra:** `aud`, `scp`, `roles` and `oid`. The sample doesn't read claims only Entra issues, such as `tid`. An app that does would need to replace them or change its code.
 6. **Sign-in settings per target,** set by the deployment, not the build. Microsoft.Identity.Web gets the authority and metadata address, and MSAL gets the identity provider's host in its known authorities.

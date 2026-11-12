@@ -9,13 +9,13 @@
 | Entra ID (Azure) | Keycloak (Azure Local) | Notes |
 |---|---|---|
 | Tenant | Realm | |
-| Users and groups, synced from Active Directory | [LDAP user federation](https://www.keycloak.org/docs/latest/server_admin/index.html#_ldap), read-only, limited to one OU | Users are imported on first sign-in and kept in step with the directory; nothing is written back. |
+| Users and groups, synced from Active Directory | [LDAP user federation](https://www.keycloak.org/docs/latest/server_admin/index.html#_ldap), read-only, limited to one OU | Users and groups are synced from Active Directory over LDAP. To have the same people on Azure and on site, an organization can keep Active Directory as the source and sync it to Entra ID with [Microsoft Entra Connect](https://learn.microsoft.com/entra/identity/hybrid/connect/whatis-azure-ad-connect), or keep Entra ID as the source and provision users and groups to Active Directory with [Microsoft Entra Cloud Sync](https://learn.microsoft.com/entra/identity/hybrid/cloud-sync/overview-provision-entra-id-to-active-directory) (users in preview). The sample doesn't set up either. |
 | App registration for a browser app | Public client, standard flow with PKCE, redirect URIs | |
-| App registration for an API, identifier URI and delegated scope | Confidential client for the API, and a client scope named like the Entra scope | The scope adds the API to `aud` and puts the scope name in `scp`. |
-| App roles for users, assigned to users or groups | Realm roles, granted to the groups imported from Active Directory | A protocol mapper puts them in `roles`. |
+| App registration for an API, identifier URI and delegated scope | Confidential client for the API, and a client scope named like the Entra scope | Tokens issued for the API carry the same claims as Entra's: the API's ID in `aud` and the scope name in `scp`. |
+| App roles for users, assigned to users or groups | Realm roles, granted to the groups imported from Active Directory | A protocol mapper, a built-in Keycloak feature, puts them in the token's `roles` claim. The sample sets up its mappers in the realm configuration. |
 | App roles for applications | Client roles, assigned to service accounts | See the [Microsoft Entra Workload ID guide](../../workload-identity/alternatives/keycloak.md). |
-| v2 access token claims (`aud`, `scp`, `roles`, `oid`) | Protocol mappers that issue the same claim names | Entra-only claims such as `tid` aren't issued. |
-| Authority `https://login.microsoftonline.com/<tenant>/v2.0` | Realm URL `https://<keycloak>/realms/<realm>` | Microsoft.Identity.Web appends `/v2.0` to an authority, so give it the metadata address explicitly. MSAL needs the Keycloak host in `knownAuthorities`. |
+| v2 access token claims (`aud`, `scp`, `roles`, `oid`) | Protocol mappers that issue the same claim names | Entra-only claims such as `tid` aren't issued. Apps or services that read the tenant ID from `tid` would break; a hardcoded-claim protocol mapper can issue a fixed `tid`, or the app can read it from configuration. |
+| Authority `https://login.microsoftonline.com/<tenant>/v2.0` | Realm URL `https://<keycloak>/realms/<realm>` | Microsoft.Identity.Web appends `/v2.0` to an authority, so the sample gives it the metadata address explicitly. MSAL needs the Keycloak host in `knownAuthorities`. |
 | Conditional Access, multifactor authentication | Authentication flows with one-time passwords or WebAuthn | No policies based on device, location or risk. |
 | Microsoft Graph | Keycloak Admin REST API | A different API; apps calling Graph need changes. |
 | Sign-in logs | Keycloak events | Turned on per realm; the sample doesn't turn them on. |
