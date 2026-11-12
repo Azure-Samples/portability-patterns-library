@@ -28,8 +28,10 @@ The sample uses this container when its `Availability` setting is `standard`. Th
 
 ## Not covered by the sample
 
+The sample's setup is for demonstration. Depending on your workload's requirements, a production deployment might also need:
+
 - backups and a tested restore, kept off the cluster;
-- a replica and failover: use CloudNativePG.
+- a replica and failover, which the [CloudNativePG](./cloudnative-pg.md) alternative provides.
 
 ## References
 

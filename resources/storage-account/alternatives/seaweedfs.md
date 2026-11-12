@@ -58,7 +58,7 @@ The processor archives each order as a JSON object:
 
 ## Not covered by the sample
 
-The sample's SeaweedFS is sample code. Before production, add:
+The sample's setup is for demonstration. Depending on your workload's requirements, a production deployment might also need:
 
 - a copy of the buckets off the cluster, for example with `weed filer.remote.sync` to Blob storage while the link is up;
 - capacity planning: the sample gives each volume server 20 GB;

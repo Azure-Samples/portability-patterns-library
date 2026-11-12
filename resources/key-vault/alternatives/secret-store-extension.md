@@ -42,7 +42,7 @@ On Azure every service signs in with workload identity, so there are no secrets.
 
 ## Not covered by the sample
 
-The sample is sample code. Before production:
+The sample's setup is for demonstration. Depending on your workload's requirements, a production deployment might also need:
 
 - confirm how Secrets are encrypted at rest in your cluster;
 - alert when a secret stops syncing;

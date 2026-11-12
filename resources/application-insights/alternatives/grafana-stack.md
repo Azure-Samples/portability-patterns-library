@@ -43,7 +43,7 @@ On Azure Local, an on-site stack stores and shows the telemetry that Application
 
 ## Not covered by the sample
 
-The stack is sample code. Before production, add:
+The sample's setup is for demonstration. Depending on your workload's requirements, a production deployment might also need:
 
 - high availability for each component, or accept gaps in telemetry during restarts;
 - retention and storage sized for your volume (the sample keeps metrics 15 days, logs 7 days and traces 3 days);

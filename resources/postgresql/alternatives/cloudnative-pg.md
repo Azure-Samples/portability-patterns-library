@@ -47,7 +47,7 @@ Inventory service  ──►  NpgsqlDataSource with a password provider
 
 ## Not covered by the sample
 
-The Recipe is sample code. Before production, add:
+The sample's setup is for demonstration. Depending on your workload's requirements, a production deployment might also need:
 
 - a copy of the backups off the cluster, and a tested restore;
 - a plan for PostgreSQL major version upgrades, kept in step with Azure (the sample runs 17 on every target);

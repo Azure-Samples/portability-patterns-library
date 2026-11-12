@@ -67,7 +67,7 @@ The sample doesn't use Radius's [`Radius.Messaging/rabbitMQ`](https://github.com
 
 ## Not covered by the sample
 
-The Recipes are sample code. Before production, add:
+The sample's setup is for demonstration. Depending on your workload's requirements, a production deployment might also need:
 
 - a copy of the broker's definitions, and a plan for messages if the whole cluster is lost: replication protects against losing a node, not the cluster;
 - rotation of the administrator's password, which the operators and the management interface use (it can't open messaging connections);

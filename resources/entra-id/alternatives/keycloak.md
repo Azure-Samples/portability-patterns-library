@@ -41,7 +41,7 @@ API (Microsoft.Identity.Web) checks scope access_as_user and the roles claim
 
 ## Not covered by the sample
 
-The sample's Keycloak setup is sample code. Before production, add:
+The sample's setup is for demonstration. Depending on your workload's requirements, a production deployment might also need:
 
 - a copy of its database backups off the cluster;
 - multifactor authentication;
