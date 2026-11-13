@@ -1,6 +1,13 @@
 # Build from the sample root:
 #   docker build -f docker/Dockerfile.api -t oms-api:local .
 
+# The browser app's sign-in library, at the version package-lock.json pins. Only its bundles go into
+# the image; Node.js and npm stay in this stage.
+FROM docker.io/library/node:26.13.1-alpine3.24 AS web
+WORKDIR /web
+COPY src/OrderManagement.Api/package.json src/OrderManagement.Api/package-lock.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund
+
 FROM mcr.microsoft.com/dotnet/sdk:10.0.404 AS build
 WORKDIR /src
 
@@ -12,6 +19,10 @@ COPY src/OrderManagement.Api/OrderManagement.Api.csproj src/OrderManagement.Api/
 RUN dotnet restore src/OrderManagement.Api/OrderManagement.Api.csproj
 
 COPY src/ src/
+COPY --from=web /web/node_modules/@azure/msal-browser/lib/msal-browser.min.js \
+    /web/node_modules/@azure/msal-browser/lib/redirect-bridge/msal-redirect-bridge.min.js \
+    /web/node_modules/@azure/msal-browser/LICENSE \
+    src/OrderManagement.Api/wwwroot/lib/msal-browser/
 RUN dotnet publish src/OrderManagement.Api/OrderManagement.Api.csproj -c Release -o /app --no-restore
 
 # The API hosts the orders API and the browser app, so it needs the ASP.NET Core runtime.

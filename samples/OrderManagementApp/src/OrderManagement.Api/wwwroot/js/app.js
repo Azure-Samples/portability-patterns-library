@@ -25,12 +25,13 @@ const msalApp = cfg.clientId ? new PublicClientApplication({
     clientId: cfg.clientId,
     authority: cfg.authority,
     knownAuthorities: cfg.knownAuthorities,
-    protocolMode: cfg.protocolMode,
-      ...(cfg.protocolMode === "OIDC" ? { OIDCOptions: { defaultScopes: ["openid", "profile"] } } : {}),
-    redirectUri: `${window.location.origin}/`,
+    ...(cfg.protocolMode === "OIDC" ? { OIDCOptions: { defaultScopes: ["openid", "profile"] } } : {}),
+    // MSAL's redirect bridge (redirect.html) receives every sign-in response, including silent renewal's.
+    redirectUri: `${window.location.origin}/redirect.html`,
     postLogoutRedirectUri: `${window.location.origin}/`
   },
-  cache: { cacheLocation: "sessionStorage" }
+  cache: { cacheLocation: "sessionStorage" },
+  system: { protocolMode: cfg.protocolMode }
 }) : null;
 
 let account = null;

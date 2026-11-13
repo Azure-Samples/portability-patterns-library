@@ -18,6 +18,10 @@ obj/
 .vs/
 .idea/
 
+## The browser app's npm packages; the image build installs them (docker/Dockerfile.api)
+node_modules/
+src/OrderManagement.Api/wwwroot/lib/msal-browser/
+
 ## Site CA written by scripts/infra/azurelocal/provision-ingress.ps1 for trusting on client machines
 bcd-site-ca.crt
 bcd-azure-ca.crt

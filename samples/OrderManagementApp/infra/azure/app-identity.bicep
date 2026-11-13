@@ -184,7 +184,9 @@ module spaApp 'app-registration.bicep' = {
     notes: notes
     serviceManagementReference: serviceManagementReference
     ownerObjectIds: ownerObjectIds
-    spaRedirectUris: [for origin in spaOrigins: '${origin}/']
+    // redirect.html is MSAL's redirect bridge, which receives sign-in responses; the app's page
+    // itself is where sign-out returns.
+    spaRedirectUris: flatten([for origin in spaOrigins: ['${origin}/redirect.html', '${origin}/']])
     requiredResourceAccess: [
       {
         resourceAppId: apiApp.outputs.appId
