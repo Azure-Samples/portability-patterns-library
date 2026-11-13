@@ -22,6 +22,13 @@
 #   azd env set ALERT_EMAIL <address>                # who gets the alerts (dead-lettered order, stalled processor, low stock)
 #   azd env set PRIVATE_CA true                      # if Let's Encrypt can't reach the cluster (inbound internet blocked);
 #                                                    # the app then uses a certificate from a CA kept in the cluster
+#   azd env set USE_PRIVATE_ENDPOINTS true           # reach Blob Storage, Azure SQL and PostgreSQL through private endpoints,
+#                                                    # with their public access off; set false and re-run azd up to undo
+#   azd env set HUB_VIRTUAL_NETWORK_ID <resource-id> # peer the cluster's virtual network with a hub in the same subscription
+#   azd env set AKS_VNET_ADDRESS_PREFIX <cidr>       # the cluster's address ranges, fixed once it exists: virtual network
+#   azd env set AKS_POD_CIDR <cidr>                  # (default 10.224.0.0/16), pods (10.244.0.0/16), services (10.0.0.0/16)
+#   azd env set AKS_SERVICE_CIDR <cidr>              # and cluster DNS (default the tenth address of the service range).
+#   azd env set AKS_DNS_SERVICE_IP <address>         # None may overlap the others, the hub or an on-premises network.
 #
 # Each azd environment gets its own app registrations (oms-api-<env>, oms-spa-<env>, oms-inventory-<env>) and Radius
 # workspace, so several can live side by side. azd down deletes the resource group, including what
@@ -44,6 +51,13 @@ hooks:
       if ($LASTEXITCODE -ne 0) {
         throw "The Azure CLI can't use subscription '$env:AZURE_SUBSCRIPTION_ID'. Sign it in too: az login --tenant <tenant-id>"
       }
+      # The cluster's address ranges can't change once it exists, so they're checked first.
+      . ./scripts/lib/network.ps1
+      Assert-OmsAddressRanges `
+        -VirtualNetworkAddressPrefix $(if ($env:AKS_VNET_ADDRESS_PREFIX) { $env:AKS_VNET_ADDRESS_PREFIX } else { '10.224.0.0/16' }) `
+        -PodCidr $(if ($env:AKS_POD_CIDR) { $env:AKS_POD_CIDR } else { '10.244.0.0/16' }) `
+        -ServiceCidr $(if ($env:AKS_SERVICE_CIDR) { $env:AKS_SERVICE_CIDR } else { '10.0.0.0/16' }) `
+        -HubVirtualNetworkId $env:HUB_VIRTUAL_NETWORK_ID
 
   postprovision:
     shell: pwsh
@@ -82,6 +96,7 @@ hooks:
         Location                    = $env:AZURE_LOCATION
         Registry                    = $env:registryLoginServer
         ResourceGroup               = $env:resourceGroupName
+        ClusterName                 = $env:clusterName
         KubeContext                 = $env:clusterName
         WorkspaceName               = $env:AZURE_ENV_NAME
         OrdersApiAppName            = "oms-api-$env:AZURE_ENV_NAME"

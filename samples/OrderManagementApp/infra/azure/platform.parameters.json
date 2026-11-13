@@ -9,6 +9,12 @@
     "nodeOsUpgradeDay": { "value": "${AKS_NODE_OS_UPGRADE_DAY=Sunday}" },
     "nodeOsUpgradeStartTime": { "value": "${AKS_NODE_OS_UPGRADE_START=02:00}" },
     "clusterAdminObjectIds": { "value": [ "${AZURE_PRINCIPAL_ID}" ] },
-    "alertEmail": { "value": "${ALERT_EMAIL=}" }
+    "alertEmail": { "value": "${ALERT_EMAIL=}" },
+    "usePrivateEndpoints": { "value": "${USE_PRIVATE_ENDPOINTS=false}" },
+    "hubVirtualNetworkId": { "value": "${HUB_VIRTUAL_NETWORK_ID=}" },
+    "virtualNetworkAddressPrefix": { "value": "${AKS_VNET_ADDRESS_PREFIX=10.224.0.0/16}" },
+    "podCidr": { "value": "${AKS_POD_CIDR=10.244.0.0/16}" },
+    "serviceCidr": { "value": "${AKS_SERVICE_CIDR=10.0.0.0/16}" },
+    "dnsServiceIP": { "value": "${AKS_DNS_SERVICE_IP=}" }
   }
 }

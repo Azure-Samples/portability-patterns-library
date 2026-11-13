@@ -60,6 +60,22 @@ param(
     [string]$NodeVmSize = 'Standard_D4s_v7',
     [ValidateSet('Basic', 'Standard', 'Premium')][string]$RegistrySku = 'Standard',
 
+    # Private endpoints for Blob Storage, Azure SQL and PostgreSQL: private DNS zones here, the
+    # endpoints from the Recipes. Takes effect, both ways, on the next deploy.ps1 run.
+    [bool]$UsePrivateEndpoints = $false,
+
+    # Resource ID of a hub virtual network in the same subscription to peer the cluster's with.
+    [string]$HubVirtualNetworkId = '',
+
+    # Address ranges, fixed for the life of the cluster. None may overlap another, the hub, or a
+    # network reached over VPN or ExpressRoute; this script checks them against each other and the
+    # hub. The node and private endpoint subnets are the first two /24s of the virtual network, and
+    # the DNS service address the tenth of the service range, unless given.
+    [string]$VirtualNetworkAddressPrefix = '10.224.0.0/16',
+    [string]$PodCidr = '10.244.0.0/16',
+    [string]$ServiceCidr = '10.0.0.0/16',
+    [string]$DnsServiceIP = '',
+
     # Entra ID object IDs granted cluster-admin. Defaults to the signed-in user, which is required
     # because local accounts are disabled and nobody could otherwise reach the API server.
     [string[]]$ClusterAdminObjectIds,
@@ -170,6 +186,10 @@ try {
         }
     }
     else {
+        . (Join-Path $repoRoot 'scripts/lib/network.ps1')
+        Assert-OmsAddressRanges -VirtualNetworkAddressPrefix $VirtualNetworkAddressPrefix -PodCidr $PodCidr `
+            -ServiceCidr $ServiceCidr -HubVirtualNetworkId $HubVirtualNetworkId
+
         $parameterFile = New-ParameterFile @{
             location                        = $Location
             resourceGroupName               = $ResourceGroup
@@ -186,6 +206,12 @@ try {
             registrySku                     = $RegistrySku
             clusterAdminObjectIds           = @($ClusterAdminObjectIds)
             useEntraAuthentication          = $UseEntraAuthentication
+            usePrivateEndpoints             = $UsePrivateEndpoints
+            hubVirtualNetworkId             = $HubVirtualNetworkId
+            virtualNetworkAddressPrefix     = $VirtualNetworkAddressPrefix
+            podCidr                         = $PodCidr
+            serviceCidr                     = $ServiceCidr
+            dnsServiceIP                    = $DnsServiceIP
         }
 
         if ($WhatIf) {

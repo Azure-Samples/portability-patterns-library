@@ -53,6 +53,31 @@ param nodeOsUpgradeDay string
 
 @description('Start of that window, HH:mm in UTC. It lasts four hours.')
 param nodeOsUpgradeStartTime string
+
+@description('Address space of the virtual network the nodes join.')
+param virtualNetworkAddressPrefix string
+
+@description('Address prefix of the node subnet. Only nodes take addresses from it; pods use podCidr.')
+param nodeSubnetAddressPrefix string
+
+@description('Pod address range. Must not overlap the virtual network or any network the pods call.')
+param podCidr string
+
+@description('Kubernetes service address range. Must not overlap the virtual network or podCidr.')
+param serviceCidr string
+
+@description('Address of the cluster DNS service, inside serviceCidr.')
+param dnsServiceIP string
+
+@description('Create a subnet and private DNS zones for private endpoints to Blob Storage, Azure SQL and PostgreSQL.')
+param usePrivateEndpoints bool
+
+@description('Address prefix of the private endpoint subnet, inside the virtual network.')
+param privateEndpointSubnetAddressPrefix string
+
+@description('Resource ID of a hub virtual network to peer with, in the same subscription. Empty peers with nothing.')
+param hubVirtualNetworkId string
+
 // Built-in role definition ID for AcrPull.
 var acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 
@@ -67,6 +92,10 @@ var aksRbacClusterAdminRoleId = 'b1ff04bb-8a4e-4dc4-8eb5-8693973ce19b'
 // group because its Recipes create both resources and role assignments; Contributor alone cannot
 // grant the data-plane roles that Service Bus and Storage require.
 var ownerRoleId = '8e3af657-a8ff-443c-a75c-2fe8c4bcb635'
+
+// Built-in role definition ID for Network Contributor. The cluster identity needs it on the node
+// subnet to join nodes to it and to manage load balancers there.
+var networkContributorRoleId = '4d97b98b-1d4f-4787-a291-c67834d212e7'
 
 // The Radius control plane services that authenticate to Azure. Each needs a federated credential
 // bound to its Kubernetes service account in the radius-system namespace.
@@ -92,13 +121,196 @@ resource registry 'Microsoft.ContainerRegistry/registries@2025-04-01' = {
   }
 }
 
+// Inbound to the nodes: the ingress's ports from the internet. Azure's default rules already allow
+// traffic within the virtual network and from the load balancer's health probes, and deny the rest.
+resource nodeSecurityGroup 'Microsoft.Network/networkSecurityGroups@2024-05-01' = {
+  name: 'nsg-${clusterName}-nodes'
+  location: location
+  tags: tags
+  properties: {
+    securityRules: [
+      {
+        name: 'allow-ingress-http-https'
+        properties: {
+          priority: 100
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: 'Tcp'
+          sourceAddressPrefix: 'Internet'
+          sourcePortRange: '*'
+          destinationAddressPrefix: '*'
+          destinationPortRanges: [
+            '80'
+            '443'
+          ]
+        }
+      }
+    ]
+  }
+}
+
+// Outbound from the nodes and pods leaves through one static address, which external firewalls can
+// allow, instead of the load balancer's.
+resource natPublicIp 'Microsoft.Network/publicIPAddresses@2024-05-01' = {
+  name: 'pip-${clusterName}-nat'
+  location: location
+  tags: tags
+  sku: {
+    name: 'Standard'
+  }
+  properties: {
+    publicIPAllocationMethod: 'Static'
+  }
+}
+
+resource natGateway 'Microsoft.Network/natGateways@2024-05-01' = {
+  name: 'ng-${clusterName}'
+  location: location
+  tags: tags
+  sku: {
+    name: 'Standard'
+  }
+  properties: {
+    idleTimeoutInMinutes: 4
+    publicIpAddresses: [
+      {
+        id: natPublicIp.id
+      }
+    ]
+  }
+}
+
+// The cluster's network. Declared here, rather than left to AKS, so it can be planned, peered and
+// secured like any other network. With Azure CNI Overlay only the nodes take addresses from the
+// subnet; pods get theirs from podCidr.
+//
+// The private endpoint subnet is always declared, even with usePrivateEndpoints off: subnets are
+// declared inline, so dropping it from this list would try to delete it, which Azure refuses while
+// endpoints are still in it (InUseSubnetCannotBeDeleted). Whether the Recipes use it is the
+// privateEndpoints tag, which deploy/azure.ps1 reads: turning it off removes the endpoints on the
+// next application deployment, and the empty subnet stays.
+resource virtualNetwork 'Microsoft.Network/virtualNetworks@2024-05-01' = {
+  name: 'vnet-${clusterName}'
+  location: location
+  tags: union(tags, {
+    privateEndpoints: usePrivateEndpoints ? 'enabled' : 'disabled'
+  })
+  properties: {
+    addressSpace: {
+      addressPrefixes: [
+        virtualNetworkAddressPrefix
+      ]
+    }
+    subnets: [
+      {
+        name: 'aks-nodes'
+        properties: {
+          addressPrefix: nodeSubnetAddressPrefix
+          networkSecurityGroup: {
+            id: nodeSecurityGroup.id
+          }
+          natGateway: {
+            id: natGateway.id
+          }
+        }
+      }
+      {
+        name: 'private-endpoints'
+        properties: {
+          addressPrefix: privateEndpointSubnetAddressPrefix
+        }
+      }
+    ]
+  }
+}
+
+resource nodeSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' existing = {
+  parent: virtualNetwork
+  name: 'aks-nodes'
+}
+
+// Zones the Recipes' private endpoints register in. Linked to the virtual network, so pods resolve
+// the services' usual host names to private addresses through Azure DNS.
+var privateDnsZoneNames = {
+  blob: 'privatelink.blob.${environment().suffixes.storage}'
+  sql: 'privatelink${environment().suffixes.sqlServerHostname}'
+  postgres: 'privatelink.postgres.database.azure.com'
+}
+
+resource privateDnsZones 'Microsoft.Network/privateDnsZones@2024-06-01' = [for zone in items(privateDnsZoneNames): if (usePrivateEndpoints) {
+  name: zone.value
+  location: 'global'
+  tags: tags
+}]
+
+resource privateDnsZoneLinks 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = [for (zone, i) in items(privateDnsZoneNames): if (usePrivateEndpoints) {
+  parent: privateDnsZones[i]
+  name: virtualNetwork.name
+  location: 'global'
+  tags: tags
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: virtualNetwork.id
+    }
+  }
+}]
+
+// Peering both ways with a hub in the same subscription. The deployer needs Network Contributor on
+// the hub's virtual network too. Address spaces must not overlap.
+resource hubPeering 'Microsoft.Network/virtualNetworks/virtualNetworkPeerings@2024-05-01' = if (!empty(hubVirtualNetworkId)) {
+  parent: virtualNetwork
+  name: 'to-hub'
+  properties: {
+    remoteVirtualNetwork: {
+      id: hubVirtualNetworkId
+    }
+    allowVirtualNetworkAccess: true
+    allowForwardedTraffic: true
+  }
+}
+
+module hubPeeringBack 'hub-peering.bicep' = if (!empty(hubVirtualNetworkId)) {
+  name: 'hub-peering-${clusterName}'
+  scope: resourceGroup(split(hubVirtualNetworkId, '/')[2], split(hubVirtualNetworkId, '/')[4])
+  params: {
+    hubVirtualNetworkName: last(split(hubVirtualNetworkId, '/'))
+    peeringName: 'to-${virtualNetwork.name}'
+    remoteVirtualNetworkId: virtualNetwork.id
+  }
+}
+
+// The cluster's control-plane identity. User-assigned so it can be granted Network Contributor on
+// the subnet before the cluster exists; a system-assigned identity only exists after the cluster.
+resource clusterIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: '${identityPrefix}-aks'
+  location: location
+  tags: tags
+}
+
+resource clusterSubnetAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: nodeSubnet
+  name: guid(nodeSubnet.id, clusterIdentity.id, networkContributorRoleId)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', networkContributorRoleId)
+    principalId: clusterIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
 resource cluster 'Microsoft.ContainerService/managedClusters@2025-04-01' = {
   name: clusterName
   location: location
   tags: tags
   identity: {
-    type: 'SystemAssigned'
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${clusterIdentity.id}': {}
+    }
   }
+  dependsOn: [
+    clusterSubnetAssignment
+  ]
   properties: {
     dnsPrefix: clusterName
     kubernetesVersion: empty(kubernetesVersion) ? null : kubernetesVersion
@@ -121,6 +333,8 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2025-04-01' = {
         count: nodeCount
         vmSize: nodeVmSize
         osDiskSizeGB: 128
+        // Fixed once the pool exists: moving nodes to another subnet means a new pool or cluster.
+        vnetSubnetID: nodeSubnet.id
       }
     ]
     // The two settings that make Workload Identity possible. The OIDC issuer publishes the
@@ -136,12 +350,18 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2025-04-01' = {
       }
     }
     // Azure CNI Overlay with Cilium enforces Kubernetes network policies, which limit which pods may
-    // reach each service.
+    // reach each service. The pod and service ranges are set explicitly so they can't overlap the
+    // virtual network.
     networkProfile: {
       networkPlugin: 'azure'
       networkPluginMode: 'overlay'
       networkDataplane: 'cilium'
       networkPolicy: 'cilium'
+      podCidr: podCidr
+      serviceCidr: serviceCidr
+      dnsServiceIP: dnsServiceIP
+      // Outbound through the NAT gateway on the node subnet, not the load balancer.
+      outboundType: 'userAssignedNATGateway'
     }
     // Managed NGINX ingress (app routing add-on): how applications are published to users.
     ingressProfile: {
@@ -414,3 +634,8 @@ output alertActionGroupId string = alertActionGroup.id
 output radiusIdentityClientId string = radiusIdentity.properties.clientId
 output radiusIdentityPrincipalId string = radiusIdentity.properties.principalId
 output radiusIdentityName string = radiusIdentity.name
+output virtualNetworkId string = virtualNetwork.id
+output nodeSubnetId string = nodeSubnet.id
+output natPublicIpAddress string = natPublicIp.properties.ipAddress
+output privateEndpointSubnetId string = usePrivateEndpoints ? '${virtualNetwork.id}/subnets/private-endpoints' : ''
+output privateDnsZoneIds object = usePrivateEndpoints ? toObject(items(privateDnsZoneNames), zone => zone.key, zone => resourceId('Microsoft.Network/privateDnsZones', zone.value)) : {}

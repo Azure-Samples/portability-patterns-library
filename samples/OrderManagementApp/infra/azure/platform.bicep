@@ -3,6 +3,9 @@
 // Creates everything the application deployment assumes already exists:
 //
 //   * Azure Container Registry, holding both the application images and the Bicep Recipes.
+//   * A virtual network with a node subnet, and the AKS cluster's nodes joined to it. The subnet
+//     has a network security group and a NAT gateway for outbound traffic. Optionally, a subnet and
+//     private DNS zones for private endpoints, and peering with a hub virtual network.
 //   * AKS cluster with the OIDC issuer and workload identity both enabled.
 //   * AcrPull for the cluster's kubelet identity, the declarative equivalent of
 //     `az aks update --attach-acr`, so the kubelet can pull the application images.
@@ -120,6 +123,53 @@ param nodeOsUpgradeDay string = 'Sunday'
 @description('Start of that window, HH:mm in UTC. It lasts four hours.')
 param nodeOsUpgradeStartTime string = '02:00'
 
+// The address ranges below are fixed for the life of the cluster. None of the three -- the virtual
+// network, podCidr and serviceCidr -- may overlap each other, a peered hub, or a network reached
+// over VPN or ExpressRoute: pods can't reach addresses inside podCidr or serviceCidr outside the
+// cluster, because they resolve to pods and services. provision-infra.ps1 checks this.
+
+@description('Address space of the virtual network the AKS nodes join.')
+param virtualNetworkAddressPrefix string = '10.224.0.0/16'
+
+@description('Address prefix of the node subnet, inside the virtual network. Empty: the first /24 of it. Leave room for scaling and upgrades.')
+param nodeSubnetAddressPrefix string = ''
+
+@description('Pod address range for Azure CNI Overlay. Not routable outside the cluster.')
+param podCidr string = '10.244.0.0/16'
+
+@description('''
+Kubernetes service address range. The default is AKS's, which is also the Azure portal's default
+for new virtual networks and a common hub range; change it if a network you connect uses it.
+''')
+param serviceCidr string = '10.0.0.0/16'
+
+@description('Address of the cluster DNS service, inside serviceCidr. Empty: its tenth address, as AKS picks.')
+param dnsServiceIP string = ''
+
+@description('''
+Reach Blob Storage, Azure SQL and PostgreSQL through private endpoints in the virtual network, with
+their public access turned off. Creates private DNS zones here; the Recipes create the endpoints on
+the next application deployment. The endpoint subnet exists either way, so this can be turned off
+again: the next application deployment then removes the endpoints and turns public access back on.
+Service Bus and the registry stay public: their private endpoints need the Premium tier.
+''')
+param usePrivateEndpoints bool = false
+
+@description('Address prefix of the private endpoint subnet, inside the virtual network. Empty: the second /24 of it.')
+param privateEndpointSubnetAddressPrefix string = ''
+
+@description('''
+Resource ID of a hub virtual network in the same subscription to peer with, both ways. Empty peers
+with nothing. Its address space must not overlap the virtual network, podCidr or serviceCidr: an
+overlap with podCidr or serviceCidr still peers, but pods can't reach those hub addresses.
+''')
+param hubVirtualNetworkId string = ''
+
+// Empty values come from the azd parameters file as well as from callers that leave them out.
+var effectiveNodeSubnetAddressPrefix = empty(nodeSubnetAddressPrefix) ? cidrSubnet(virtualNetworkAddressPrefix, 24, 0) : nodeSubnetAddressPrefix
+var effectivePrivateEndpointSubnetAddressPrefix = empty(privateEndpointSubnetAddressPrefix) ? cidrSubnet(virtualNetworkAddressPrefix, 24, 1) : privateEndpointSubnetAddressPrefix
+var effectiveDnsServiceIP = empty(dnsServiceIP) ? cidrHost(serviceCidr, 9) : dnsServiceIP
+
 resource platformResourceGroup 'Microsoft.Resources/resourceGroups@2022-09-01' = {
   name: resourceGroupName
   location: location
@@ -148,6 +198,14 @@ module platform 'platform-resources.bicep' = {
     tags: tags
     nodeOsUpgradeDay: nodeOsUpgradeDay
     nodeOsUpgradeStartTime: nodeOsUpgradeStartTime
+    virtualNetworkAddressPrefix: virtualNetworkAddressPrefix
+    nodeSubnetAddressPrefix: effectiveNodeSubnetAddressPrefix
+    podCidr: podCidr
+    serviceCidr: serviceCidr
+    dnsServiceIP: effectiveDnsServiceIP
+    usePrivateEndpoints: usePrivateEndpoints
+    privateEndpointSubnetAddressPrefix: effectivePrivateEndpointSubnetAddressPrefix
+    hubVirtualNetworkId: hubVirtualNetworkId
   }
 }
 
@@ -182,3 +240,18 @@ output radiusIdentityClientId string = platform.outputs.radiusIdentityClientId
 output radiusIdentityPrincipalId string = platform.outputs.radiusIdentityPrincipalId
 
 output appNamespace string = appNamespace
+
+@description('Virtual network the AKS nodes join. Peer or connect other networks to it.')
+output virtualNetworkId string = platform.outputs.virtualNetworkId
+
+@description('Subnet the AKS nodes take their addresses from.')
+output nodeSubnetId string = platform.outputs.nodeSubnetId
+
+@description('Address the nodes and pods reach the internet from. Allow it on external firewalls.')
+output natPublicIpAddress string = platform.outputs.natPublicIpAddress
+
+@description('Subnet the Recipes put private endpoints in. Empty without private endpoints.')
+output privateEndpointSubnetId string = platform.outputs.privateEndpointSubnetId
+
+@description('Private DNS zone IDs by service (blob, sql, postgres). Empty without private endpoints.')
+output privateDnsZoneIds object = platform.outputs.privateDnsZoneIds

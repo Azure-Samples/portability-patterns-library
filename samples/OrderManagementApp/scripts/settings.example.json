@@ -10,7 +10,8 @@
     },
     "Cluster": {
       "RegistryName": "<globally-unique-acr-name>",
-      "AlertEmail": "<on-call-email>"
+      "AlertEmail": "<on-call-email>",
+      "UsePrivateEndpoints": false
     },
     "Ingress": {
       "DnsLabel": "<dns-label>",

@@ -54,6 +54,10 @@ param(
     # the database setup job).
     [Parameter(Mandatory = $true)][string]$ResourceGroup,
 
+    # The AKS cluster in -ResourceGroup. Its node pool's subnet identifies the platform's virtual
+    # network, whatever else the resource group holds. Empty: the only cluster in -ResourceGroup.
+    [string]$ClusterName,
+
     # The Azure resource group that Radius Recipes provision application infrastructure into
     # (Service Bus, Storage account, Azure SQL, PostgreSQL). Empty uses -ResourceGroup. It must
     # already exist: Radius does not create it.
@@ -311,6 +315,44 @@ try {
     $alertActionGroupId = Invoke-Checked 'az monitor action-group list' {
         az monitor action-group list --resource-group $ResourceGroup --query '[0].id' --output tsv
     }
+    # Private endpoints, when the platform was provisioned with -UsePrivateEndpoints. The platform
+    # always keeps the subnet, so its virtual network's privateEndpoints tag is what says whether to
+    # use it. Turned off, the Recipes run without endpoint parameters, and Radius deletes the
+    # endpoints they created before, as resources the Recipes no longer produce.
+    # The virtual network is the one the cluster's nodes are in, not the first in the resource
+    # group, which may also hold a hub or another network.
+    if (-not $ClusterName) {
+        $clusters = @(Invoke-Checked 'az aks list' {
+                az aks list --resource-group $ResourceGroup --query '[].name' --output json
+            } | ConvertFrom-Json)
+        if ($clusters.Count -ne 1) { throw "Found $($clusters.Count) AKS clusters in '$ResourceGroup'. Pass -ClusterName." }
+        $ClusterName = $clusters[0]
+    }
+    $nodeSubnetId = Invoke-Checked "az aks show $ClusterName" {
+        az aks show --resource-group $ResourceGroup --name $ClusterName --query 'agentPoolProfiles[0].vnetSubnetId' --output tsv
+    }
+    $privateEndpointSubnetId = ''
+    if ($nodeSubnetId) {
+        $network = Invoke-Checked 'az network vnet show' {
+            az network vnet show --ids ($nodeSubnetId -replace '/subnets/[^/]+$', '') `
+                --query "{enabled: tags.privateEndpoints, subnetId: subnets[?name=='private-endpoints'].id | [0]}" --output json
+        } | ConvertFrom-Json
+        if ($network.enabled -eq 'enabled') {
+            if (-not $network.subnetId) { throw "The cluster's virtual network has private endpoints enabled but no 'private-endpoints' subnet. Run scripts/infra/azure/provision-infra.ps1." }
+            $privateEndpointSubnetId = $network.subnetId
+        }
+    }
+    $privateDnsZoneIds = @{ blob = ''; sql = ''; postgres = '' }
+    if ($privateEndpointSubnetId) {
+        $zones = Invoke-Checked 'az network private-dns zone list' {
+            az network private-dns zone list --resource-group $ResourceGroup --query '[].{name:name, id:id}' --output json
+        } | ConvertFrom-Json
+        foreach ($zone in $zones) {
+            $key = switch -Wildcard ($zone.name) { 'privatelink.blob.*' { 'blob' } 'privatelink.database.*' { 'sql' } 'privatelink.postgres.*' { 'postgres' } }
+            if ($key) { $privateDnsZoneIds[$key] = $zone.id }
+        }
+        Write-Host "    private endpoints for: $(($privateDnsZoneIds.Keys | Where-Object { $privateDnsZoneIds[$_] }) -join ', ')" -ForegroundColor DarkGray
+    }
 
     Write-Host "==> Publishing Azure Recipes" -ForegroundColor Cyan
     ./scripts/deploy/publish-recipes.ps1 -Registry $Registry -Platform azure -Tag $ImageTag
@@ -353,6 +395,10 @@ try {
         databaseAdministratorName           = $identities['db-admin'].name
         applicationInsightsConnectionString = [string]$applicationInsightsConnectionString
         alertActionGroupId                  = [string]$alertActionGroupId
+        privateEndpointSubnetId             = [string]$privateEndpointSubnetId
+        blobPrivateDnsZoneId                = $privateDnsZoneIds.blob
+        sqlPrivateDnsZoneId                 = $privateDnsZoneIds.sql
+        postgresPrivateDnsZoneId            = $privateDnsZoneIds.postgres
         location                            = $Location
         sqlLocation                         = $SqlLocation
         postgresLocation                    = $PostgresLocation

@@ -35,6 +35,23 @@ Recipe ignores them when Entra-only authentication is on.
 ''')
 param azureAdOnlyAuthentication bool = true
 
+@description('Subnet for a private endpoint to the server. Empty keeps public access and creates no endpoint.')
+param privateEndpointSubnetId string = ''
+
+@description('Private DNS zone (privatelink.database...) the endpoint registers in. Required with privateEndpointSubnetId.')
+param privateDnsZoneId string = ''
+
+@description('Region of the private endpoint: the virtual network\'s, which may differ from the server\'s.')
+param privateEndpointLocation string = location
+
+var usePrivateEndpoint = !empty(privateEndpointSubnetId)
+
+var radiusTags = {
+  'radapp.io-application': context.application == null ? '' : context.application.name
+  'radapp.io-environment': context.environment.name
+  'radapp.io-resource': context.resource.name
+}
+
 var database = context.resource.properties.database
 var administratorLogin = context.resource.properties.username
 var administratorPassword = context.resource.properties.password
@@ -54,7 +71,7 @@ resource sqlServer 'Microsoft.Sql/servers@2023-08-01-preview' = {
   properties: union(
     {
       minimalTlsVersion: '1.2'
-      publicNetworkAccess: 'Enabled'
+      publicNetworkAccess: usePrivateEndpoint ? 'Disabled' : 'Enabled'
       administrators: {
         administratorType: 'ActiveDirectory'
         principalType: 'Application'
@@ -73,11 +90,7 @@ resource sqlServer 'Microsoft.Sql/servers@2023-08-01-preview' = {
       administratorLoginPassword: administratorPassword
     }
   )
-  tags: {
-    'radapp.io-application': context.application == null ? '' : context.application.name
-    'radapp.io-environment': context.environment.name
-    'radapp.io-resource': context.resource.name
-  }
+  tags: radiusTags
 }
 
 resource sqlDatabase 'Microsoft.Sql/servers/databases@2023-08-01-preview' = {
@@ -93,9 +106,9 @@ resource sqlDatabase 'Microsoft.Sql/servers/databases@2023-08-01-preview' = {
   }
 }
 
-// Allows other Azure services, including the AKS cluster's egress, to reach the server.
-// Replace with a Private Endpoint or an explicit egress IP range for production.
-resource allowAzureServices 'Microsoft.Sql/servers/firewallRules@2023-08-01-preview' = {
+// Without a private endpoint: allows other Azure services, including the AKS cluster's egress, to
+// reach the server. Set privateEndpointSubnetId for production.
+resource allowAzureServices 'Microsoft.Sql/servers/firewallRules@2023-08-01-preview' = if (!usePrivateEndpoint) {
   parent: sqlServer
   name: 'AllowAllWindowsAzureIps'
   properties: {
@@ -104,11 +117,48 @@ resource allowAzureServices 'Microsoft.Sql/servers/firewallRules@2023-08-01-prev
   }
 }
 
+resource privateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = if (usePrivateEndpoint) {
+  name: 'pe-${serverName}'
+  location: privateEndpointLocation
+  properties: {
+    subnet: {
+      id: privateEndpointSubnetId
+    }
+    privateLinkServiceConnections: [
+      {
+        name: 'sqlServer'
+        properties: {
+          privateLinkServiceId: sqlServer.id
+          groupIds: [
+            'sqlServer'
+          ]
+        }
+      }
+    ]
+  }
+  tags: radiusTags
+}
+
+resource privateDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = if (usePrivateEndpoint) {
+  parent: privateEndpoint
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'sql'
+        properties: {
+          privateDnsZoneId: privateDnsZoneId
+        }
+      }
+    ]
+  }
+}
+
 output result object = {
-  resources: [
+  resources: concat([
     sqlServer.id
     sqlDatabase.id
-  ]
+  ], usePrivateEndpoint ? [ privateEndpoint.id ] : [])
   values: {
     host: sqlServer.properties.fullyQualifiedDomainName
     port: 1433

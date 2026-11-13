@@ -144,8 +144,9 @@ Bus, Blob Storage, Azure SQL and PostgreSQL. It prints the app's address. Your a
 roles to place orders and restock, so you can sign in straight away.
 
 Settings for your subscription, if you need them, are listed at the top of
-[azure.yaml](./azure.yaml) (`azd env set ...`): the alert email, the DNS label, and a CA kept in the
-cluster where Let's Encrypt can't reach it.
+[azure.yaml](./azure.yaml) (`azd env set ...`): the alert email, the DNS label, a CA kept in the
+cluster where Let's Encrypt can't reach it, private endpoints for the databases and storage, and
+peering with a hub virtual network.
 
 If `azd up` fails because a VM size or service isn't available in your region
 ([SkuNotAvailable](https://learn.microsoft.com/azure/azure-resource-manager/troubleshooting/error-sku-not-available)

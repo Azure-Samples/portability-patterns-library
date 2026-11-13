@@ -44,21 +44,33 @@ param applicationInsightsConnectionString string = ''
 
 @description('Action group the Recipes\' alerts notify, such as a dead-lettered message. Empty creates no alerts.')
 param alertActionGroupId string = ''
+
+@description('''
+Subnet for private endpoints to Blob Storage, Azure SQL and PostgreSQL, from the platform. Empty
+keeps their public access. Service Bus stays public: its private endpoints need the Premium tier.
+''')
+param privateEndpointSubnetId string = ''
+
+@description('Private DNS zone IDs by service, from the platform. Used with privateEndpointSubnetId.')
+param blobPrivateDnsZoneId string = ''
+param sqlPrivateDnsZoneId string = ''
+param postgresPrivateDnsZoneId string = ''
+
 @description('Azure region for provisioned infrastructure.')
 param location string = 'eastus2'
 
 @description('''
 Azure region for the SQL logical server. Defaults to `location`. Override when the primary region
 will not accept new SQL servers -- Azure gates this per subscription and region, failing with
-`RegionDoesNotAllowProvisioning`. Azure SQL is reached over its public FQDN, so the database can sit
-in a different region from the cluster at the cost of some latency and cross-region egress.
+`RegionDoesNotAllowProvisioning`. The database can sit in a different region from the cluster at the
+cost of some latency and cross-region egress; a private endpoint stays in the cluster's region.
 ''')
 param sqlLocation string = location
 
 @description('''
 Azure region for the PostgreSQL flexible server. Defaults to `location`. Override when the primary
 region offers no PostgreSQL versions to the subscription, which fails with `ParameterOutOfRange`
-("The value of the 'Version' should be in: []"). Reached over its public FQDN, like Azure SQL.
+("The value of the 'Version' should be in: []"). Can differ from the cluster's region, like Azure SQL.
 ''')
 param postgresLocation string = location
 
@@ -164,6 +176,9 @@ resource azureRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
           location: location
           contributorPrincipalIds: storageContributorPrincipalIds
           sku: 'Standard_LRS'
+          privateEndpointSubnetId: privateEndpointSubnetId
+          privateDnsZoneId: blobPrivateDnsZoneId
+          privateEndpointLocation: location
         }
       }
       'Radius.Data/sqlServerDatabases': {
@@ -174,6 +189,9 @@ resource azureRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
           administratorClientId: databaseAdministratorClientId
           administratorName: databaseAdministratorName
           skuName: 'S0'
+          privateEndpointSubnetId: privateEndpointSubnetId
+          privateDnsZoneId: sqlPrivateDnsZoneId
+          privateEndpointLocation: location
         }
       }
       'Radius.Data/postgreSqlDatabases': {
@@ -183,6 +201,9 @@ resource azureRecipes 'Radius.Core/recipePacks@2025-08-01-preview' = {
           location: postgresLocation
           administratorPrincipalId: databaseAdministratorPrincipalId
           administratorName: databaseAdministratorName
+          privateEndpointSubnetId: privateEndpointSubnetId
+          privateDnsZoneId: postgresPrivateDnsZoneId
+          privateEndpointLocation: location
         }
       }
     }
