@@ -1,6 +1,6 @@
 # Logical networks as an alternative to Azure Virtual Network
 
-A [logical network](https://learn.microsoft.com/azure/azure-local/manage/create-logical-networks) describes how Azure Local VMs connect to the site's physical network: the address prefix, the IP pool, the DNS servers, the gateway and the VLAN. Azure Local VMs attach to it directly; AKS on Azure Local gives its node VMs addresses from it. Unlike a virtual network, it doesn't route, filter or resolve names itself: the site network does.
+A [logical network](https://learn.microsoft.com/azure/azure-local/manage/create-logical-networks) describes how Azure Local VMs connect to the site's physical network: the address prefix, the IP pool, the DNS servers, the gateway and the VLAN. Azure Local VMs attach to it directly. AKS on Azure Local gives its node VMs addresses from it. Unlike a virtual network, it doesn't route, filter or resolve names itself. The site network does.
 
 | Part | Role |
 |---|---|
@@ -9,7 +9,7 @@ A [logical network](https://learn.microsoft.com/azure/azure-local/manage/create-
 | Site router, firewall and DNS | Route between networks, filter traffic and resolve names. Run by your network team. |
 | SDN enabled by Arc (optional) | Adds network security groups for Azure Local VMs |
 
-## Virtual Network features in logical networks
+## How Virtual Network features map to logical networks
 
 | Virtual Network | Logical network | Notes |
 |---|---|---|
@@ -50,11 +50,11 @@ A [logical network](https://learn.microsoft.com/azure/azure-local/manage/create-
 | Attaching the cluster | The same file passes the logical network to AKS in `cloudProviderProfile.infraNetworkProfile.vnetSubnetIds`. The node VMs and the control plane address come from it. |
 | Pod addresses | `podCidr` on both targets, separate from the node subnet or logical network: Azure CNI Overlay with Cilium on Azure, Calico on Azure Local |
 | Reaching the app from the site | The [Arc load balancer](../../../samples/OrderManagementApp/infra/azurelocal/platform-resources.bicep) (MetalLB) gives the ingress an address from the logical network's prefix, outside the IP pool. On Azure, the ingress gets an Azure load balancer address. |
-| Traffic between pods | The same [network policies](../../../samples/OrderManagementApp/deploy/network-policies.yaml) on both targets default-deny ingress to pods in the application namespace, with explicit allowances. Kubelet health probes are unaffected; these policies don't cover other namespaces. |
+| Traffic between pods | The same [network policies](../../../samples/OrderManagementApp/deploy/network-policies.yaml) on both targets default-deny ingress to pods in the application namespace, with explicit allowances. Kubelet health probes are unaffected. These policies don't cover other namespaces. |
 
 ## Not covered by the sample
 
-The sample uses one network per target. Before production, add:
+The sample's setup is for demonstration. Depending on your workload's requirements, a production deployment might also need:
 
 - separate logical networks for tiers that must be isolated, such as a database moved out of the cluster onto its own VM, with routes and firewall rules between them on the site network;
 - network security groups on standalone Azure Local VMs, if you run any;
