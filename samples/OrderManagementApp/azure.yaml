@@ -22,6 +22,9 @@
 #   azd env set ALERT_EMAIL <address>                # who gets the alerts (dead-lettered order, stalled processor, low stock)
 #   azd env set PRIVATE_CA true                      # if Let's Encrypt can't reach the cluster (inbound internet blocked);
 #                                                    # the app then uses a certificate from a CA kept in the cluster
+#   azd env set USE_PRIVATE_ENDPOINTS true           # reach Blob Storage, Azure SQL and PostgreSQL through private endpoints,
+#                                                    # with their public access off; set false and re-run azd up to undo
+#   azd env set HUB_VIRTUAL_NETWORK_ID <resource-id> # peer the cluster's virtual network with a hub in the same subscription
 #
 # Each azd environment gets its own app registrations (oms-api-<env>, oms-spa-<env>, oms-inventory-<env>) and Radius
 # workspace, so several can live side by side. azd down deletes the resource group, including what
