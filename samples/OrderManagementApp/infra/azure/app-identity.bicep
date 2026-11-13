@@ -156,6 +156,10 @@ var api = {
   ]
 }
 
+// redirect.html is MSAL's redirect bridge, which receives sign-in responses; the app's page itself
+// is where sign-out returns.
+var spaRedirectUris = flatten(map(spaOrigins, origin => ['${origin}/redirect.html', '${origin}/']))
+
 module apiApp 'app-registration.bicep' = {
   name: 'oms-api-app'
   params: {
@@ -184,9 +188,7 @@ module spaApp 'app-registration.bicep' = {
     notes: notes
     serviceManagementReference: serviceManagementReference
     ownerObjectIds: ownerObjectIds
-    // redirect.html is MSAL's redirect bridge, which receives sign-in responses; the app's page
-    // itself is where sign-out returns.
-    spaRedirectUris: flatten([for origin in spaOrigins: ['${origin}/redirect.html', '${origin}/']])
+    spaRedirectUris: spaRedirectUris
     requiredResourceAccess: [
       {
         resourceAppId: apiApp.outputs.appId
