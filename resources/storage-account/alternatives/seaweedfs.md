@@ -34,7 +34,7 @@
 
 ## On Azure Local
 
-- **Replication and Storage Spaces Direct.** The cluster's node disks already sit on Storage Spaces Direct, which keeps copies of every write. SeaweedFS's own replication protects against losing a node or volume server; choose its replication factor knowing the disks underneath are already redundant.
+- **Replication and Storage Spaces Direct.** SeaweedFS stores its data on the cluster's persistent volumes. On Azure Local these sit on Storage Spaces Direct, which already keeps copies of every write. SeaweedFS's own replication protects against losing a node or a volume server. The sample keeps two copies. One copy also works and relies on the disks underneath, but objects on a lost volume server can't be read until its pod runs again.
 - **One store per cluster.** Run it once, as a platform service, and give each application its own buckets and keys, rather than one store per application.
 - **Images.** Mirror the SeaweedFS images into the in-cluster registry, like every other image on Azure Local, so a restarted pod still finds its image without the link to Azure.
 - **Credentials.** Keep S3 keys in a Kubernetes Secret, and give it only to the pods that need it. The store and its clients are both on site, so the keys don't need a copy outside the cluster. A rebuilt store gets new keys. To avoid storing a key in the app, SeaweedFS can exchange a token for temporary keys. The token can come from the site's identity provider, such as Keycloak, or be a Kubernetes service account token. The second option needs extra setup, because SeaweedFS can't sign in to fetch the cluster's signing keys.

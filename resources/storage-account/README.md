@@ -63,9 +63,9 @@ This project didn't build a sample for Azure Files. This section and the next tw
 
 ### What changes (from documentation)
 
-1. **A file server.** A Windows Server [VM on the Azure Local instance](https://learn.microsoft.com/azure/azure-local/manage/create-arc-virtual-machines), joined to Active Directory, with SMB or [NFS](https://learn.microsoft.com/windows-server/storage/nfs/nfs-overview) shares.
+1. **A file server.** For example, a Windows Server [VM on the Azure Local instance](https://learn.microsoft.com/azure/azure-local/manage/create-arc-virtual-machines), joined to Active Directory, with SMB or [NFS](https://learn.microsoft.com/windows-server/storage/nfs/nfs-overview) shares. The rest of this section uses Windows Server as the example.
 2. **Share paths.** `\\<account>.file.core.windows.net\<share>` becomes `\\<server>\<share>`.
-3. **Sign-in with Active Directory accounts.** Storage account keys and Microsoft Entra Kerberos aren't available.
+3. **Sign-in.** With Windows Server, users and apps sign in with Active Directory accounts. Other file servers have their own sign-in options. Storage account keys and Microsoft Entra Kerberos aren't available.
 4. **The CSI driver for pods.** The [Azure Files CSI driver](https://learn.microsoft.com/azure/aks/azure-files-csi) is replaced by the [SMB or NFS CSI driver on AKS on Azure Local](https://learn.microsoft.com/azure/aks/aksarc/container-storage-interface-files). Shares are created in advance, and the SMB credentials are kept in a Kubernetes Secret.
 5. **Mounting instead of the API.** No on-site store offers the [Azure Files REST API](https://learn.microsoft.com/rest/api/storageservices/file-service-rest-api), so an app that uses it or the SDK has to mount the share instead.
 6. **Data protection.** [Volume Shadow Copies](https://learn.microsoft.com/windows-server/storage/file-server/volume-shadow-copy-service) and separate backups take the place of [share snapshots](https://learn.microsoft.com/azure/storage/files/storage-snapshots-files), soft delete and Azure Backup.
@@ -75,7 +75,7 @@ This project didn't build a sample for Azure Files. This section and the next tw
 | Pattern | Limitation for this resource |
 |---|---|
 | [Data store](https://learn.microsoft.com/azure/architecture/guide/technology-choices/data-store-overview) | Same protocols, but no Azure Files REST API, and no share-level quotas or snapshots managed through Azure. |
-| [Identity and access management](https://learn.microsoft.com/azure/well-architected/security/identity-access) | Microsoft Entra Kerberos and Azure role assignments on shares aren't available. Users need Active Directory accounts. |
+| [Identity and access management](https://learn.microsoft.com/azure/well-architected/security/identity-access) | Microsoft Entra Kerberos and Azure role assignments on shares aren't available. With Windows Server, users need Active Directory accounts. |
 | [Reliability](https://learn.microsoft.com/azure/well-architected/reliability/) | A single VM is a single point of failure. A [failover cluster](https://learn.microsoft.com/windows-server/failover-clustering/failover-clustering-overview) provides high availability. Backups are separate. |
 
 **Data:** files don't move by themselves. [Robocopy](https://learn.microsoft.com/windows-server/administration/windows-commands/robocopy) can copy them, or [Azure File Sync](https://learn.microsoft.com/azure/storage/file-sync/file-sync-introduction) can keep a Windows Server in step with the Azure file share while the link is up. Cloud tiering has to be off if the files must be readable without Azure.
