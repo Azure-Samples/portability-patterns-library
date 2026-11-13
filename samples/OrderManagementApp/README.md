@@ -187,6 +187,9 @@ To deploy a new version later, run `./scripts/deploy.ps1 -Target AzureLocal`.
 backups to the object store, and the object store keeps its data on several workers, so losing a
 worker loses nothing. `standard` runs one of each and needs less capacity.
 
+This project tested the sample on a single-machine Azure Local instance, so the three workers ran on
+one physical machine. Losing a physical machine wasn't tested.
+
 Every backing service keeps its data on persistent volumes on the cluster's default storage class.
 An order that fails `maxDeliveryCount` times (10) moves to the `orders.dead-letter` queue, as it moves
 to the dead-letter queue in Service Bus on Azure. cert-manager renews the certificates on site, from
