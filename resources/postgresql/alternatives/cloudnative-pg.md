@@ -9,7 +9,7 @@
 | Server | `Cluster` resource | The operator, installed once per cluster, runs it. |
 | Database and owner | Created at bootstrap | More roles are created by your setup job or declared on the `Cluster`. |
 | Compute and storage tiers | Pod CPU and memory, persistent volume size and storage class | |
-| High availability with a standby | Several instances: one primary, streaming replicas, [automatic failover](https://cloudnative-pg.io/docs/1.30/replication) | Spread instances over nodes. Azure Local has no availability zones. |
+| High availability with a standby | Several instances: one primary, streaming replicas, [automatic failover](https://cloudnative-pg.io/docs/1.30/replication) | The sample spreads instances over the AKS cluster's worker nodes. Azure Local offers [local availability zones](https://learn.microsoft.com/azure/azure-local/concepts/rack-aware-cluster-overview) on rack aware clusters and disaggregated deployments. The sample doesn't use them. |
 | Zero data loss on failover | Synchronous replication | A commit waits until a replica has it. |
 | Connection endpoint | The `-rw` Service, which follows the primary through a failover | `-ro` for replicas. |
 | [Automatic backups, point-in-time restore](https://learn.microsoft.com/azure/postgresql/flexible-server/concepts-backup-restore) | Write-ahead log archived continuously, base backups on a schedule, to an S3-compatible store | Choose a store that stays reachable when the site is offline. |

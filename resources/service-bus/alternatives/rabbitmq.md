@@ -19,7 +19,7 @@ Both keep each node's data on a persistent volume and can accept TLS only.
 |---|---|---|
 | Namespace | Broker or cluster (virtual host) | You deploy and operate it. |
 | Queue | Durable [quorum queue](https://www.rabbitmq.com/docs/quorum-queues) | Publish messages as persistent, and keep the broker's data on a persistent volume. |
-| Premium zone redundancy | A three-node cluster with quorum queues | Azure Local has no availability zones; spread the nodes over cluster nodes. |
+| Premium zone redundancy | A three-node cluster with quorum queues | The sample spreads the RabbitMQ nodes over the AKS cluster's worker nodes. Azure Local offers [local availability zones](https://learn.microsoft.com/azure/azure-local/concepts/rack-aware-cluster-overview) on rack aware clusters and disaggregated deployments. The sample doesn't use them. |
 | Send | Publish to the default exchange with the queue name as routing key | Turn on publisher confirms and publish as mandatory, so a message the broker refuses or can't route is an error, as a failed Service Bus send is. |
 | Receive in peek-lock mode | Consume with manual acknowledgement | Prefetch no more messages than the handler works on at once. |
 | Complete | Acknowledge (`ack`) | |
