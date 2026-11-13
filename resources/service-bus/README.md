@@ -20,7 +20,7 @@ Azure Service Bus isn't available on Azure Local. This guide describes the alter
 
 1. **One interface for the broker.** The sample moved its Service Bus calls into one class behind an interface, so the rest of the code doesn't depend on either broker.
 2. **A RabbitMQ version of that class.** It uses the RabbitMQ client library. The class handles acknowledgements, retries and reconnecting, which the Service Bus SDK did before.
-3. **The class chosen at startup** from configuration, so the same image runs on both targets.
+3. **A factory that picks the class at startup.** It reads the `provider` setting (`servicebus` or `rabbitmq`) and creates the matching class, so the same image runs on both targets.
 4. **Handlers safe to run twice.** Both brokers can deliver a message again, so the sample stores orders and reserves stock in a way that ignores a repeated order.
 5. **Sign-in to the broker.** On Azure Local each service gets an access token from Keycloak and passes it to RabbitMQ.
 6. **RabbitMQ run in the cluster.** The sample runs it with the RabbitMQ operators, which set up replicas, storage, dead-lettering and TLS. Patching, scaling and monitoring are left to whoever runs the site.
