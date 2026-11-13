@@ -6,7 +6,7 @@ On Azure, Microsoft Entra Workload ID lets a pod exchange its Kubernetes service
 
 | Target | Alternative | Portability class | Availability | Summary |
 |---|---|---|---|---|
-| Azure Local | [Keycloak](./alternatives/keycloak.md) | `adapter-required` | Sample available | Open-source identity provider you run on site in place of Entra ID. Each federated identity credential becomes a Keycloak client that trusts the cluster's tokens; the client code and permission model change. |
+| Azure Local | [Keycloak](./alternatives/keycloak.md) | `adapter-required` | Sample available | Open-source identity provider you run on site in place of Entra ID. Each federated identity credential becomes a Keycloak client that trusts the token of one service account in the cluster, as the credential does in Entra; the client code and permission model change. |
 
 ## What stayed the same in the sample
 

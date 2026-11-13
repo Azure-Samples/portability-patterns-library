@@ -23,10 +23,14 @@ AKS on Azure Local also offers Entra workload identity itself, [in preview](http
 ## How the Order Management sample does it
 
 ```text
-Pod  ──(service account token)──►  Keycloak  ──(access token)──►  RabbitMQ, inventory service
- ▲                                     │
- └── projected by the Recipe Pack      └── trusts the cluster's issuer for that service's account
+API pod        ──(service account token)──►  Keycloak  ──(access token)──►  RabbitMQ (publish)
+                                                                            Inventory service (read, restock)
+
+Processor pod  ──(service account token)──►  Keycloak  ──(access token)──►  RabbitMQ (consume)
+                                                                            Inventory service (reserve)
 ```
+
+The Recipe Pack mounts each pod's service account token. Keycloak has one client per service, and each client trusts only the token of that service's own service account.
 
 | Step | In the sample |
 |---|---|
