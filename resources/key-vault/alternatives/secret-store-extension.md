@@ -1,6 +1,6 @@
 # Key Vault with the Secret Store extension on Azure Local
 
-The [Azure Key Vault Secret Store extension](https://learn.microsoft.com/azure/azure-arc/kubernetes/secret-store-extension) (generally available) is an Arc extension for Kubernetes clusters, including AKS on Azure Local. It copies secrets from Key Vault into Kubernetes Secrets on a schedule, so workloads read them locally and keep working while the cluster is disconnected.
+The [Azure Key Vault Secret Store extension](https://learn.microsoft.com/azure/azure-arc/kubernetes/secret-store-extension) (generally available) is an Arc extension for Arc-enabled Kubernetes clusters, such as AKS on Azure Local with connected operations. On a schedule, it copies secrets from Key Vault in Azure into Kubernetes Secrets in the cluster. Apps read those Kubernetes Secrets, so they keep working when the site loses its connection to Azure. Only new or changed secrets wait until the connection is back.
 
 ```text
 Key Vault (Azure)
@@ -30,7 +30,7 @@ The older Azure Key Vault Secrets Provider extension for Arc retires on 9 Octobe
 
 ## How the Order Management sample does it
 
-On Azure every service signs in with workload identity, so there are no secrets. On Azure Local, the sample sets up the vault and the extension for secrets that already live in Azure; its own credentials are generated on site:
+On Azure every service signs in with workload identity, backed by managed identities, so there are no secrets to manage. On Azure Local, connected to Azure, the sample sets up the vault and the extension for secrets that already live in Azure; its own credentials are generated on site:
 
 | Step | In the sample |
 |---|---|
