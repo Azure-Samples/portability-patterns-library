@@ -9,7 +9,7 @@
 | Filer | Directories and object names, with metadata in a store you choose, such as PostgreSQL |
 | S3 gateway | The S3 endpoint the application calls. Stateless; scale it out. |
 
-## Blob storage features in SeaweedFS
+## How Blob storage features map to SeaweedFS
 
 | Blob storage | SeaweedFS | Notes |
 |---|---|---|

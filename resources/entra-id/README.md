@@ -1,6 +1,6 @@
 # Microsoft Entra ID → Azure Local
 
-On Azure, users sign in to web apps and APIs through Microsoft Entra ID: app registrations, delegated scopes and app roles. A workload on Azure Local that has to keep working while the site is cut off from Azure needs an identity provider on site. This guide covers user sign-in and the roles apps check. It describes the alternatives this project explored, what stayed the same and what changed when this project's sample moved from Azure to Azure Local. The [Sample](#sample) section links the code. How services sign in without a secret is in the [Microsoft Entra Workload ID guide](../workload-identity/README.md).
+On Azure, users sign in to web apps and APIs through Microsoft Entra ID: app registrations, delegated scopes and app roles. A workload on Azure Local that has to keep working while the site has no or limited connectivity to Azure needs an identity provider on site. This guide covers user sign-in and the roles apps check. It describes the alternatives this project explored, what stayed the same and what changed when this project's sample moved from Azure to Azure Local. The [Sample](#sample) section links the code. How services sign in without a secret is in the [Microsoft Entra Workload ID guide](../workload-identity/README.md).
 
 > **About the alternatives:** the open-source alternatives in this guide are examples this project explored, not Microsoft recommendations, and other alternatives may exist. Evaluate any alternative against your own requirements.
 

@@ -13,7 +13,7 @@
 
 Both keep each node's data on a persistent volume and can accept TLS only.
 
-## Service Bus features in RabbitMQ
+## How Service Bus features map to RabbitMQ
 
 | Service Bus | RabbitMQ | Notes |
 |---|---|---|

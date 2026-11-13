@@ -2,7 +2,7 @@
 
 [CloudNativePG](https://cloudnative-pg.io/docs/1.30/) is an open-source Kubernetes operator (Apache-2.0, a CNCF project) that runs PostgreSQL in the cluster. You describe a `Cluster` resource; the operator creates the instances, replication, failover and certificates, and with its [Barman Cloud plugin](https://cloudnative-pg.io/plugin-barman-cloud/) the backups. It runs the same PostgreSQL engine as flexible server, so the application keeps its driver and SQL.
 
-## Flexible server features in CloudNativePG
+## How flexible server features map to CloudNativePG
 
 | Flexible server | CloudNativePG | Notes |
 |---|---|---|

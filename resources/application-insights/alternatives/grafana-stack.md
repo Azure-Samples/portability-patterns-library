@@ -1,6 +1,6 @@
 # OpenTelemetry Collector with Prometheus, Loki, Tempo and Grafana as an alternative to Application Insights
 
-On Azure Local, an on-site stack stores and shows the telemetry that Application Insights and Log Analytics hold on Azure. Every part runs in the cluster, and its images come from the in-cluster registry, so it keeps working when the site is cut off from Azure:
+On Azure Local, an on-site stack stores and shows the telemetry that Application Insights and Log Analytics hold on Azure. Every part runs in the cluster, and its images come from the in-cluster registry, so it keeps working when the site has no or limited connectivity to Azure:
 
 | Part | Role | Licence |
 |---|---|---|
@@ -10,7 +10,7 @@ On Azure Local, an on-site stack stores and shows the telemetry that Application
 | [Tempo](https://grafana.com/docs/tempo/latest/) | Traces | AGPL-3.0 |
 | [Grafana](https://grafana.com/docs/grafana/latest/) | Dashboards, queries, alert rules | AGPL-3.0 |
 
-## Application Insights features in the stack
+## How Application Insights features map to the stack
 
 | Application Insights / Log Analytics | On-site stack | Notes |
 |---|---|---|
@@ -34,7 +34,7 @@ On Azure Local, an on-site stack stores and shows the telemetry that Application
 |---|---|
 | Instrumentation | [TelemetryExtensions.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Diagnostics/TelemetryExtensions.cs): traces, metrics and logs for the API, processor and inventory service, including HTTP, SQL Server and Npgsql |
 | Choosing the exporter | The same file, at startup: Azure Monitor when `APPLICATIONINSIGHTS_CONNECTION_STRING` is set, OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Each target's Recipe Pack sets one of them, so the images are the same. |
-| Signing in to Application Insights | Local authentication is off; each service sends with its own managed identity and the Monitoring Metrics Publisher role ([platform-resources.bicep](../../../samples/OrderManagementApp/infra/azure/platform-resources.bicep)) |
+| Signing in to Application Insights | [Local authentication](https://learn.microsoft.com/azure/azure-monitor/app/azure-ad-authentication#disable-local-authentication) is disabled, so Application Insights accepts only telemetry signed in with Microsoft Entra ID. Each service sends with its own managed identity and the Monitoring Metrics Publisher role ([platform-resources.bicep](../../../samples/OrderManagementApp/infra/azure/platform-resources.bicep)) |
 | One trace per order | The RabbitMQ client and the Service Bus SDK propagate the W3C trace context in the message's properties; [TelemetryExtensions.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Diagnostics/TelemetryExtensions.cs) subscribes to their spans, so one order is one trace from the API through the queue to the processor and the inventory service |
 | Business metrics | [OrderMetrics.cs](../../../samples/OrderManagementApp/src/OrderManagement.Shared/Diagnostics/OrderMetrics.cs): orders placed and completed, processing time, products below their reorder level |
 | The stack on site | [provision-observability.ps1](../../../samples/OrderManagementApp/scripts/infra/azurelocal/provision-observability.ps1) installs the collector, kube-prometheus-stack (Prometheus, Alertmanager, Grafana), Loki and Tempo from Helm charts with the [values in the sample](../../../samples/OrderManagementApp/infra/azurelocal/observability/README.md). Loki and Tempo run as single processes on persistent volumes. |

@@ -2,7 +2,7 @@
 
 The official [PostgreSQL image](https://hub.docker.com/_/postgres) can run in the cluster as a single instance: one StatefulSet, its data on a persistent volume, no operator. It runs the same engine as flexible server, so the application keeps its driver, SQL and schema. It has no replicas, failover or backups; [CloudNativePG](./cloudnative-pg.md), the other alternative explored, provides them.
 
-## Flexible server features in the container
+## How flexible server features map to the container
 
 | Flexible server | PostgreSQL container | Notes |
 |---|---|---|
