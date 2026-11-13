@@ -123,23 +123,28 @@ param nodeOsUpgradeDay string = 'Sunday'
 @description('Start of that window, HH:mm in UTC. It lasts four hours.')
 param nodeOsUpgradeStartTime string = '02:00'
 
-@description('''
-Address space of the virtual network the AKS nodes join. Fixed for the life of the cluster. Must
-not overlap podCidr, serviceCidr, or any network you later peer or connect over VPN.
-''')
+// The address ranges below are fixed for the life of the cluster. None of the three -- the virtual
+// network, podCidr and serviceCidr -- may overlap each other, a peered hub, or a network reached
+// over VPN or ExpressRoute: pods can't reach addresses inside podCidr or serviceCidr outside the
+// cluster, because they resolve to pods and services. provision-infra.ps1 checks this.
+
+@description('Address space of the virtual network the AKS nodes join.')
 param virtualNetworkAddressPrefix string = '10.224.0.0/16'
 
-@description('Address prefix of the node subnet, inside the virtual network. Leave room for scaling and upgrades.')
-param nodeSubnetAddressPrefix string = '10.224.0.0/24'
+@description('Address prefix of the node subnet, inside the virtual network. Empty: the first /24 of it. Leave room for scaling and upgrades.')
+param nodeSubnetAddressPrefix string = ''
 
 @description('Pod address range for Azure CNI Overlay. Not routable outside the cluster.')
 param podCidr string = '10.244.0.0/16'
 
-@description('Kubernetes service address range.')
+@description('''
+Kubernetes service address range. The default is AKS's, which is also the Azure portal's default
+for new virtual networks and a common hub range; change it if a network you connect uses it.
+''')
 param serviceCidr string = '10.0.0.0/16'
 
-@description('Address of the cluster DNS service, inside serviceCidr.')
-param dnsServiceIP string = '10.0.0.10'
+@description('Address of the cluster DNS service, inside serviceCidr. Empty: its tenth address, as AKS picks.')
+param dnsServiceIP string = ''
 
 @description('''
 Reach Blob Storage, Azure SQL and PostgreSQL through private endpoints in the virtual network, with
@@ -150,14 +155,20 @@ Service Bus and the registry stay public: their private endpoints need the Premi
 ''')
 param usePrivateEndpoints bool = false
 
-@description('Address prefix of the private endpoint subnet, inside the virtual network.')
-param privateEndpointSubnetAddressPrefix string = '10.224.1.0/24'
+@description('Address prefix of the private endpoint subnet, inside the virtual network. Empty: the second /24 of it.')
+param privateEndpointSubnetAddressPrefix string = ''
 
 @description('''
 Resource ID of a hub virtual network in the same subscription to peer with, both ways. Empty peers
-with nothing. Its address space must not overlap this virtual network's.
+with nothing. Its address space must not overlap the virtual network, podCidr or serviceCidr: an
+overlap with podCidr or serviceCidr still peers, but pods can't reach those hub addresses.
 ''')
 param hubVirtualNetworkId string = ''
+
+// Empty values come from the azd parameters file as well as from callers that leave them out.
+var effectiveNodeSubnetAddressPrefix = empty(nodeSubnetAddressPrefix) ? cidrSubnet(virtualNetworkAddressPrefix, 24, 0) : nodeSubnetAddressPrefix
+var effectivePrivateEndpointSubnetAddressPrefix = empty(privateEndpointSubnetAddressPrefix) ? cidrSubnet(virtualNetworkAddressPrefix, 24, 1) : privateEndpointSubnetAddressPrefix
+var effectiveDnsServiceIP = empty(dnsServiceIP) ? cidrHost(serviceCidr, 9) : dnsServiceIP
 
 resource platformResourceGroup 'Microsoft.Resources/resourceGroups@2022-09-01' = {
   name: resourceGroupName
@@ -188,12 +199,12 @@ module platform 'platform-resources.bicep' = {
     nodeOsUpgradeDay: nodeOsUpgradeDay
     nodeOsUpgradeStartTime: nodeOsUpgradeStartTime
     virtualNetworkAddressPrefix: virtualNetworkAddressPrefix
-    nodeSubnetAddressPrefix: nodeSubnetAddressPrefix
+    nodeSubnetAddressPrefix: effectiveNodeSubnetAddressPrefix
     podCidr: podCidr
     serviceCidr: serviceCidr
-    dnsServiceIP: dnsServiceIP
+    dnsServiceIP: effectiveDnsServiceIP
     usePrivateEndpoints: usePrivateEndpoints
-    privateEndpointSubnetAddressPrefix: privateEndpointSubnetAddressPrefix
+    privateEndpointSubnetAddressPrefix: effectivePrivateEndpointSubnetAddressPrefix
     hubVirtualNetworkId: hubVirtualNetworkId
   }
 }
