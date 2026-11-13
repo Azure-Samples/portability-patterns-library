@@ -50,11 +50,10 @@ Some folders, such as `targets/`, are planned and not there yet. [Repository str
 This project is licensed under the [MIT License](./LICENSE.txt).
 Third-party materials remain subject to their respective licenses and terms:
 
-- The Order Management sample includes the Microsoft Authentication Library for
-  JavaScript (MSAL.js) browser bundle under
-  [`wwwroot/lib/msal-browser`](./samples/OrderManagementApp/src/OrderManagement.Api/wwwroot/lib/msal-browser).
-  Its [MIT license](./samples/OrderManagementApp/src/OrderManagement.Api/wwwroot/lib/msal-browser/LICENSE)
-  is included alongside the bundle.
+- The Order Management sample's API image includes the Microsoft Authentication Library for
+  JavaScript (MSAL.js) browser bundles, installed from npm at the version pinned in
+  [`package.json`](./samples/OrderManagementApp/src/OrderManagement.Api/package.json). Their MIT
+  license is copied into the image alongside them, under `wwwroot/lib/msal-browser`.
 - The container Recipe [`recipes/kubernetes/kubernetes-containers.bicep`](./recipes/kubernetes/kubernetes-containers.bicep)
   is adapted from the Kubernetes container Recipe in
   [radius-project/resource-types-contrib](https://github.com/radius-project/resource-types-contrib),

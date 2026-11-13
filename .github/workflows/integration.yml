@@ -101,7 +101,7 @@ jobs:
       - name: Place an order end to end
         run: |
           realm=https://localhost:8443/realms/oms/protocol/openid-connect
-          redirect=http://localhost:8080/
+          redirect=http://localhost:8080/redirect.html
           jar="$RUNNER_TEMP/keycloak-cookies"
           verifier=$(openssl rand -hex 48)
           challenge=$(printf '%s' "$verifier" | openssl dgst -sha256 -binary | openssl base64 -A | tr '+/' '-_' | tr -d '=')

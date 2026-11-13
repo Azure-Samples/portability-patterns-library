@@ -24,6 +24,12 @@ updates:
         patterns: ["*"]
         update-types: ["minor", "patch"]
 
+  # The browser app's sign-in library (MSAL.js), which the API image serves.
+  - package-ecosystem: npm
+    directory: /samples/OrderManagementApp/src/OrderManagement.Api
+    schedule:
+      interval: weekly
+
   - package-ecosystem: github-actions
     directory: /
     schedule:

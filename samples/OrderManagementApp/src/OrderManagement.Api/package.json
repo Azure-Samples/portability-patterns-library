@@ -1,0 +1,8 @@
+{
+  "name": "order-management-web",
+  "private": true,
+  "description": "The browser app's only third-party code. docker/Dockerfile.api copies MSAL's browser bundles from here into wwwroot/lib/msal-browser.",
+  "dependencies": {
+    "@azure/msal-browser": "5.29.1"
+  }
+}

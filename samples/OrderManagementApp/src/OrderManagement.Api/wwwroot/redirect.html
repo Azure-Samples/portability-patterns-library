@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- MSAL's redirect bridge: the identity provider sends the sign-in response here, and the bridge
+       hands it to the app's page. Static title, so the tab and history don't show the response URL. -->
+  <title>Signing in</title>
+  <link rel="icon" href="data:,">
+</head>
+<body>
+  <p id="redirect-error" hidden>Sign-in could not be completed. <a href="/">Return to the app</a>.</p>
+  <script src="lib/msal-browser/msal-redirect-bridge.min.js"></script>
+  <script src="js/redirect.js"></script>
+</body>
+</html>

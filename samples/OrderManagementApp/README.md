@@ -115,10 +115,10 @@ before `docker compose up`, so the Keycloak container can read the certificate.
 Open http://localhost:8080 and sign in as `demo`, password `demo`, to place orders, or as `manager`,
 password `manager`, to restock. Run the tests with `dotnet test`.
 
-The build downloads packages from nuget.org and images from mcr.microsoft.com, docker.io and quay.io.
-If your network blocks them, ask for access, or point the build at your own NuGet feed with a
-[NuGet.Config](https://learn.microsoft.com/nuget/reference/nuget-config-file) in this folder; the
-build uses it when it's there, and Git ignores it.
+The build downloads packages from nuget.org and registry.npmjs.org, and images from mcr.microsoft.com,
+docker.io and quay.io. If your network blocks them, ask for access, or point the build at your own
+NuGet feed with a [NuGet.Config](https://learn.microsoft.com/nuget/reference/nuget-config-file) in
+this folder; the build uses it when it's there, and Git ignores it.
 
 ## Deploy to Azure
 

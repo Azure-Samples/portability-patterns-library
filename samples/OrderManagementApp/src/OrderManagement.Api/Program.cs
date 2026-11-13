@@ -49,9 +49,19 @@ app.Use(async (context, next) =>
 {
     var headers = context.Response.Headers;
     headers.XContentTypeOptions = "nosniff";
-    headers.XFrameOptions = "DENY";
     headers["Referrer-Policy"] = "no-referrer";
-    headers.ContentSecurityPolicy = spa.ContentSecurityPolicy;
+    if (context.Request.Path.Equals(SpaSettings.RedirectBridgePath, StringComparison.OrdinalIgnoreCase))
+    {
+        // Its address carries the sign-in response, so nothing may keep a copy.
+        headers.XFrameOptions = "SAMEORIGIN";
+        headers.ContentSecurityPolicy = spa.RedirectBridgeContentSecurityPolicy;
+        headers.CacheControl = "no-store";
+    }
+    else
+    {
+        headers.XFrameOptions = "DENY";
+        headers.ContentSecurityPolicy = spa.ContentSecurityPolicy;
+    }
     await next(context);
 });
 

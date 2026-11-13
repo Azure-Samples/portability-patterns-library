@@ -10,6 +10,14 @@ public sealed class SpaSettings
 
     public required string ContentSecurityPolicy { get; init; }
 
+    /// <summary>
+    /// For MSAL's redirect bridge page, which MSAL also loads in a hidden iframe on this origin for
+    /// silent renewal, so it may be framed by the app's own pages.
+    /// </summary>
+    public required string RedirectBridgeContentSecurityPolicy { get; init; }
+
+    public const string RedirectBridgePath = "/redirect.html";
+
     public static SpaSettings FromConfiguration(IConfiguration configuration)
     {
         var section = configuration.GetSection("Spa");
@@ -20,10 +28,15 @@ public sealed class SpaSettings
 
         // The browser talks to the identity provider directly (discovery, token endpoint and the
         // hidden iframe MSAL uses for silent renewal), so only that origin is allowed besides self.
+        // The iframe ends on the redirect bridge page on this origin, hence 'self' in frame-src.
         var identityOrigin = Uri.TryCreate(authority, UriKind.Absolute, out var authorityUri)
             ? authorityUri.GetLeftPart(UriPartial.Authority)
             : null;
         var external = identityOrigin is null ? string.Empty : $" {identityOrigin}";
+        var policy =
+            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
+            $"connect-src 'self'{external}; frame-src 'self'{external}; " +
+            "object-src 'none'; base-uri 'self'; frame-ancestors ";
 
         return new SpaSettings
         {
@@ -37,10 +50,8 @@ public sealed class SpaSettings
                 identityProvider = section["IdentityProvider"] ?? "Microsoft Entra ID",
                 environment = section["Environment"] ?? string.Empty
             },
-            ContentSecurityPolicy =
-                "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
-                $"connect-src 'self'{external}; frame-src{(identityOrigin is null ? " 'none'" : external)}; " +
-                "object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+            ContentSecurityPolicy = policy + "'none'",
+            RedirectBridgeContentSecurityPolicy = policy + "'self'"
         };
     }
 }

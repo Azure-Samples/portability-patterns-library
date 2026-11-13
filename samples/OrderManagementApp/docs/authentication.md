@@ -13,7 +13,9 @@ like Entra's, so the code doesn't change.
 
 1. The browser loads `/config.json` from the API: which identity provider, client ID and scope to use.
 2. MSAL.js sends the user to Entra ID, or to Keycloak, which checks the password against Active
-   Directory.
+   Directory. The response comes back to MSAL's redirect bridge,
+   [redirect.html](../src/OrderManagement.Api/wwwroot/redirect.html), the redirect URI both
+   registrations list.
 3. The browser calls `/api/...` with the access token.
 4. The API checks the token (issuer, audience, scope `access_as_user`), then its `roles` claim:
    `Orders.Read` to list orders, `Orders.Create` to place one, `Inventory.Manage` to restock

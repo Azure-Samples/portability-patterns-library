@@ -98,7 +98,7 @@
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "redirectUris": [
-        "${SPA_ORIGIN}/"
+        "${SPA_ORIGIN}/redirect.html"
       ],
       "webOrigins": [
         "+"
