@@ -5,7 +5,7 @@ namespace OrderManagement.Shared.Identity;
 
 /// <summary>
 /// How a service signs in to its database: with a password the platform injected (Azure Local, from
-/// a Kubernetes Secret synced from Key Vault; local compose), or otherwise with an Entra ID token
+/// a Kubernetes Secret generated on site; local compose), or otherwise with an Entra ID token
 /// from the pod's workload identity (Azure). Connection targets come from the <c>CONNECTION_*</c>
 /// values; credentials never do.
 /// </summary>

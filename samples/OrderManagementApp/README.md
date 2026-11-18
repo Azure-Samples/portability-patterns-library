@@ -10,8 +10,8 @@ Use it as a template for moving your own app: [Move your app in five steps](./do
 
 Users sign in to a browser app and place orders. The **API** prices them from the **inventory**
 service and publishes each order to a **queue**; the **processor** reserves stock, archives the
-order as JSON in **object storage** and records it in **SQL**. Every service sends its traces,
-metrics and logs to **monitoring**.
+order as JSON in **object storage**, signed with a key from **Key Vault**, and records it in
+**SQL**. Every service sends its traces, metrics and logs to **monitoring**.
 
 ```mermaid
 flowchart LR
@@ -49,12 +49,14 @@ flowchart LR
 | User sign-in | Microsoft Entra ID | Keycloak, federated to the site's Active Directory |
 | How the app authenticates to services | Entra Workload ID (no secrets) | Kubernetes service account tokens exchanged with Keycloak, for the queue and the inventory service; per-service database logins and object store keys generated on site |
 | Monitoring | Application Insights | Prometheus, Grafana, Loki and Tempo in the cluster |
+| Archive signing key | Key Vault, mounted into the processor by the Key Vault Secrets Provider | The same Key Vault, copied to the site by the Key Vault Secret Store extension and mounted from that copy |
 | Images and Recipes | Azure Container Registry | ACR connected registry inside the cluster |
 | HTTPS address | Managed NGINX ingress (app routing add-on) on a public IP, `<label>.<region>.cloudapp.azure.com`, certificate from Let's Encrypt or a CA kept in the cluster | NGINX ingress on an address from the Arc load balancer on the site network, certificate from a site CA, renewed by cert-manager in the cluster |
 
 Each service runs as its own identity with least privilege, and calls between services and to the
-backing services use TLS. The Azure Local column runs nothing in Azure at runtime. That is what lets
-the app keep working when the site is cut off from Azure.
+backing services use TLS. The Azure Local column runs nothing in Azure at runtime: the only thing
+it takes from Azure, the signing key, is copied to the site. That is what lets the app keep working
+when the site is cut off from Azure.
 
 ## Prerequisites
 
@@ -140,7 +142,8 @@ corporate tenant does), set it before `azd up`:
 azd env set SERVICE_MANAGEMENT_REFERENCE <service tree ID>
 ```
 
-`azd up` creates AKS, a container registry and managed identities, installs Radius and an HTTPS
+`azd up` creates AKS, a container registry, managed identities and a Key Vault with the order
+archive's signing key, installs Radius and an HTTPS
 ingress, registers the app in Entra ID, then builds and deploys the app; the Recipes create Service
 Bus, Blob Storage, Azure SQL and PostgreSQL. It prints the app's address. Your account gets the app
 roles to place orders and restock, so you can sign in straight away.

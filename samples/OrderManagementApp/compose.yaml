@@ -133,6 +133,10 @@ services:
       OTEL_SERVICE_NAME: processor
       SQL_USERNAME: processor
       SQL_PASSWORD: ${LOCAL_PASSWORD:?Set LOCAL_PASSWORD, see compose.yaml}
+    # The key it signs archived orders with, where the platform mounts it from Key Vault.
+    configs:
+      - source: archive-signing-key
+        target: /var/run/secrets/archive-signing/key
     depends_on:
       dbsetup: { condition: service_completed_successfully }
       rabbitmq-setup: { condition: service_completed_successfully }
@@ -305,3 +309,8 @@ services:
       test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && printf 'GET /health/ready HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
       interval: 10s
       retries: 30
+
+configs:
+  # Stands in for the archive signing key, which Azure and Azure Local deliver from Key Vault.
+  archive-signing-key:
+    content: "local-archive-signing-key-${LOCAL_PASSWORD:?Set LOCAL_PASSWORD, see compose.yaml}"

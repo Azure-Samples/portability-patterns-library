@@ -381,6 +381,10 @@ try {
     if (-not $serviceCa) { throw "No CA '$ServiceCertificateIssuer' in namespace cert-manager. Run scripts/infra/azure/provision-ingress.ps1." }
     Set-OmsNamespace $KubeContext $AppNamespace
     Set-OmsSecret -KubeContext $KubeContext -Namespace $AppNamespace -Name $ServiceCaSecretName -Data @{ 'ca.crt' = $serviceCa }
+    # The processor signs what it archives with a key from Key Vault, mounted by the CSI driver.
+    if (-not (Test-OmsResource $KubeContext $AppNamespace 'secretproviderclass' 'archive-signing')) {
+        throw "SecretProviderClass '$AppNamespace/archive-signing', which mounts the order archive's signing key from Key Vault, is missing. Run scripts/infra/azure/provision-infra.ps1 (azd provision) again."
+    }
     # Which service gets which access is the app's knowledge, so it's decided here; the Recipe Pack
     # only applies it.
     $recipePackParameters = New-ParameterFile @{
@@ -409,6 +413,8 @@ try {
         ingressCertIssuer                   = $(if ($ingressHost) { $IngressCertIssuer } else { '' })
         serviceCertificateIssuer            = $ServiceCertificateIssuer
         serviceCaSecretName                 = $ServiceCaSecretName
+        # Only the processor gets the signing key, at /var/run/secrets/archive-signing/key.
+        keyVaultFiles                       = @{ processor = @{ 'archive-signing' = 'archive-signing' } }
     }
     $temporaryFiles += $recipePackParameters
     Invoke-Checked 'rad deploy recipe pack' {

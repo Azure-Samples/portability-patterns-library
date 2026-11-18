@@ -512,6 +512,10 @@ try {
         }
     }
     $objectStoreEndpoint = "https://$ObjectStoreService.$ObjectStoreNamespace.svc.cluster.local:$ObjectStorePort"
+    # The processor signs what it archives with the key the Secret Store extension syncs from Key Vault.
+    if (-not (Test-OmsResource $KubeContext $ApplicationNamespace 'secret' 'archive-signing')) {
+        throw "Secret '$ApplicationNamespace/archive-signing', the order archive's signing key from Key Vault, is missing. Run scripts/infra/azurelocal/key-vault.ps1 (setup-platform.ps1, KeyVault step) with ApplicationNamespace '$ApplicationNamespace'."
+    }
     $backupBucket = ''
     if ($highAvailability) {
         $backupBucket = (Get-OmsSecretData $KubeContext $ApplicationNamespace $BackupCredentialsSecretName)['BUCKET']
@@ -535,6 +539,8 @@ try {
         serviceAccountName                 = '{resource}'
         # Each service's database password, written by this script after the database setup job.
         containerEnvFromSecrets            = @('{resource}-db-credentials')
+        # Only the processor gets the signing key, at /var/run/secrets/archive-signing/key.
+        keyVaultFiles                      = @{ processor = @{ 'archive-signing' = 'archive-signing' } }
         sqlServerEdition                   = $SqlServerEdition
         sqlServerCpuLimit                  = $SqlServerCpuLimit
         certificateIssuer                  = $CertificateIssuer

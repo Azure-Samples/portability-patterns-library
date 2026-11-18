@@ -193,8 +193,9 @@ if ($signedIn) {
     }
 
     # The KeyVault step grants the extension's identity, and you, access to the vault's secrets,
-    # which takes the right to create role assignments; Contributor doesn't have it. Roles held
-    # through a group count; a PIM-eligible role counts only once activated.
+    # which takes the right to create role assignments; Contributor doesn't have it. The app can't be
+    # deployed without the signing key that step syncs. Roles held through a group count; a
+    # PIM-eligible role counts only once activated.
     if ('KeyVault' -notin $Skip) {
         Invoke-AzureCheck 'Can create role assignments' {
             $assignee = if ($account.user.type -eq 'servicePrincipal') { $account.user.name } else { Invoke-OmsAzShow @('ad', 'signed-in-user', 'show', '--query', 'id', '--output', 'tsv') }
@@ -205,7 +206,7 @@ if ($signedIn) {
                     Where-Object { $_.roleDefinitionName -in 'Owner', 'User Access Administrator', 'Role Based Access Control Administrator' -and
                         ($_.scope -in $scopes -or $_.scope -like '/providers/Microsoft.Management/managementGroups/*') }) | Select-Object -First 1
             if ($canAssign) { Add-Result Azure 'Can create role assignments' PASS "$($canAssign.roleDefinitionName) on $($canAssign.scope)" }
-            else { Add-Result Azure 'Can create role assignments' FAIL "needs Owner, User Access Administrator or Role Based Access Control Administrator on the subscription or resource group '$($s.ResourceGroup)', for the KeyVault step (or skip it: -Skip KeyVault)" }
+            else { Add-Result Azure 'Can create role assignments' FAIL "needs Owner, User Access Administrator or Role Based Access Control Administrator on the subscription or resource group '$($s.ResourceGroup)', for the KeyVault step, which syncs the order archive's signing key the app needs. Or have someone who holds one run scripts/infra/azurelocal/key-vault.ps1" }
         }
     }
 }

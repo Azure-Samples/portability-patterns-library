@@ -69,7 +69,7 @@ hooks:
       ./scripts/infra/azure/provision-infra.ps1 -SkipTemplate `
         -SubscriptionId $env:AZURE_SUBSCRIPTION_ID -Location $env:AZURE_LOCATION `
         -ResourceGroup $env:resourceGroupName -ClusterName $env:clusterName -KubeContext $env:clusterName `
-        -RegistryName $env:registryName -WorkspaceName $env:AZURE_ENV_NAME
+        -RegistryName $env:registryName -KeyVaultName $env:keyVaultName -WorkspaceName $env:AZURE_ENV_NAME
 
       $ingressArgs = @{ KubeContext = $env:clusterName; DnsLabel = $label }
       if ($env:PRIVATE_CA -eq 'true') { $ingressArgs.PrivateCa = $true }

@@ -20,7 +20,8 @@
                                                              directory; asks for a domain administrator
       Images    infra/azurelocal/import-images.ps1           third-party images mirrored into the ACR
       Registry  infra/azurelocal/connected-registry.ps1      in-cluster registry that keeps serving offline
-      KeyVault  infra/azurelocal/key-vault.ps1               Key Vault and its Secret Store extension, for secrets from Azure
+      KeyVault  infra/azurelocal/key-vault.ps1               Key Vault and its Secret Store extension; syncs the order
+                                                             archive's signing key to the site. Needs Owner or User Access Administrator
       Ingress   infra/azurelocal/provision-ingress.ps1       NGINX ingress, site CA, renewed certificates
       Operators infra/azurelocal/provision-operators.ps1     CloudNativePG and RabbitMQ operators: replicas, failover, backups
                                                              (only with Availability 'high')

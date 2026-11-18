@@ -123,12 +123,16 @@ public static class ServiceCollectionExtensions
     /// <summary>
     /// Object storage: a blob container with the workload identity, or an S3 bucket with the keys the
     /// platform issued, as the environment's <c>Archive__Provider</c> says. The S3 bucket is created
-    /// once at startup when it doesn't exist.
+    /// once at startup when it doesn't exist. Each archived order is signed with the key the platform
+    /// delivers from Key Vault (<see cref="ArchiveSigningOptions"/>); without it the service doesn't start.
     /// </summary>
     public static IServiceCollection AddOrderArchive(this IServiceCollection services, IConfiguration configuration)
     {
         services.AddWorkloadIdentity(configuration);
         ArchiveOptions.Add(services);
+        ArchiveSigningOptions.Add(services);
+        services.TryAddSingleton(TimeProvider.System);
+        services.AddSingleton<ArchiveSigner>();
 
         switch (configuration.GetValue<ArchiveProvider?>($"{ArchiveOptions.SectionName}:Provider"))
         {
