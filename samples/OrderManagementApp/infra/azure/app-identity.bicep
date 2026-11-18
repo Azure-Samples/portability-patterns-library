@@ -156,8 +156,11 @@ var api = {
   ]
 }
 
+// Subscription deployment names are location-bound; isolate environments and regions.
+var appDeploymentSuffix = uniqueString(deployment().name, deployment().location)
+
 module apiApp 'app-registration.bicep' = {
-  name: 'oms-api-app'
+  name: 'oms-api-app-${appDeploymentSuffix}'
   params: {
     uniqueName: apiAppName
     displayName: apiAppName
@@ -177,7 +180,7 @@ resource apiServicePrincipal 'Microsoft.Graph/servicePrincipals@v1.0' = {
 }
 
 module spaApp 'app-registration.bicep' = {
-  name: 'oms-spa-app'
+  name: 'oms-spa-app-${appDeploymentSuffix}'
   params: {
     uniqueName: spaAppName
     displayName: spaAppName
@@ -207,7 +210,7 @@ resource spaServicePrincipal 'Microsoft.Graph/servicePrincipals@v1.0' = {
 // An app can't refer to its own appId when it's created, so the identifier URI api://<appId> and the
 // pre-authorization of the browser app are added in a second pass.
 module apiAppLinks 'app-registration.bicep' = {
-  name: 'oms-api-app-links'
+  name: 'oms-api-app-links-${appDeploymentSuffix}'
   params: {
     uniqueName: apiAppName
     displayName: apiAppName
@@ -241,7 +244,7 @@ resource assignments 'Microsoft.Graph/appRoleAssignedTo@v1.0' = [for assignment 
 }]
 
 module inventoryApp 'app-registration.bicep' = {
-  name: 'oms-inventory-app'
+  name: 'oms-inventory-app-${appDeploymentSuffix}'
   params: {
     uniqueName: inventoryAppName
     displayName: inventoryAppName
@@ -261,7 +264,7 @@ resource inventoryServicePrincipal 'Microsoft.Graph/servicePrincipals@v1.0' = {
 }
 
 module inventoryAppLinks 'app-registration.bicep' = {
-  name: 'oms-inventory-app-links'
+  name: 'oms-inventory-app-links-${appDeploymentSuffix}'
   params: {
     uniqueName: inventoryAppName
     displayName: inventoryAppName

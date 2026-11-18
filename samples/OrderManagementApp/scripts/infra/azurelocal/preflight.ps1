@@ -171,7 +171,8 @@ if ($signedIn) {
     else { Add-Result Azure 'Virtual switch' FAIL 'set VmSwitchName, or SwitchSourceLogicalNetworkName to an existing logical network, in the Cluster settings' }
 
     Invoke-AzureCheck 'Registry' {
-        $registry = Invoke-OmsAzShow (@('acr', 'show', '--name', $s.RegistryName, '--output', 'json') + $sub) | ConvertFrom-Json
+        # Listed rather than shown: 'az acr show' exits 1, not 3, for a registry that doesn't exist.
+        $registry = Invoke-OmsAzShow (@('acr', 'list', '--query', "[?name=='$($s.RegistryName)'] | [0]", '--output', 'json') + $sub) | ConvertFrom-Json
         if ($registry -and $registry.sku.name -ne 'Premium') { Add-Result Azure 'Registry' FAIL "$($s.RegistryName) is $($registry.sku.name); a connected registry needs Premium" }
         elseif ($registry) { Add-Result Azure 'Registry' PASS "$($s.RegistryName) (exists, Premium)" }
         else {
