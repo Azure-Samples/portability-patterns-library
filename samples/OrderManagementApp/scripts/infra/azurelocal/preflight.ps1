@@ -154,6 +154,15 @@ if ($signedIn) {
             $bridge = Invoke-OmsAzShow (@('resource', 'show', '--ids', $customLocation.properties.hostResourceId, '--output', 'json') + $sub) | ConvertFrom-Json
             if ($bridge.properties.status -eq 'Running') { Add-Result Azure 'Arc resource bridge' PASS $bridge.name }
             else { Add-Result Azure 'Arc resource bridge' FAIL "'$($customLocation.properties.hostResourceId)' is '$($bridge.properties.status)'; the instance must be connected to deploy" }
+
+            if ('Cluster' -notin $Skip -and -not $missingShared) {
+                Invoke-AzureCheck 'Kubernetes version' {
+                    $kubernetes = Resolve-OmsKubernetesVersion -SubscriptionId $s.SubscriptionId -ResourceGroup $s.ResourceGroup `
+                        -ClusterName $s.ClusterName -CustomLocationId $customLocation.id -KubernetesVersion $s.KubernetesVersion
+                    if ($kubernetes.Offered) { Add-Result Azure 'Kubernetes version' PASS "$($kubernetes.Version) ($($kubernetes.Reason))" }
+                    else { Add-Result Azure 'Kubernetes version' FAIL "the instance doesn't offer $($kubernetes.Version); it offers $($kubernetes.Ready -join ', '). Change KubernetesVersion in the Cluster settings, or leave it empty" }
+                }
+            }
         }
     }
 

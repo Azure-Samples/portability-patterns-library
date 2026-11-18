@@ -34,6 +34,10 @@ so two workers hold everything while the third is down. With `standard`, set `Cl
 `Standard_A4_v2` (8 GB). List your instance's sizes with
 `az aksarc vmsize list --custom-location <custom location ID>`.
 
+A new cluster gets the newest Kubernetes version your instance offers, and setup leaves an existing
+cluster's version as it is. To pin a version, or to upgrade, set `Cluster.KubernetesVersion` to one
+your instance offers: `az aksarc get-versions --custom-location <custom location ID>`.
+
 ## Network
 
 Ask your network team for these, on the same subnet as the Azure Local nodes. All addresses must be
