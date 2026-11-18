@@ -292,7 +292,12 @@ else {
     if ('ActiveDirectory' -notin $Skip) {
         $local = try { [Net.Dns]::GetHostAddresses($s.AdServer) | Where-Object AddressFamily -eq 'InterNetwork' | Select-Object -First 1 } catch { $null }
         if (-not $local) {
-            Add-Result Directory 'PowerShell remoting (5985)' FAIL "this machine doesn't resolve $($s.AdServer), which the ActiveDirectory step connects to; use a management machine that resolves the site's domain, or prepare the directory yourself and -Skip ActiveDirectory"
+            $domain = if ($s.AdDomain -and $s.AdDomain -notlike '<*') { $s.AdDomain } else { ($s.AdServer -split '\.', 2)[1] }
+            $fix = if ($resolved -and $dns -and $domain) {
+                "This machine doesn't use the site's DNS ($dns resolves it). Point this machine's DNS at $dns, or, in an elevated PowerShell, send only the site's domain there: Add-DnsClientNrptRule -Namespace '.$domain' -NameServers $dns"
+            }
+            else { "Use a management machine that resolves the site's domain" }
+            Add-Result Directory 'PowerShell remoting (5985)' FAIL "this machine doesn't resolve $($s.AdServer), which the ActiveDirectory step connects to. $fix. Or prepare the directory yourself and -Skip ActiveDirectory"
         }
         elseif (Test-TcpPort $local.IPAddressToString 5985) { Add-Result Directory 'PowerShell remoting (5985)' PASS "$($s.AdServer) -> $($local.IPAddressToString)" }
         else { Add-Result Directory 'PowerShell remoting (5985)' FAIL "no answer from $($s.AdServer) ($($local.IPAddressToString)); the ActiveDirectory step connects to it over PowerShell remoting" }

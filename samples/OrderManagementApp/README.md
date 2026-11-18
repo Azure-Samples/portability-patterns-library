@@ -88,7 +88,9 @@ All commands run from this folder, `samples/OrderManagementApp`.
   workers of 4 vCPUs and 16 GB each (8 GB with `Availability` `standard`), plus about 120 GB of
   storage (80 GB with `standard`).
 - A management machine on the site network, not an Azure Local node, with the same tools as for
-  Azure except azd. Microsoft recommends managing AKS on Azure Local from such a
+  Azure except azd. It must use the site's DNS, so it resolves the Active Directory domain:
+  `up.ps1` connects to the domain controller by name. Preflight tells you if it doesn't, and how to
+  fix it. Microsoft recommends managing AKS on Azure Local from such a
   [client machine](https://learn.microsoft.com/azure/aks-hybrid-edge/local/aks-create-clusters-cli#install-the-azure-cli-extension)
   rather than from the nodes.
 - Free addresses on the site network for the AKS cluster: its control plane, a pool for the nodes and a
