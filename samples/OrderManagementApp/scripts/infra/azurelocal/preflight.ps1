@@ -290,16 +290,34 @@ else {
     # The ActiveDirectory step runs ad-setup.ps1 on this machine, which reaches the controller by
     # name over PowerShell remoting (WinRM), so through this machine's own resolver.
     if ('ActiveDirectory' -notin $Skip) {
+        $domain = if ($s.AdDomain -and $s.AdDomain -notlike '<*') { $s.AdDomain } else { ($s.AdServer -split '\.', 2)[1] }
         $local = try { [Net.Dns]::GetHostAddresses($s.AdServer) | Where-Object AddressFamily -eq 'InterNetwork' | Select-Object -First 1 } catch { $null }
         if (-not $local) {
-            $domain = if ($s.AdDomain -and $s.AdDomain -notlike '<*') { $s.AdDomain } else { ($s.AdServer -split '\.', 2)[1] }
             $fix = if ($resolved -and $dns -and $domain) {
                 "This machine doesn't use the site's DNS ($dns resolves it). Point this machine's DNS at $dns, or, in an elevated PowerShell, send only the site's domain there: Add-DnsClientNrptRule -Namespace '.$domain' -NameServers $dns"
             }
             else { "Use a management machine that resolves the site's domain" }
             Add-Result Directory 'PowerShell remoting (5985)' FAIL "this machine doesn't resolve $($s.AdServer), which the ActiveDirectory step connects to. $fix. Or prepare the directory yourself and -Skip ActiveDirectory"
         }
-        elseif (Test-TcpPort $local.IPAddressToString 5985) { Add-Result Directory 'PowerShell remoting (5985)' PASS "$($s.AdServer) -> $($local.IPAddressToString)" }
+        elseif (Test-TcpPort $local.IPAddressToString 5985) {
+            Add-Result Directory 'PowerShell remoting (5985)' PASS "$($s.AdServer) -> $($local.IPAddressToString)"
+
+            # Outside the site's domain, ad-setup.ps1 signs in with Kerberos, so this machine must
+            # find the domain's KDC through DNS and reach it.
+            $computer = if ($IsWindows) { Get-CimInstance -ClassName Win32_ComputerSystem }
+            if (-not ($computer -and $computer.PartOfDomain -and $computer.Domain -eq $domain)) {
+                $kdc = $null
+                if (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue) {
+                    $kdc = Resolve-DnsName -Name "_kerberos._tcp.$domain" -Type SRV -DnsOnly -QuickTimeout -ErrorAction SilentlyContinue |
+                        Where-Object NameTarget | Select-Object -First 1 -ExpandProperty NameTarget
+                }
+                if (-not $kdc) {
+                    Add-Result Directory 'Kerberos (88)' FAIL "this machine isn't in '$domain', so the ActiveDirectory step signs in with Kerberos, but it can't find the domain's KDC (_kerberos._tcp.$domain); use the site's DNS"
+                }
+                elseif (Test-TcpPort $kdc 88) { Add-Result Directory 'Kerberos (88)' PASS "this machine isn't in '$domain'; the ActiveDirectory step signs in with Kerberos through $kdc" }
+                else { Add-Result Directory 'Kerberos (88)' FAIL "no answer from the domain's KDC $kdc on port 88, which the ActiveDirectory step signs in through from outside the domain" }
+            }
+        }
         else { Add-Result Directory 'PowerShell remoting (5985)' FAIL "no answer from $($s.AdServer) ($($local.IPAddressToString)); the ActiveDirectory step connects to it over PowerShell remoting" }
     }
 }

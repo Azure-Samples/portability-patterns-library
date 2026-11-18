@@ -147,6 +147,10 @@ function Invoke-Guest {
     )
 
     $connection = if ($ComputerName) { @{ ComputerName = $ComputerName } } else { @{ VMName = $VmName } }
+    # A machine outside the site's domain: its default sign-in falls back to NTLM, which remoting
+    # allows only to TrustedHosts. Kerberos authenticates both ends, so it needs no TrustedHosts,
+    # only the domain controller's name and the domain's KDC (port 88) reachable from here.
+    if ($ComputerName -and -not $script:inSiteDomain) { $connection.Authentication = 'Kerberos' }
     Invoke-Command @connection -Credential $Credential -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
 }
 
@@ -249,7 +253,12 @@ try {
     }
     $domainCredential = $DomainAdminCredential
 
-    Write-Host "==> Connecting to '$target' $(if ($ComputerName) { 'over PowerShell remoting' } else { 'over PowerShell Direct' })" -ForegroundColor Cyan
+    $computer = Get-CimInstance -ClassName Win32_ComputerSystem
+    $script:inSiteDomain = $computer.PartOfDomain -and $computer.Domain -eq $DomainName
+    $how = if (-not $ComputerName) { 'over PowerShell Direct' }
+    elseif ($script:inSiteDomain) { 'over PowerShell remoting' }
+    else { "over PowerShell remoting with Kerberos (this machine isn't in '$DomainName')" }
+    Write-Host "==> Connecting to '$target' $how" -ForegroundColor Cyan
     # NTLM falls back to the local SAM when the domain prefix does not resolve, so a credential
     # being accepted says nothing about the machine's role; the controller's own answer is
     # authoritative.
@@ -266,7 +275,10 @@ try {
         }
     }
     catch {
-        throw "Could not run commands on '$target' as '$($domainCredential.UserName)': $($_.Exception.Message)"
+        $hint = if ($ComputerName -and -not $script:inSiteDomain) {
+            " Kerberos from outside the domain needs the controller's full DNS name (not an IP address), the user as user@$DomainName, and the domain's KDC (port 88) reachable from here."
+        }
+        throw "Could not run commands on '$target' as '$($domainCredential.UserName)': $($_.Exception.Message)$hint"
     }
     if ($controller.DomainRole -lt 4) {
         throw "'$target' is not a domain controller (DomainRole $($controller.DomainRole))."
