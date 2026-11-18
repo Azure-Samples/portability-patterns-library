@@ -238,6 +238,7 @@ remove them by hand if you no longer need them.
 |---|---|
 | [Move your app in five steps](./docs/move-your-app.md) | resource types, connections, Recipes, Recipe Packs, environments |
 | [How authentication works](./docs/authentication.md) | user sign-in, the app's access to its services, connecting Active Directory |
+| [Azure deployment troubleshooting](./docs/troubleshooting.md) | deployment phases, region and size restrictions, certificates, optional diagnostics and recovery |
 | [Running on Azure Local](./docs/run-on-azure-local.md) | running without the link to Azure, availability, rotating credentials |
 | [Operators on Azure Local](./infra/azurelocal/operators/README.md) | replication, failover and backups |
 | [Monitoring on Azure Local](./infra/azurelocal/observability/README.md) | metrics, logs, traces and alerts |
