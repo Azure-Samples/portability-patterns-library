@@ -34,6 +34,10 @@
     If you'd rather not run it, make the same objects with the Active Directory PowerShell module
     instead; docs/authentication.md lists them under "Connect your Active Directory".
 
+    setup-platform.ps1 (and so up.ps1) runs it as the ActiveDirectory step, right after it creates
+    the cluster, with the domain controller from the Keycloak settings: AdServer, AdDomain and
+    AdOuName. Run it yourself to change the directory later.
+
     The script is safe to re-run. Accounts that already exist keep their passwords, so Keycloak's
     directory sign-in keeps working; pass -ResetBindPassword to give the bind account a new one, then
     run keycloak.ps1, which applies it to Keycloak. The bind account's limits cover the containers
@@ -78,9 +82,10 @@
 [CmdletBinding(DefaultParameterSetName = 'Remoting')]
 param(
     [Parameter(Mandatory = $true, ParameterSetName = 'Direct')][string]$VmName,
-    [Parameter(Mandatory = $true, ParameterSetName = 'Remoting')][string]$ComputerName,
-    [Parameter(Mandatory = $true)][string]$DomainName,
-    [string]$OuName = 'OMS',
+    # The aliases are the Keycloak settings' names, which setup-platform.ps1 passes.
+    [Parameter(Mandatory = $true, ParameterSetName = 'Remoting')][Alias('AdServer')][string]$ComputerName,
+    [Parameter(Mandatory = $true)][Alias('AdDomain')][string]$DomainName,
+    [Alias('AdOuName')][string]$OuName = 'OMS',
 
     [pscredential]$DomainAdminCredential,
 
