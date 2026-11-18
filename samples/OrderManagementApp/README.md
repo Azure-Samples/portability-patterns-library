@@ -91,8 +91,10 @@ All commands run from this folder, `samples/OrderManagementApp`.
   rather than from the nodes.
 - Free addresses on the site network for the AKS cluster: its control plane, a pool for the nodes and a
   small range for the load balancer.
-- The site's Active Directory, with the app's groups and a bind account for Keycloak. See
-  [Connect your Active Directory](./docs/authentication.md#connect-your-active-directory).
+- The site's Active Directory, and a domain administrator: `up.ps1` asks for one to add the app's
+  groups and a bind account for Keycloak, over PowerShell remoting from the management machine. See
+  [Connect your Active Directory](./docs/authentication.md#connect-your-active-directory), which also
+  covers preparing the directory yourself.
 - Contributor and User Access Administrator on the subscription, and the right to create groups in
   Entra ID (or an existing group for the cluster's administrators).
 
@@ -176,7 +178,9 @@ says where to find each value. Then run:
 ./scripts/up.ps1 -Target AzureLocal
 ```
 
-It checks the site, creates the AKS cluster and everything the app needs on it, and deploys the app.
+It checks the site, creates the AKS cluster, asks for a domain administrator to add the app's groups
+and Keycloak's bind account to Active Directory, sets up everything the app needs on the cluster,
+and deploys the app.
 Open the address it prints and sign in with an AD account in one of the app's groups. The first
 time, on a machine outside the domain, trust the site CA with the command it printed.
 

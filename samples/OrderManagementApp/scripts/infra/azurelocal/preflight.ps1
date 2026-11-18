@@ -11,7 +11,8 @@
       Azure        signed in, the subscription, resource providers, the Azure Local instance's
                    custom location and Arc resource bridge, the virtual switch
       Network      addresses for the control plane, node pool and load balancer fit together
-      Directory    the domain controller resolves through the site DNS and answers on LDAPS
+      Directory    the domain controller resolves through the site DNS and answers on LDAPS; for
+                   the ActiveDirectory step, this machine reaches it over PowerShell remoting
       Cluster      if it already exists: reachable, nodes ready, the connected registry's storage
                    class and ClusterIP, the AD Secrets Keycloak needs, a storage class for the
                    observability volumes
@@ -275,10 +276,24 @@ else {
     $ldaps = Test-TcpPort $ldapsTarget 636
     if ($ldaps) { Add-Result Directory 'LDAPS (636)' PASS }
     else { Add-Result Directory 'LDAPS (636)' WARN "no answer from this machine; Keycloak in the cluster needs it" }
+
+    # The ActiveDirectory step runs ad-setup.ps1 on this machine, which reaches the controller by
+    # name over PowerShell remoting (WinRM), so through this machine's own resolver.
+    if ('ActiveDirectory' -notin $Skip) {
+        $local = try { [Net.Dns]::GetHostAddresses($s.AdServer) | Where-Object AddressFamily -eq 'InterNetwork' | Select-Object -First 1 } catch { $null }
+        if (-not $local) {
+            Add-Result Directory 'PowerShell remoting (5985)' FAIL "this machine doesn't resolve $($s.AdServer), which the ActiveDirectory step connects to; use a management machine that resolves the site's domain, or prepare the directory yourself and -Skip ActiveDirectory"
+        }
+        elseif (Test-TcpPort $local.IPAddressToString 5985) { Add-Result Directory 'PowerShell remoting (5985)' PASS "$($s.AdServer) -> $($local.IPAddressToString)" }
+        else { Add-Result Directory 'PowerShell remoting (5985)' FAIL "no answer from $($s.AdServer) ($($local.IPAddressToString)); the ActiveDirectory step connects to it over PowerShell remoting" }
+    }
 }
 
 # Keycloak takes the directory's CA from this file the first time, so a wrong path only shows there.
-if ($s.AdCaCertificatePath -and $s.AdCaCertificatePath -notlike '<*') {
+if ('ActiveDirectory' -notin $Skip) {
+    Add-Result Directory 'Directory CA certificate' PASS 'the ActiveDirectory step hands it to the cluster'
+}
+elseif ($s.AdCaCertificatePath -and $s.AdCaCertificatePath -notlike '<*') {
     if ((Test-Path $s.AdCaCertificatePath) -and ((Get-Content $s.AdCaCertificatePath -Raw) -match '-----BEGIN CERTIFICATE-----')) {
         Add-Result Directory 'Directory CA certificate' PASS $s.AdCaCertificatePath
     }
@@ -353,7 +368,9 @@ else {
                     Add-Result Cluster "Secret identity/$secret" PASS
                 }
                 else {
-                    $how = if ($secret -eq 'oms-ad-bind') { "the Keycloak step asks for the bind account's password" } else { 'the Keycloak step reads AdCaCertificatePath' }
+                    $how = if ('ActiveDirectory' -notin $Skip) { 'the ActiveDirectory step creates it' }
+                    elseif ($secret -eq 'oms-ad-bind') { "the Keycloak step asks for the bind account's password" }
+                    else { 'the Keycloak step reads AdCaCertificatePath' }
                     Add-Result Cluster "Secret identity/$secret" PASS "not there yet; $how"
                 }
             }
