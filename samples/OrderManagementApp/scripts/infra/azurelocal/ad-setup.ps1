@@ -489,15 +489,17 @@ keycloak.ps1 ask for the current one.
     Write-Host "Search base   : $($created.BaseDn)"
     Write-Host "App OU        : $($created.OuDn)"
     Write-Host "Bind account  : $($created.BindUpn)"
-    Write-Host "Sample user   : $($created.DemoUpn) (places orders)"
-    Write-Host "Inventory admin: $($created.InventoryAdminUpn) (restocks products)"
+    # Keycloak's user name is the account name (sAMAccountName); the sample accounts have no email
+    # address, so their name@domain form doesn't sign in.
+    Write-Host "Sample user   : $DemoUserName (places orders); sign in with this name, not $($created.DemoUpn)"
+    Write-Host "Inventory admin: $InventoryAdminUserName (restocks products)"
     Write-Host "Realm admins  : oms-identity-admins (add the people who administer Keycloak's 'oms' realm)"
     if ($caCertPem) { Write-Host "LDAP          : ldaps://$($created.DcFqdn):636" }
     else { Write-Host "LDAP          : ldap://$($created.DcFqdn):389 (no TLS)" -ForegroundColor Yellow }
     Write-Host ''
     Write-Host 'The generated passwords were written to the cluster, never to this console.' -ForegroundColor DarkGray
-    Write-Host "Read one back (base64) with:" -ForegroundColor DarkGray
-    Write-Host "  kubectl --context $KubeContext -n $SecretNamespace get secret $SecretName -o jsonpath='{.data.demo-password}'"
+    Write-Host "Copy the sample user's to the clipboard (inventory-admin-password for the inventory admin's) with:" -ForegroundColor DarkGray
+    Write-Host "  [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((kubectl --context $KubeContext -n $SecretNamespace get secret $SecretName -o jsonpath='{.data.demo-password}'))) | Set-Clipboard"
     Write-Host 'Next, stand up Keycloak (cluster nodes already resolve the domain through this controller):' -ForegroundColor Yellow
     Write-Host "  ./scripts/infra/azurelocal/keycloak.ps1 -AdServer $($created.DcFqdn) -AdDomain $($created.DnsRoot) -SpaOrigin https://<app address> -KubeContext $KubeContext -AllowInClusterIssuer ..."
 }

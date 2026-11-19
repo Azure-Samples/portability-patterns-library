@@ -748,6 +748,7 @@ try {
     Write-Host "`nDeployed to Azure Local (AKS Arc)." -ForegroundColor Green
     if ($ingressAddress) {
         Write-Host "Open the orders app: https://$ingressAddress"
+        Write-Host "Sign in with the account name of an AD user in the app's groups, such as oms-demo, not name@domain."
     }
     else {
         Write-Host "Open the orders app (MSAL needs a secure context, so it is served on localhost):"

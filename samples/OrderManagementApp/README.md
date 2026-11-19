@@ -186,8 +186,11 @@ says where to find each value. Then run:
 It checks the site, creates the AKS cluster, asks for a domain administrator to add the app's groups
 and Keycloak's bind account to Active Directory, sets up everything the app needs on the cluster,
 and deploys the app.
-Open the address it prints and sign in with an AD account in one of the app's groups. The first
-time, on a machine outside the domain, trust the site CA with the command it printed.
+Open the address it prints and sign in with the account name of an AD user in one of the app's
+groups, such as the sample user `oms-demo` (the name, not `oms-demo@<domain>`; a user whose AD
+account has an email address can also use that). The Active Directory step printed how to copy the
+sample users' passwords. The first time, on a machine outside the domain, trust the site CA with
+the command it printed.
 
 To deploy a new version later, run `./scripts/deploy.ps1 -Target AzureLocal`.
 
