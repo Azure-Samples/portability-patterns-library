@@ -20,7 +20,20 @@ function Invoke-OmsAzShow {
 # The Kubernetes version an AKS Arc cluster gets, and why. A version given in the settings is used
 # as is; it is how an existing cluster is upgraded. Otherwise an existing cluster keeps the version
 # it runs, so re-running setup never upgrades it, and a new one gets the newest generally available
-# version the Azure Local instance offers for Linux nodes. Throws when the instance offers none.
+# version the Azure Local instance offers for Linux nodes, up to $OmsMaxKubernetesMinor. Throws when
+# the instance offers none. Supported says whether the connected registry works on the version.
+#
+# The connected registry's Arc extension (1.5.1) makes the nodes trust its certificate in
+# containerd 1.x's configuration format. Nodes from Kubernetes 1.35 run containerd 2, which ignores
+# it, so every pull from the registry fails with "certificate signed by unknown authority". Raise
+# this once the extension supports containerd 2.
+$script:OmsMaxKubernetesMinor = [version]'1.33'
+
+function Test-OmsKubernetesMinor([string]$Version) {
+    $v = [version]$Version
+    [version]"$($v.Major).$($v.Minor)" -le $script:OmsMaxKubernetesMinor
+}
+
 function Resolve-OmsKubernetesVersion {
     param(
         [Parameter(Mandatory = $true)][string]$SubscriptionId,
@@ -45,15 +58,20 @@ function Resolve-OmsKubernetesVersion {
 
     if (-not [string]::IsNullOrWhiteSpace($KubernetesVersion)) {
         # The version a cluster already runs is always fine, even once the instance stops offering it.
-        return [pscustomobject]@{ Version = $KubernetesVersion; Reason = 'from the settings'; Offered = $KubernetesVersion -in $ready -or $KubernetesVersion -eq $current; Ready = $ready }
+        return [pscustomobject]@{ Version = $KubernetesVersion; Reason = 'from the settings'; Offered = $KubernetesVersion -in $ready -or $KubernetesVersion -eq $current
+            Supported = (Test-OmsKubernetesMinor $KubernetesVersion); Ready = $ready }
     }
     if ($current) {
-        return [pscustomobject]@{ Version = $current; Reason = 'the version the cluster runs'; Offered = $true; Ready = $ready }
+        return [pscustomobject]@{ Version = $current; Reason = 'the version the cluster runs'; Offered = $true; Supported = (Test-OmsKubernetesMinor $current); Ready = $ready }
     }
 
     if (-not $ready) { throw "The Azure Local instance offers no generally available Kubernetes version for Linux nodes ($CustomLocationId)." }
-    $newest = $ready | Sort-Object { [version]$_ } | Select-Object -Last 1
-    [pscustomobject]@{ Version = $newest; Reason = 'the newest the instance offers'; Offered = $true; Ready = $ready }
+    $usable = @($ready | Where-Object { Test-OmsKubernetesMinor $_ })
+    if (-not $usable) {
+        throw "The Azure Local instance offers no Kubernetes $script:OmsMaxKubernetesMinor or earlier for Linux nodes ($($ready -join ', ')); the connected registry doesn't work on later versions yet."
+    }
+    $newest = $usable | Sort-Object { [version]$_ } | Select-Object -Last 1
+    [pscustomobject]@{ Version = $newest; Reason = "the newest $script:OmsMaxKubernetesMinor.x the instance offers"; Offered = $true; Supported = $true; Ready = $ready }
 }
 
 # Creates Key Vault secret archive-signing-key, the key the order processor signs archived orders

@@ -221,6 +221,16 @@ do {
 } while ((Get-Date) -lt $deadline)
 if ($state -ne 'Online') { throw "Connected registry is '$state' after 15 minutes. Check the pods in namespace '$ExtensionNamespace'." }
 
+# The extension makes the nodes trust the registry's certificate only in containerd 1.x's format
+# (see Resolve-OmsKubernetesVersion in scripts/lib/azure.ps1). Check what the nodes really run, so
+# a cluster that can't pull fails here rather than at the first image pull.
+$runtimes = kubectl get nodes --context $KubeContext --output jsonpath='{range .items[*]}{.metadata.name}={.status.nodeInfo.containerRuntimeVersion}{"\n"}{end}'
+if ($LASTEXITCODE -ne 0) { throw 'Reading the nodes failed.' }
+$containerd2 = @($runtimes | Where-Object { $_ -match '=containerd://(\d+)\.' -and [int]$Matches[1] -ge 2 })
+if ($containerd2) {
+    throw "These nodes run containerd 2, which the connected registry's extension doesn't configure, so they can't pull from it: $($containerd2 -join ', '). Use Kubernetes 1.33.x (docs/azure-local-settings.md)."
+}
+
 # ------------------------------------------------------------------------------------------------
 # Pull secrets. The client token password lives only in the cluster, never in the repository, a
 # file or a command line. It is only issued for a new client token or on request, since a new one

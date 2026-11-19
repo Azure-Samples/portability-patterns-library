@@ -34,9 +34,13 @@ so two workers hold everything while the third is down. With `standard`, set `Cl
 `Standard_A4_v2` (8 GB). List your instance's sizes with
 `az aksarc vmsize list --custom-location <custom location ID>`.
 
-A new cluster gets the newest Kubernetes version your instance offers, and setup leaves an existing
-cluster's version as it is. To pin a version, or to upgrade, set `Cluster.KubernetesVersion` to one
-your instance offers: `az aksarc get-versions --custom-location <custom location ID>`.
+A new cluster gets the newest Kubernetes 1.33 version your instance offers, and setup leaves an
+existing cluster's version as it is. To pin a version, or to upgrade, set `Cluster.KubernetesVersion`
+to one your instance offers: `az aksarc get-versions --custom-location <custom location ID>`.
+
+Stay on 1.33 for now. On 1.35, AKS on Azure Local nodes run containerd 2, and the connected
+registry's extension doesn't yet set up their trust of its certificate, so the nodes can't pull
+images from it; 1.34 wasn't tested. Preflight fails on a later version.
 
 ## Network
 
