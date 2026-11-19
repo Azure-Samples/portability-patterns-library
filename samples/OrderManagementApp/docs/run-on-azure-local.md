@@ -39,7 +39,7 @@ The order archive's signing key is the one secret that comes from Azure: Key Vau
 `archive-signing-key`, which the Key Vault Secret Store extension copies to Secret `archive-signing`
 while the site is connected. The processor keeps signing with that copy when the link is down. To
 rotate it, set a new version in the vault; it reaches the site within the extension's poll interval
-(an hour by default) and the processor picks it up within a minute. See
+(an hour by default) and the processor picks it up a few minutes later. See
 [key-vault-sync.yaml](../infra/azurelocal/key-vault-sync.yaml) to bring another secret from Azure.
 
 ## For production

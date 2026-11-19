@@ -286,7 +286,7 @@ try {
     Write-Host "Load balancer    : $LoadBalancerAddresses"
     Write-Host "Credentials      : $kubeconfigFile, context $KubeContext (admin certificate, works offline)"
 
-    Write-Host "`nNext steps:" -ForegroundColor Yellow
+    Write-Host "`nNext steps, if you run the steps one by one (up.ps1 and setup-platform.ps1 go on by themselves):" -ForegroundColor Yellow
     Write-Host "  1. ./scripts/infra/azurelocal/import-images.ps1 -Mode Mirror -Registry $registryLoginServer"
     Write-Host "  2. ./scripts/infra/azurelocal/connected-registry.ps1 -RegistryName $RegistryName -ResourceGroup $ResourceGroup -ClusterName $ClusterName -KubeContext $KubeContext -ServiceClusterIp <address>"
     Write-Host "  3. The remaining steps: ./scripts/setup-platform.ps1 -Target AzureLocal -Skip Cluster, Images, Registry"

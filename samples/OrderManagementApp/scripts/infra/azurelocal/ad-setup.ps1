@@ -247,38 +247,50 @@ try {
         }
     }
 
-    if (-not $DomainAdminCredential) {
-        $DomainAdminCredential = Get-Credential -UserName "Administrator@$DomainName" `
-            -Message "Domain administrator of '$DomainName' on '$target'"
-    }
-    $domainCredential = $DomainAdminCredential
-
-    $computer = Get-CimInstance -ClassName Win32_ComputerSystem
-    $script:inSiteDomain = $computer.PartOfDomain -and $computer.Domain -eq $DomainName
+    $computer = if ($IsWindows) { Get-CimInstance -ClassName Win32_ComputerSystem }
+    $script:inSiteDomain = $computer -and $computer.PartOfDomain -and $computer.Domain -eq $DomainName
     $how = if (-not $ComputerName) { 'over PowerShell Direct' }
     elseif ($script:inSiteDomain) { 'over PowerShell remoting' }
     else { "over PowerShell remoting with Kerberos (this machine isn't in '$DomainName')" }
-    Write-Host "==> Connecting to '$target' $how" -ForegroundColor Cyan
+
     # NTLM falls back to the local SAM when the domain prefix does not resolve, so a credential
     # being accepted says nothing about the machine's role; the controller's own answer is
-    # authoritative.
-    try {
-        $controller = Invoke-Guest -Credential $domainCredential -ScriptBlock {
-            $ErrorActionPreference = 'Stop'
-            $role = [int](Get-CimInstance -ClassName Win32_ComputerSystem).DomainRole
-            $dnsRoot = $null
-            if ($role -ge 4) {
-                Import-Module ActiveDirectory
-                $dnsRoot = (Get-ADDomain).DNSRoot
+    # authoritative. A typed password that's empty or rejected is asked for again, up to 3 times.
+    $prompted = -not $DomainAdminCredential
+    for ($attempt = 1; ; $attempt++) {
+        if ($prompted) {
+            $DomainAdminCredential = Get-Credential -UserName "Administrator@$DomainName" `
+                -Message "Domain administrator of '$DomainName' on '$target'"
+            if (-not $DomainAdminCredential) { throw 'No domain administrator given.' }
+        }
+        $domainCredential = $DomainAdminCredential
+        if ($domainCredential.Password.Length -eq 0) {
+            if ($prompted -and $attempt -lt 3) { Write-Host '    The password is empty; enter it again.' -ForegroundColor Yellow; continue }
+            throw "The password for '$($domainCredential.UserName)' is empty."
+        }
+
+        Write-Host "==> Connecting to '$target' $how" -ForegroundColor Cyan
+        try {
+            $controller = Invoke-Guest -Credential $domainCredential -ScriptBlock {
+                $ErrorActionPreference = 'Stop'
+                $role = [int](Get-CimInstance -ClassName Win32_ComputerSystem).DomainRole
+                $dnsRoot = $null
+                if ($role -ge 4) {
+                    Import-Module ActiveDirectory
+                    $dnsRoot = (Get-ADDomain).DNSRoot
+                }
+                [pscustomobject]@{ DomainRole = $role; DnsRoot = $dnsRoot }
             }
-            [pscustomobject]@{ DomainRole = $role; DnsRoot = $dnsRoot }
+            break
         }
-    }
-    catch {
-        $hint = if ($ComputerName -and -not $script:inSiteDomain) {
-            " Kerberos from outside the domain needs the controller's full DNS name (not an IP address), the user as user@$DomainName, and the domain's KDC (port 88) reachable from here."
+        catch {
+            $message = "Could not run commands on '$target' as '$($domainCredential.UserName)': $($_.Exception.Message)"
+            if ($prompted -and $attempt -lt 3) { Write-Host "    $message`n    Check the user name and password, and enter them again." -ForegroundColor Yellow; continue }
+            $hint = if ($ComputerName -and -not $script:inSiteDomain) {
+                " Kerberos from outside the domain needs the controller's full DNS name (not an IP address), the user as user@$DomainName, and the domain's KDC (port 88) reachable from here."
+            }
+            throw "$message$hint"
         }
-        throw "Could not run commands on '$target' as '$($domainCredential.UserName)': $($_.Exception.Message)$hint"
     }
     if ($controller.DomainRole -lt 4) {
         throw "'$target' is not a domain controller (DomainRole $($controller.DomainRole))."
@@ -319,7 +331,11 @@ try {
                         -ValidityPeriod Years -ValidityPeriodUnits 10 -Force | Out-Null
                 }
                 catch [Microsoft.CertificateServices.Deployment.Common.CA.CertificationAuthoritySetupException] {
-                    # Already configured; a re-run should not start over.
+                    # Fine if a CA got configured after all; otherwise, say why it wasn't, for
+                    # example a key left by a CA removed earlier.
+                    if (-not (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\CertSvc\Configuration' -Name Active -ErrorAction SilentlyContinue).Active) {
+                        throw "Setting up the certificate authority '$caName' failed: $($_.Exception.Message)"
+                    }
                 }
             }
 

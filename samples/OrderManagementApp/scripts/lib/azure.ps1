@@ -90,6 +90,7 @@ function Initialize-OmsArchiveSigningKey {
     }
     finally { Remove-Item $keyFile -ErrorAction SilentlyContinue }
 }
+
 # Object ID of the account the Azure CLI is signed in as: a user, or a service principal such as a
 # pipeline's. Scripts give it the rights they then use themselves, for example Key Vault Secrets Officer.
 function Get-OmsCallerObjectId {

@@ -24,9 +24,7 @@
          pulls from the registry, and the registry CA as ConfigMap '<CaConfigMapName>' in the
          application namespace for deploy.ps1 to hand to the Radius control plane.
       4. When the nodes run containerd 2, turns the extension's node configuration off, since it
-         breaks containerd 2's, and applies infra/azurelocal/registry-trust.yaml instead: on one
-         node first, then on the rest. Then every worker pulls an image from the registry, to prove
-         it trusts it.
+         breaks containerd 2's, and applies infra/azurelocal/registry-trust.yaml instead.
 
     -Repositories, plus every Azure Local Recipe under recipes/, is the complete list the connected
     registry syncs: repositories left out are removed from its scope.
@@ -73,9 +71,6 @@ param(
     [string]$PullSecretName = 'azurelocal-registry',
     [string]$CaConfigMapName = 'azurelocal-registry-ca',
     [string]$ApplicationNamespace = 'oms-azurelocal',
-    # Pulled from the connected registry on every worker to prove the nodes trust it: oras, which
-    # it syncs for deploy/azurelocal.ps1 anyway.
-    [string]$PullTestImage = 'oras-project/oras:v1.3.6',
     # Namespaces that pull from the connected registry, besides the application's: the platform's.
     # With -Availability high, the operators' namespaces too.
     [string[]]$PullSecretNamespaces = @('identity', 'radius-system', 'ingress-nginx', 'observability', 'object-store'),
@@ -269,25 +264,24 @@ if ($LASTEXITCODE -ne 0) {
 
 # ------------------------------------------------------------------------------------------------
 # Pull secrets. The client token password lives only in the cluster, never in the repository, a
-# file or a command line. It is only issued for a new client token or on request, since a new one
-# replaces the password pods use; otherwise the one already in the cluster stays.
+# file or a command line. It is only issued for a new client token, for a cluster that has none of
+# it yet (an earlier run stopped before writing it), or on request, since a new one replaces the
+# password pods use; otherwise the one already in the cluster stays.
 # ------------------------------------------------------------------------------------------------
 Write-Host "==> Ensuring image pull secret '$PullSecretName'" -ForegroundColor Cyan
 $clientPassword = $null
-if ($clientTokenIsNew -or $NewPullCredential) {
+$dockerConfig = Get-OmsSecretValue -KubeContext $KubeContext -Namespace $ApplicationNamespace -Name $PullSecretName -Key '.dockerconfigjson'
+if ($clientTokenIsNew -or $NewPullCredential -or -not $dockerConfig) {
     Write-Host "    issuing a new pull credential" -ForegroundColor DarkGray
     $clientPassword = az acr token credential generate --name $ClientTokenName --registry $RegistryName `
         --password1 --query 'passwords[0].value' --output tsv
     if ($LASTEXITCODE -ne 0 -or -not $clientPassword) { throw 'Generating the client token password failed.' }
 }
 else {
-    $dockerConfig = Get-OmsSecretValue -KubeContext $KubeContext -Namespace $ApplicationNamespace -Name $PullSecretName -Key '.dockerconfigjson'
-    if ($dockerConfig) {
-        $auth = ($dockerConfig | ConvertFrom-Json).auths.$ServiceClusterIp
-        if ($auth -and $auth.username -eq $ClientTokenName) { $clientPassword = $auth.password }
-    }
+    $auth = ($dockerConfig | ConvertFrom-Json).auths.$ServiceClusterIp
+    if ($auth -and $auth.username -eq $ClientTokenName) { $clientPassword = $auth.password }
     if (-not $clientPassword) {
-        throw "The client token exists but the cluster has no '$PullSecretName' for it. Run this again with -NewPullCredential."
+        throw "Secret '$ApplicationNamespace/$PullSecretName' has no credential of client token '$ClientTokenName' for $ServiceClusterIp. Run this again with -NewPullCredential (with up.ps1: Registry.NewPullCredential true in scripts/settings.json, for one run)."
     }
 }
 
@@ -325,90 +319,10 @@ if (-not $caPem) { throw "No CA in Secret '$ExtensionNamespace/$CaSecretName'. C
 if ($LASTEXITCODE -ne 0) { throw "Writing ConfigMap '$CaConfigMapName' failed." }
 
 # ------------------------------------------------------------------------------------------------
-# Node trust. With containerd 1.x the extension makes the nodes trust the registry; with
-# containerd 2, infra/azurelocal/registry-trust.yaml does, after the extension's node
-# configurator, which would undo it, has stopped. The first time, it goes on one node, which then
-# pulls from the registry, before the rest. Then every worker pulls from the registry, either way.
+# Node trust. With containerd 1.x the extension makes the nodes trust the registry. With
+# containerd 2, infra/azurelocal/registry-trust.yaml does, once the extension's node configurator,
+# which would undo it, has stopped.
 # ------------------------------------------------------------------------------------------------
-$workers = @((Invoke-Checked 'reading the worker nodes' {
-            kubectl get nodes --context $KubeContext --selector '!node-role.kubernetes.io/control-plane' --output jsonpath='{.items[*].metadata.name}'
-        }) -split ' ' | Where-Object { $_ } | Sort-Object)
-if (-not $workers) { throw "The cluster has no worker nodes." }
-
-# Starts a pod on each node that runs an image from the registry, and returns once each has pulled
-# it. A certificate the node doesn't trust stops the script; anything else, such as an image the
-# registry hasn't synced yet or a registry still starting, is waited for.
-function Test-RegistryPull([string[]]$Nodes) {
-    Write-Host "==> Pulling $PullTestImage from the registry on $($Nodes -join ', ')" -ForegroundColor Cyan
-    $pods = @{}
-    foreach ($node in $Nodes) {
-        $podName = "oms-registry-pull-$node"
-        $pods[$node] = $podName
-        kubectl delete pod $podName --namespace $ApplicationNamespace --context $KubeContext --ignore-not-found --wait=true | Out-Null
-        @{
-            apiVersion = 'v1'
-            kind       = 'Pod'
-            metadata   = @{ name = $podName; namespace = $ApplicationNamespace }
-            spec       = @{
-                nodeName         = $node
-                restartPolicy    = 'Never'
-                imagePullSecrets = @(@{ name = $PullSecretName })
-                securityContext  = @{ runAsNonRoot = $true; runAsUser = 65534; runAsGroup = 65534; seccompProfile = @{ type = 'RuntimeDefault' } }
-                containers       = @(@{
-                        name            = 'pull'
-                        image           = "$ServiceClusterIp/$PullTestImage"
-                        command         = @('oras', 'version')
-                        securityContext = @{ allowPrivilegeEscalation = $false; readOnlyRootFilesystem = $true; capabilities = @{ drop = @('ALL') } }
-                    })
-            }
-        } | ConvertTo-Json -Depth 10 | kubectl apply --context $KubeContext -f - | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Creating pod '$podName' failed." }
-    }
-    try {
-        $deadline = (Get-Date).AddMinutes(15)
-        $pending = @($Nodes)
-        $lastError = @{}
-        while ($pending) {
-            foreach ($node in @($pending)) {
-                $pod = kubectl get pod $pods[$node] --namespace $ApplicationNamespace --context $KubeContext --output json | ConvertFrom-Json
-                $waiting = $pod.status.containerStatuses | ForEach-Object { $_.state.waiting } | Select-Object -First 1
-                if ($pod.status.phase -in 'Succeeded', 'Failed', 'Running') {
-                    Write-Host "    $node pulled it" -ForegroundColor DarkGray
-                    $pending = @($pending | Where-Object { $_ -ne $node })
-                }
-                elseif ($waiting.message -match 'x509|certificate') {
-                    throw "Node '$node' doesn't trust the connected registry's certificate: $($waiting.message)"
-                }
-                elseif ($waiting.message) { $lastError[$node] = $waiting.message }
-            }
-            if (-not $pending) { break }
-            if ((Get-Date) -gt $deadline) {
-                throw "These nodes didn't pull $PullTestImage from the connected registry within 15 minutes:`n$(($pending | ForEach-Object { "  ${_}: $($lastError[$_])" }) -join "`n")"
-            }
-            Start-Sleep -Seconds 15
-        }
-    }
-    finally {
-        foreach ($podName in $pods.Values) {
-            kubectl delete pod $podName --namespace $ApplicationNamespace --context $KubeContext --ignore-not-found --wait=false | Out-Null
-        }
-    }
-}
-
-# Applies registry-trust.yaml on the nodes $NodeSelector picks, and waits until each is configured.
-$trustManifest = Get-Content (Join-Path $repoRoot 'infra/azurelocal/registry-trust.yaml') -Raw
-function Install-RegistryTrust([string]$NodeSelector, [string]$Nodes) {
-    $trustManifest.Replace('${NAMESPACE}', $ExtensionNamespace).Replace('${REGISTRY}', $ServiceClusterIp).
-    Replace('${CA_SECRET}', "$ExtensionName-tls").Replace('${NODE_SELECTOR}', $NodeSelector) |
-        kubectl apply --context $KubeContext -f - | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Applying infra/azurelocal/registry-trust.yaml failed.' }
-    kubectl rollout status daemonset/oms-registry-trust --namespace $ExtensionNamespace --context $KubeContext --timeout=10m
-    if ($LASTEXITCODE -ne 0) {
-        $logs = kubectl logs --namespace $ExtensionNamespace --context $KubeContext --selector app.kubernetes.io/name=oms-registry-trust --prefix --tail=5 2>&1
-        throw "Making $Nodes trust the connected registry didn't finish within 10 minutes. The nodes' log:`n$($logs -join "`n")"
-    }
-}
-
 if (-not $extensionTrustDistribution) {
     Write-Host "==> Waiting for the extension's node configurator to stop" -ForegroundColor Cyan
     $deadline = (Get-Date).AddMinutes(10)
@@ -419,20 +333,17 @@ if (-not $extensionTrustDistribution) {
         Start-Sleep -Seconds 15
     }
 
-    # Not yet on every node: the first time, or when the first node didn't pull.
-    $deployedSelector = Invoke-Checked 'reading DaemonSet oms-registry-trust' {
-        kubectl get daemonset oms-registry-trust --namespace $ExtensionNamespace --context $KubeContext --ignore-not-found --output 'jsonpath={.spec.template.spec.nodeSelector}'
+    Write-Host "==> Making containerd 2 on every node trust the registry" -ForegroundColor Cyan
+    (Get-Content (Join-Path $repoRoot 'infra/azurelocal/registry-trust.yaml') -Raw).
+    Replace('${NAMESPACE}', $ExtensionNamespace).Replace('${REGISTRY}', $ServiceClusterIp).Replace('${CA_SECRET}', "$ExtensionName-tls") |
+        kubectl apply --context $KubeContext -f - | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Applying infra/azurelocal/registry-trust.yaml failed.' }
+    kubectl rollout status daemonset/oms-registry-trust --namespace $ExtensionNamespace --context $KubeContext --timeout=10m
+    if ($LASTEXITCODE -ne 0) {
+        $logs = kubectl logs --namespace $ExtensionNamespace --context $KubeContext --selector app.kubernetes.io/name=oms-registry-trust --prefix --tail=5 2>&1
+        throw "The nodes don't trust the connected registry yet after 10 minutes. Their log:`n$($logs -join "`n")"
     }
-    if ("$deployedSelector" -notmatch 'kubernetes.io/os') {
-        $first = $workers[0]
-        Write-Host "==> Making containerd 2 trust the registry on $first first" -ForegroundColor Cyan
-        Install-RegistryTrust "kubernetes.io/hostname: $first" "node '$first'"
-        Test-RegistryPull @($first)
-    }
-    Write-Host "==> Making containerd 2 trust the registry on every node" -ForegroundColor Cyan
-    Install-RegistryTrust 'kubernetes.io/os: linux' 'the nodes'
 }
-Test-RegistryPull $workers
 Write-Host "`n================ Connected registry ready ================" -ForegroundColor Green
 Write-Host "Cloud registry   : $registryLoginServer (push here)"
 Write-Host "In-cluster pulls : $ServiceClusterIp (secret '$PullSecretName', CA ConfigMap '$ApplicationNamespace/$CaConfigMapName')"

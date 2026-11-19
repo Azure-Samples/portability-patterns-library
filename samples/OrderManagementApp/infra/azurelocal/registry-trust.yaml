@@ -42,7 +42,7 @@ spec:
         app.kubernetes.io/name: oms-registry-trust
     spec:
       nodeSelector:
-        ${NODE_SELECTOR}
+        kubernetes.io/os: linux
       hostPID: true
       priorityClassName: system-node-critical
       automountServiceAccountToken: false

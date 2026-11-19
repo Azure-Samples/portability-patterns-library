@@ -186,11 +186,10 @@ says where to find each value. Then run:
 It checks the site, creates the AKS cluster, asks for a domain administrator to add the app's groups
 and Keycloak's bind account to Active Directory, sets up everything the app needs on the cluster,
 and deploys the app.
-Open the address it prints and sign in with the account name of an AD user in one of the app's
-groups, such as the sample user `oms-demo` (the name, not `oms-demo@<domain>`; a user whose AD
-account has an email address can also use that). The Active Directory step printed how to copy the
-sample users' passwords. The first time, on a machine outside the domain, trust the site CA with
-the command it printed.
+Open the address it prints and sign in as the sample user `oms-demo`, by its account name, not
+`oms-demo@<domain>`; the Active Directory step printed how to copy its password. Any AD user in the
+app's groups signs in the same way. The first time, on a machine outside the domain, trust the site
+CA with the command it printed.
 
 To deploy a new version later, run `./scripts/deploy.ps1 -Target AzureLocal`.
 
@@ -231,18 +230,22 @@ For production, you would also need:
 
 **Locally:** `docker compose down`.
 
-**Azure:** `azd down`. It deletes the resource group, including what the Recipes created in it, and
-the app registrations.
+**Azure:** `azd down --purge`. It deletes the resource group, including what the Recipes created in
+it, and the app registrations; `--purge` deletes the Key Vault for good, so a later `azd up` can
+create it again.
 
 **Azure Local:** delete the resource group the scripts created (`ResourceGroup` in the settings,
-`bcd-azurelocal` by default), which holds the AKS cluster, the registry and the logical network:
+`bcd-azurelocal` by default), which holds the AKS cluster, the registry, the Key Vault and the
+logical network:
 
 ```powershell
 az group delete --name bcd-azurelocal
 ```
 
 The AKS cluster's Entra admin group and the objects `ad-setup.ps1` added to Active Directory stay;
-remove them by hand if you no longer need them.
+remove them by hand if you no longer need them. To deploy again, use another `ResourceGroup`, since
+a deleted Key Vault keeps its name for 90 days, and set `ActiveDirectory.ResetBindPassword` to
+`true` for that run, so Keycloak's bind account gets a password the new cluster has.
 
 ## Understand how it works
 
