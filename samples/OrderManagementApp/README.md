@@ -226,13 +226,6 @@ For production, you would also need:
   your load. Images are pinned in [images.txt](./infra/azurelocal/images.txt); test new versions
   before rolling them out.
 - **Access:** platform administrators hold broad rights; keep them to trusted operators.
-- **Node configuration:** on nodes that run containerd 2, the connected registry's extension (1.5.1)
-  doesn't make them trust its certificate, and it leaves containerd's configuration invalid, so
-  containerd fails at its next restart. There, setup turns the extension's node configuration off
-  and runs a privileged DaemonSet, [registry-trust.yaml](./infra/azurelocal/registry-trust.yaml),
-  that does it instead; remove it once the extension supports containerd 2. If an update moves your
-  nodes to containerd 2, run `./scripts/setup-platform.ps1 -Target AzureLocal -Skip Cluster` again;
-  its Registry step switches them over.
 
 ## Clean up
 
