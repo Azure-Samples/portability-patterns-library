@@ -226,13 +226,13 @@ For production, you would also need:
   your load. Images are pinned in [images.txt](./infra/azurelocal/images.txt); test new versions
   before rolling them out.
 - **Access:** platform administrators hold broad rights; keep them to trusted operators.
-- **Node configuration:** the connected registry's extension (1.5.1) sets up the nodes' trust of its
-  certificate for containerd 1.x only, and on containerd 2 it breaks containerd's configuration.
-  Nodes ran containerd 2 on a pre-release Azure Local build. There, setup turns the extension's node
-  configuration off and runs a privileged DaemonSet,
-  [registry-trust.yaml](./infra/azurelocal/registry-trust.yaml), that does it instead; remove it
-  once the extension supports containerd 2. If AKS Arc later moves the nodes to containerd 2, run
-  the Registry step again.
+- **Node configuration:** on nodes that run containerd 2, the connected registry's extension (1.5.1)
+  doesn't make them trust its certificate, and it leaves containerd's configuration invalid, so
+  containerd fails at its next restart. There, setup turns the extension's node configuration off
+  and runs a privileged DaemonSet, [registry-trust.yaml](./infra/azurelocal/registry-trust.yaml),
+  that does it instead; remove it once the extension supports containerd 2. If an update moves your
+  nodes to containerd 2, run `./scripts/setup-platform.ps1 -Target AzureLocal -Skip Cluster` again;
+  its Registry step switches them over.
 
 ## Clean up
 
