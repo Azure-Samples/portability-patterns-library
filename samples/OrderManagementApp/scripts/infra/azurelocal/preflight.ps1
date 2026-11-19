@@ -160,10 +160,7 @@ if ($signedIn) {
                 Invoke-AzureCheck 'Kubernetes version' {
                     $kubernetes = Resolve-OmsKubernetesVersion -SubscriptionId $s.SubscriptionId -ResourceGroup $s.ResourceGroup `
                         -ClusterName $s.ClusterName -CustomLocationId $customLocation.id -KubernetesVersion $s.KubernetesVersion
-                    if (-not $kubernetes.Supported) {
-                        Add-Result Azure 'Kubernetes version' FAIL "$($kubernetes.Version) ($($kubernetes.Reason)): the connected registry doesn't work on Kubernetes later than $script:OmsMaxKubernetesMinor yet, because those nodes run containerd 2. Set KubernetesVersion in the Cluster settings to a $script:OmsMaxKubernetesMinor.x the instance offers, or leave it empty"
-                    }
-                    elseif ($kubernetes.Offered) { Add-Result Azure 'Kubernetes version' PASS "$($kubernetes.Version) ($($kubernetes.Reason))" }
+                    if ($kubernetes.Offered) { Add-Result Azure 'Kubernetes version' PASS "$($kubernetes.Version) ($($kubernetes.Reason))" }
                     else { Add-Result Azure 'Kubernetes version' FAIL "the instance doesn't offer $($kubernetes.Version); it offers $($kubernetes.Ready -join ', '). Change KubernetesVersion in the Cluster settings, or leave it empty" }
                 }
             }

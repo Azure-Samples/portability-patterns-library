@@ -223,6 +223,10 @@ For production, you would also need:
   your load. Images are pinned in [images.txt](./infra/azurelocal/images.txt); test new versions
   before rolling them out.
 - **Access:** platform administrators hold broad rights; keep them to trusted operators.
+- **Node configuration:** the connected registry's extension sets up the nodes' trust of its
+  certificate for containerd 1.x only. On nodes that run containerd 2, setup adds a privileged
+  DaemonSet, [containerd-registry-hosts.yaml](./infra/azurelocal/containerd-registry-hosts.yaml),
+  that changes that one containerd setting. Remove it once the extension does this itself.
 
 ## Clean up
 
