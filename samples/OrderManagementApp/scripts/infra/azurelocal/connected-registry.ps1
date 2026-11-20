@@ -100,6 +100,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
+. (Join-Path $repoRoot 'scripts/lib/common.ps1')
 . (Join-Path $repoRoot 'scripts/lib/cluster.ps1')
 . (Join-Path $repoRoot 'scripts/lib/recipes.ps1')
 . (Join-Path $repoRoot 'scripts/lib/azure.ps1')
@@ -112,18 +113,6 @@ $Repositories = @(@($Repositories) + @(Get-LibraryRecipe -Platform azure-local |
 $ExtensionNamespace = 'connected-registry'
 $CaSecretName = "$ExtensionName-ca-cert"
 $ExtensionApiVersion = '2023-05-01'
-
-function Invoke-Checked {
-    param(
-        [Parameter(Mandatory = $true)][string]$What,
-        [Parameter(Mandatory = $true)][scriptblock]$Command
-    )
-
-    & $Command
-    if ($LASTEXITCODE -ne 0) {
-        throw "$What failed with exit code $LASTEXITCODE."
-    }
-}
 
 function Test-Token([string]$Name) {
     [bool](Invoke-OmsAzShow @('acr', 'token', 'show', '--name', $Name, '--registry', $RegistryName, '--query', 'name', '--output', 'tsv'))

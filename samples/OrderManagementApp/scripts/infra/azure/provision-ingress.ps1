@@ -41,11 +41,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-
-function Invoke-Checked([string]$What, [scriptblock]$Command) {
-    & $Command
-    if ($LASTEXITCODE -ne 0) { throw "$What failed with exit code $LASTEXITCODE." }
-}
+. (Join-Path $PSScriptRoot '../../lib/common.ps1')
 
 Write-Host "==> Public DNS name '$DnsLabel' for the managed ingress" -ForegroundColor Cyan
 # The add-on owns its controller through this resource; annotations here reach its Service.

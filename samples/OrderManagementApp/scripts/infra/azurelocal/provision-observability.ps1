@@ -105,6 +105,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
+. (Join-Path $repoRoot 'scripts/lib/common.ps1')
 . (Join-Path $repoRoot 'scripts/lib/cluster.ps1')
 Push-Location $repoRoot
 
@@ -114,19 +115,8 @@ $Namespace = 'observability'
 $IdentityNamespace = 'identity'
 $valuesDir = Join-Path $repoRoot 'infra/azurelocal/observability'
 
-function Invoke-Checked([string]$What, [scriptblock]$Command) {
-    & $Command
-    if ($LASTEXITCODE -ne 0) { throw "$What failed with exit code $LASTEXITCODE." }
-}
-
 function Get-SecretData([string]$SecretNamespace, [string]$Name, [string]$Key) {
     Get-OmsSecretValue -KubeContext $KubeContext -Namespace $SecretNamespace -Name $Name -Key $Key
-}
-
-function New-RandomSecret {
-    $bytes = [byte[]]::new(24)
-    [Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
-    [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
 }
 
 # Every volume takes -StorageClassName when it is set; left out, Kubernetes uses the default class.

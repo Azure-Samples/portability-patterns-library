@@ -137,52 +137,13 @@ if (-not $ImageTag) {
     $ImageTag = git -C $repoRoot rev-parse --short=12 HEAD 2>$null
     if ($LASTEXITCODE -ne 0 -or -not $ImageTag) { throw 'Pass -ImageTag: this folder is not a git checkout to take the commit from.' }
 }
+. (Join-Path $repoRoot 'scripts/lib/common.ps1')
 . (Join-Path $repoRoot 'scripts/lib/recipes.ps1')
 . (Join-Path $repoRoot 'scripts/lib/cluster.ps1')
 . (Join-Path $repoRoot 'scripts/lib/database.ps1')
 . (Join-Path $repoRoot 'scripts/lib/azure.ps1')
 if (-not $AppInfraResourceGroup) { $AppInfraResourceGroup = $ResourceGroup }
 Push-Location $repoRoot
-
-# $ErrorActionPreference does not apply to native commands, so every external call is checked.
-# Returns what the command printed.
-function Invoke-Checked {
-    param(
-        [Parameter(Mandatory = $true)][string]$What,
-        [Parameter(Mandatory = $true)][scriptblock]$Command
-    )
-
-    & $Command
-    if ($LASTEXITCODE -ne 0) {
-        throw "$What failed with exit code $LASTEXITCODE."
-    }
-}
-
-# `rad deploy --parameters key=value` only supports strings. Booleans and integers must come from
-# an ARM-format parameter file, so non-string values are written to a temporary file instead.
-function New-ParameterFile {
-    param([Parameter(Mandatory = $true)][hashtable]$Values)
-
-    $parameters = @{}
-    foreach ($key in $Values.Keys) {
-        $parameters[$key] = @{ value = $Values[$key] }
-    }
-
-    $document = @{
-        '$schema'      = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'
-        contentVersion = '1.0.0.0'
-        parameters     = $parameters
-    }
-
-    # Owner-only, as New-TemporaryFile creates it, since it can carry passwords; kept as .json.
-    $file = New-TemporaryFile
-    $path = "$($file.FullName).json"
-    Move-Item $file $path
-    # Windows PowerShell's 'utf8' encoding emits a BOM, which the rad CLI rejects with
-    # "invalid character 'ï' looking for beginning of value".
-    [System.IO.File]::WriteAllText($path, ($document | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
-    return $path
-}
 
 $temporaryFiles = @()
 

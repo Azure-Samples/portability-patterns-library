@@ -112,7 +112,9 @@ needs:
   | `oms-inventory-admins` | `Inventory.Manage` and `Orders.Read` |
   | `oms-operators` | `Operations.Monitor`: the site's Grafana (dashboards, logs, traces) |
   | `oms-identity-admins` | Administration of the app's Keycloak realm, `oms`, and nothing else |
-- A bind account for Keycloak, `svc-keycloak`, that can only read the users and groups in the OU.
+- A bind account for Keycloak, `svc-keycloak`, that Keycloak reads the OU's users and groups with.
+  Like any domain account it can read the directory, but it can sign in only at the domain
+  controllers.
 - LDAPS on the domain controller, which needs a server certificate from a certificate authority.
 
 [ad-setup.ps1](../scripts/infra/azurelocal/ad-setup.ps1) creates all of this and hands the bind

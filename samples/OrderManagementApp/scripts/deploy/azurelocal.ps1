@@ -152,6 +152,7 @@ if (-not $ImageTag) {
     $ImageTag = git -C $repoRoot rev-parse --short=12 HEAD 2>$null
     if ($LASTEXITCODE -ne 0 -or -not $ImageTag) { throw 'Pass -ImageTag: this folder is not a git checkout to take the commit from.' }
 }
+. (Join-Path $repoRoot 'scripts/lib/common.ps1')
 . (Join-Path $repoRoot 'scripts/lib/recipes.ps1')
 . (Join-Path $repoRoot 'scripts/lib/cluster.ps1')
 . (Join-Path $repoRoot 'scripts/lib/database.ps1')
@@ -159,45 +160,7 @@ if (-not $ImageTag) {
 . (Join-Path $repoRoot 'scripts/lib/azure.ps1')
 Push-Location $repoRoot
 
-# $ErrorActionPreference does not apply to native commands, so every external call is checked.
-# Returns what the command printed.
-function Invoke-Checked {
-    param(
-        [Parameter(Mandatory = $true)][string]$What,
-        [Parameter(Mandatory = $true)][scriptblock]$Command
-    )
-
-    & $Command
-    if ($LASTEXITCODE -ne 0) {
-        throw "$What failed with exit code $LASTEXITCODE."
-    }
-}
-
 $temporaryFiles = @()
-
-# `rad deploy --parameters key=value` only handles scalars, so anything else goes through a file.
-function New-ParameterFile {
-    param([Parameter(Mandatory = $true)][hashtable]$Values)
-
-    $parameters = @{}
-    foreach ($key in $Values.Keys) {
-        $parameters[$key] = @{ value = $Values[$key] }
-    }
-
-    $document = @{
-        '$schema'      = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'
-        contentVersion = '1.0.0.0'
-        parameters     = $parameters
-    }
-
-    # Owner-only, as New-TemporaryFile creates it, since it carries the database passwords; kept as .json.
-    $file = New-TemporaryFile
-    $path = "$($file.FullName).json"
-    Move-Item $file $path
-    # The rad CLI rejects a UTF-8 BOM.
-    [System.IO.File]::WriteAllText($path, ($document | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
-    return $path
-}
 
 # Letters and digits only, so the value needs no quoting in RabbitMQ's configuration file.
 function New-RandomPassword([int]$Length = 32) {

@@ -101,48 +101,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
+. (Join-Path $repoRoot 'scripts/lib/common.ps1')
 Push-Location $repoRoot
-
-# $ErrorActionPreference does not apply to native commands, so every external call is checked.
-# Returns what the command printed.
-function Invoke-Checked {
-    param(
-        [Parameter(Mandatory = $true)][string]$What,
-        [Parameter(Mandatory = $true)][scriptblock]$Command
-    )
-
-    & $Command
-    if ($LASTEXITCODE -ne 0) {
-        throw "$What failed with exit code $LASTEXITCODE."
-    }
-}
-
-<#
-    Writes an ARM-format parameter file. Required because `--parameters key=value` only handles
-    scalars: arrays and booleans passed that way are rejected or coerced to strings.
-#>
-function New-ParameterFile {
-    param([Parameter(Mandatory = $true)][hashtable]$Values)
-
-    $parameters = @{}
-    foreach ($key in $Values.Keys) {
-        $parameters[$key] = @{ value = $Values[$key] }
-    }
-
-    $document = @{
-        '$schema'      = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'
-        contentVersion = '1.0.0.0'
-        parameters     = $parameters
-    }
-
-    $file = New-TemporaryFile
-    $path = "$($file.FullName).json"
-    Move-Item $file $path
-    # Windows PowerShell's 'utf8' encoding emits a BOM, which the JSON parsers behind the az and
-    # rad CLIs both reject.
-    [System.IO.File]::WriteAllText($path, ($document | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
-    return $path
-}
 
 try {
     $template = 'infra/azure/platform.bicep'
