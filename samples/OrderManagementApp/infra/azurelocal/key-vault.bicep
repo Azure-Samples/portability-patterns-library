@@ -1,8 +1,8 @@
-// Azure Key Vault for secrets and certificates that already live in Azure and must reach the Azure
-// Local site, for example an existing certificate or a partner's API key. The Key Vault Secret Store
-// extension copies them into Kubernetes Secrets while the site is connected, and the copies keep
-// working while it is cut off. The sample's own credentials don't go through it: they are generated
-// on site (see the README's production list).
+// Azure Key Vault for secrets that live in Azure and must reach the Azure Local site: the order
+// archive's signing key, which key-vault.ps1 creates here, and any other, such as a partner's API
+// key. The Key Vault Secret Store extension copies them into Kubernetes Secrets while the site is
+// connected, and the copies keep working while it is cut off. Database passwords and object store
+// keys don't go through it: they are generated on site.
 //
 //   * Key Vault, RBAC authorization, soft delete and purge protection.
 //   * A user-assigned managed identity that the extension uses to read the vault, with a federated

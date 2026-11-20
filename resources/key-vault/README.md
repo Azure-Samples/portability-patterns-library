@@ -17,16 +17,16 @@ Azure Local with [disconnected operations](https://learn.microsoft.com/azure/azu
 
 - **Key Vault as the source of truth** for secrets that live in Azure: they're created, rotated and audited in Key Vault, with the same names and the same Azure RBAC.
 - **Identity, with a different issuer:** the extension signs in to Key Vault with workload identity federation, like a workload on AKS.
-- **The application's code:** the sample's services read secrets from Kubernetes Secrets and never call Key Vault, so nothing in the code changed. An app that reads secrets from mounted files on AKS, for example through the [Key Vault Secrets Provider](https://learn.microsoft.com/azure/aks/csi-secrets-store-driver), would also keep its code.
+- **The application's code:** the sample's order processor signs archived orders with a key from Key Vault, which it reads from a mounted file, `/var/run/secrets/archive-signing/key`, on both platforms. It never calls Key Vault, so its code is the same on AKS, where the [Key Vault Secrets Provider](https://learn.microsoft.com/azure/aks/csi-secrets-store-driver) mounts the file, and on Azure Local, where it comes from the synced Secret.
 
 ## What the sample needed to change
 
-1. **Secrets read from Kubernetes Secrets.** On Azure Local the services read their credentials from Kubernetes Secrets. On Azure they need none, because every service signs in with workload identity.
-2. **Secrets to copy listed per namespace.** The sample includes a `SecretProviderClass` and a `SecretSync` for one example secret, a partner API key. Nothing is synced by default.
-3. **Key Vault access given to the extension, not the app.** A managed identity with the Key Vault Secrets User role is federated with the extension's service account.
+1. **The file comes from a Kubernetes Secret.** On AKS the CSI driver mounts the secret straight from Key Vault. On Azure Local the Recipe Pack mounts the Kubernetes Secret the extension writes, at the same path.
+2. **Secrets to copy listed per namespace.** A `SecretProviderClass` and a `SecretSync` name the vault's `archive-signing-key` and the Secret it's written to.
+3. **Key Vault access given to the extension, not the app.** On AKS the processor's own identity reads the vault. On Azure Local a managed identity with the Key Vault Secrets User role is federated with the extension's service account, and Kubernetes RBAC decides which pods can mount the Secret.
 4. **Credentials that only matter on site generated on site.** Database passwords and object store keys are created in the cluster and changed with a rotation script, which needs no link to Azure.
 
-The sample didn't test two things an app may need. A synced secret's new value reaches the cluster on the extension's next check, so the app has to restart or reread it. Signing, encryption and key wrapping with Key Vault keys need Key Vault itself, so they don't work offline.
+A synced secret's new value reaches the cluster on the extension's next check, so the app has to reread it: the processor rereads the key file every minute. Signing, encryption and key wrapping with Key Vault *keys* need Key Vault itself, so they don't work offline; that's why the sample signs with a *secret* it holds, not a Key Vault key.
 
 How the extension maps to Key Vault on AKS, and the sample's code for each step: [Key Vault with the Secret Store extension](./alternatives/secret-store-extension.md).
 
@@ -42,7 +42,7 @@ These are the limitations this project found while building the sample. It isn't
 
 **Data:** secrets stay in Key Vault. Nothing moves; the cluster holds copies.
 
-**What it covers on Azure Local:** secrets and certificates that already live in Azure and must reach the site, such as a partner's API key. Key Vault keeps a copy outside the cluster and gives central rotation and audit, but rotation only works while the site is connected. In the sample, secrets that only matter on site, such as database passwords, are Kubernetes Secrets generated on site. A rebuilt cluster gets new ones.
+**What it covers on Azure Local:** secrets and certificates that live in Azure and must reach the site, such as the sample's archive signing key or a partner's API key. Key Vault keeps a copy outside the cluster and gives central rotation and audit, but rotation only works while the site is connected. In the sample, secrets that only matter on site, such as database passwords, are Kubernetes Secrets generated on site. A rebuilt cluster gets new ones.
 
 ## Rotating secrets on site
 
@@ -60,4 +60,4 @@ Secrets without a plugin, such as S3 keys or partner API keys, need their own ro
 
 ## Sample
 
-The [Order Management sample](../../samples/OrderManagementApp/README.md) on Azure Local sets up Key Vault and the Secret Store extension for secrets that already live in Azure, and shows how to sync one. Nothing is synced by default. The sample's own passwords and keys are generated on site and changed with a rotation script. On Azure the sample needs no secrets, because every service signs in with workload identity. [Key Vault with the Secret Store extension](./alternatives/secret-store-extension.md#how-the-order-management-sample-does-it) links the code for each change above.
+The [Order Management sample](../../samples/OrderManagementApp/README.md) keeps the key its order processor signs archived orders with in Key Vault, on Azure and on Azure Local. On Azure Local the Secret Store extension syncs it to the site, so archiving keeps working without the link to Azure. The sample's other passwords and keys on Azure Local are generated on site and changed with a rotation script; on Azure every service signs in with workload identity instead. [Key Vault with the Secret Store extension](./alternatives/secret-store-extension.md#how-the-order-management-sample-does-it) links the code for each change above.

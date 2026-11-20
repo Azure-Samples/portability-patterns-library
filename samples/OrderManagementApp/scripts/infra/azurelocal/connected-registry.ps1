@@ -15,13 +15,16 @@
     scope maps and tokens, the connected registry and its Arc extension. This script:
       1. Deploys the template. Tokens are only created when missing: redeploying one would delete
          its passwords.
-      2. On first install, generates the sync password and deploys the template again with the
-         connection string, which installs the Arc extension. The extension takes its certificate
-         from the cluster's cert-manager and distributes the registry's CA to every node so kubelet
-         trusts it.
+      2. Generates the sync password and deploys the template again with the connection string,
+         which installs the Arc extension: on first install, or to reinstall one that failed or
+         whose node configuration has to change. The extension takes its certificate from the
+         cluster's cert-manager and, on nodes that run containerd 1.x, distributes the registry's
+         CA so kubelet trusts it.
       3. Stores the client token as image pull secret '<PullSecretName>' in every namespace that
          pulls from the registry, and the registry CA as ConfigMap '<CaConfigMapName>' in the
          application namespace for deploy.ps1 to hand to the Radius control plane.
+      4. When the nodes run containerd 2, turns the extension's node configuration off, since it
+         breaks containerd 2's, and applies infra/azurelocal/registry-trust.yaml instead.
 
     -Repositories, plus every Azure Local Recipe under recipes/, is the complete list the connected
     registry syncs: repositories left out are removed from its scope.
@@ -97,6 +100,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
+. (Join-Path $repoRoot 'scripts/lib/common.ps1')
 . (Join-Path $repoRoot 'scripts/lib/cluster.ps1')
 . (Join-Path $repoRoot 'scripts/lib/recipes.ps1')
 . (Join-Path $repoRoot 'scripts/lib/azure.ps1')
@@ -109,18 +113,6 @@ $Repositories = @(@($Repositories) + @(Get-LibraryRecipe -Platform azure-local |
 $ExtensionNamespace = 'connected-registry'
 $CaSecretName = "$ExtensionName-ca-cert"
 $ExtensionApiVersion = '2023-05-01'
-
-function Invoke-Checked {
-    param(
-        [Parameter(Mandatory = $true)][string]$What,
-        [Parameter(Mandatory = $true)][scriptblock]$Command
-    )
-
-    & $Command
-    if ($LASTEXITCODE -ne 0) {
-        throw "$What failed with exit code $LASTEXITCODE."
-    }
-}
 
 function Test-Token([string]$Name) {
     [bool](Invoke-OmsAzShow @('acr', 'token', 'show', '--name', $Name, '--registry', $RegistryName, '--query', 'name', '--output', 'tsv'))
@@ -141,6 +133,19 @@ if (-not $clusterId) { throw "Arc connected cluster '$ClusterName' not found in 
 $template = Join-Path $repoRoot 'infra/azurelocal/connected-registry.bicep'
 $clientTokenIsNew = -not (Test-Token $ClientTokenName)
 
+# The extension makes the nodes trust the registry's certificate in containerd 1.x's configuration
+# only, and on containerd 2 it appends a table that keeps containerd from starting again
+# (infra/azurelocal/registry-trust.yaml explains). So when the nodes run containerd 2, its node
+# configuration is turned off and this script does that work instead.
+$runtimes = Invoke-Checked 'reading the nodes' {
+    kubectl get nodes --context $KubeContext --output jsonpath='{range .items[*]}{.metadata.name}={.status.nodeInfo.containerRuntimeVersion}{"\n"}{end}'
+}
+$containerd2Nodes = @($runtimes | Where-Object { $_ -match '=containerd://(\d+)\.' -and [int]$Matches[1] -ge 2 })
+$extensionTrustDistribution = $containerd2Nodes.Count -eq 0
+if (-not $extensionTrustDistribution) {
+    Write-Host "    the nodes run containerd 2; registry-trust.yaml makes them trust the registry, not the extension" -ForegroundColor DarkGray
+}
+
 # Parameters go through a file: it carries the repository list and, on first install, the
 # connection string, which must not appear on a command line.
 function Deploy-ConnectedRegistry([string]$ConnectionString) {
@@ -157,6 +162,7 @@ function Deploy-ConnectedRegistry([string]$ConnectionString) {
         serviceClusterIp      = $ServiceClusterIp
         storageClassName      = $StorageClassName
         storageRequest        = $StorageRequest
+        trustDistribution     = $extensionTrustDistribution
     }
     $document = [ordered]@{
         '$schema'      = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'
@@ -180,17 +186,23 @@ Write-Host "==> Deploying the connected registry '$ConnectedRegistryName' ($($Re
 Deploy-ConnectedRegistry ''
 
 # ------------------------------------------------------------------------------------------------
-# Arc extension. The sync password is only generated on first install: doing it again would
-# disconnect a running instance until the extension is updated with the new value.
+# Arc extension. The sync password is only generated to install it: doing it again would
+# disconnect a running instance until the extension is updated with the new value. An extension
+# that failed, or whose node configuration has to be turned on or off, is reinstalled.
 # ------------------------------------------------------------------------------------------------
 Write-Host "==> Ensuring Arc extension '$ExtensionName' on '$ClusterName'" -ForegroundColor Cyan
 $extensionId = "$clusterId/providers/Microsoft.KubernetesConfiguration/extensions/$ExtensionName"
-$extensionState = Invoke-OmsAzShow @('resource', 'show', '--ids', $extensionId, '--api-version', $ExtensionApiVersion,
-    '--query', 'properties.provisioningState', '--output', 'tsv')
+$extensionJson = Invoke-OmsAzShow @('resource', 'show', '--ids', $extensionId, '--api-version', $ExtensionApiVersion, '--output', 'json')
+$extension = if ($extensionJson) { $extensionJson | ConvertFrom-Json }
+$extensionState = $extension.properties.provisioningState
+# Unset means the chart's default, on.
+$extensionTrustNow = $extension.properties.configurationSettings.'trustDistribution.enabled' -ne 'false'
 
-if ($extensionState -ne 'Succeeded') {
+if ($extensionState -ne 'Succeeded' -or $extensionTrustNow -ne $extensionTrustDistribution) {
     if ($extensionState) {
-        Write-Host "    existing extension is '$extensionState'; reinstalling" -ForegroundColor Yellow
+        $reason = if ($extensionState -ne 'Succeeded') { "existing extension is '$extensionState'" }
+        else { "its node configuration has to be turned $(if ($extensionTrustDistribution) { 'on' } else { 'off' })" }
+        Write-Host "    $reason; reinstalling" -ForegroundColor Yellow
         Invoke-Checked 'delete Arc extension' {
             az resource delete --ids $extensionId --api-version $ExtensionApiVersion --no-wait --output none
         }
@@ -199,10 +211,22 @@ if ($extensionState -ne 'Succeeded') {
         }
     }
 
+    # One instance at a time can be active. A new one fails to start (ALREADY_ACTIVATED) while an
+    # instance that's gone, from the extension just deleted or an earlier cluster, still holds it.
+    $activation = Invoke-Checked 'az acr connected-registry show' {
+        az acr connected-registry show --name $ConnectedRegistryName --registry $RegistryName --query activation.status --output tsv
+    }
+    if ($activation -eq 'Active') {
+        Write-Host "    releasing the activation a previous instance holds" -ForegroundColor DarkGray
+        Invoke-Checked 'az acr connected-registry deactivate' {
+            az acr connected-registry deactivate --name $ConnectedRegistryName --registry $RegistryName --yes --output none
+        }
+    }
+
     $connectionString = az acr connected-registry get-settings --name $ConnectedRegistryName --registry $RegistryName `
         --parent-protocol https --generate-password 1 --query ACR_REGISTRY_CONNECTION_STRING --output tsv --yes
     if ($LASTEXITCODE -ne 0 -or -not $connectionString) { throw 'Could not generate the connected registry connection string.' }
-    Write-Host "    installing (storage class $StorageClassName, ClusterIP $ServiceClusterIp)" -ForegroundColor DarkGray
+    Write-Host "    deploying (storage class $StorageClassName, ClusterIP $ServiceClusterIp)" -ForegroundColor DarkGray
     Deploy-ConnectedRegistry $connectionString.Trim()
     $connectionString = $null
 }
@@ -220,28 +244,33 @@ do {
     Start-Sleep -Seconds 20
 } while ((Get-Date) -lt $deadline)
 if ($state -ne 'Online') { throw "Connected registry is '$state' after 15 minutes. Check the pods in namespace '$ExtensionNamespace'." }
+# Azure's state can still be the previous instance's, so the registry in the cluster is waited for too.
+kubectl rollout status deployment/$ExtensionName --namespace $ExtensionNamespace --context $KubeContext --timeout=10m
+if ($LASTEXITCODE -ne 0) {
+    $logs = kubectl logs deployment/$ExtensionName --namespace $ExtensionNamespace --context $KubeContext --tail=5 2>&1
+    throw "The connected registry in '$ExtensionNamespace' isn't ready after 10 minutes. Its log:`n$($logs -join "`n")"
+}
 
 # ------------------------------------------------------------------------------------------------
 # Pull secrets. The client token password lives only in the cluster, never in the repository, a
-# file or a command line. It is only issued for a new client token or on request, since a new one
-# replaces the password pods use; otherwise the one already in the cluster stays.
+# file or a command line. It is only issued for a new client token, for a cluster that has none of
+# it yet (an earlier run stopped before writing it), or on request, since a new one replaces the
+# password pods use; otherwise the one already in the cluster stays.
 # ------------------------------------------------------------------------------------------------
 Write-Host "==> Ensuring image pull secret '$PullSecretName'" -ForegroundColor Cyan
 $clientPassword = $null
-if ($clientTokenIsNew -or $NewPullCredential) {
+$dockerConfig = Get-OmsSecretValue -KubeContext $KubeContext -Namespace $ApplicationNamespace -Name $PullSecretName -Key '.dockerconfigjson'
+if ($clientTokenIsNew -or $NewPullCredential -or -not $dockerConfig) {
     Write-Host "    issuing a new pull credential" -ForegroundColor DarkGray
     $clientPassword = az acr token credential generate --name $ClientTokenName --registry $RegistryName `
         --password1 --query 'passwords[0].value' --output tsv
     if ($LASTEXITCODE -ne 0 -or -not $clientPassword) { throw 'Generating the client token password failed.' }
 }
 else {
-    $dockerConfig = Get-OmsSecretValue -KubeContext $KubeContext -Namespace $ApplicationNamespace -Name $PullSecretName -Key '.dockerconfigjson'
-    if ($dockerConfig) {
-        $auth = ($dockerConfig | ConvertFrom-Json).auths.$ServiceClusterIp
-        if ($auth -and $auth.username -eq $ClientTokenName) { $clientPassword = $auth.password }
-    }
+    $auth = ($dockerConfig | ConvertFrom-Json).auths.$ServiceClusterIp
+    if ($auth -and $auth.username -eq $ClientTokenName) { $clientPassword = $auth.password }
     if (-not $clientPassword) {
-        throw "The client token exists but the cluster has no '$PullSecretName' for it. Run this again with -NewPullCredential."
+        throw "Secret '$ApplicationNamespace/$PullSecretName' has no credential of client token '$ClientTokenName' for $ServiceClusterIp. Run this again with -NewPullCredential (with up.ps1: Registry.NewPullCredential true in scripts/settings.json, for one run)."
     }
 }
 
@@ -278,6 +307,32 @@ if (-not $caPem) { throw "No CA in Secret '$ExtensionNamespace/$CaSecretName'. C
 } | ConvertTo-Json -Depth 5 | kubectl apply --context $KubeContext -f - | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Writing ConfigMap '$CaConfigMapName' failed." }
 
+# ------------------------------------------------------------------------------------------------
+# Node trust. With containerd 1.x the extension makes the nodes trust the registry. With
+# containerd 2, infra/azurelocal/registry-trust.yaml does, once the extension's node configurator,
+# which would undo it, has stopped.
+# ------------------------------------------------------------------------------------------------
+if (-not $extensionTrustDistribution) {
+    Write-Host "==> Waiting for the extension's node configurator to stop" -ForegroundColor Cyan
+    $deadline = (Get-Date).AddMinutes(10)
+    while (Invoke-Checked "listing the extension's node configurator" {
+            kubectl get pods --namespace $ExtensionNamespace --context $KubeContext --selector 'app.kubernetes.io/name=connected-registry-daemonset' --output name
+        }) {
+        if ((Get-Date) -gt $deadline) { throw "The extension's node configurator still runs in '$ExtensionNamespace' 10 minutes after it was turned off (trustDistribution.enabled=false)." }
+        Start-Sleep -Seconds 15
+    }
+
+    Write-Host "==> Making containerd 2 on every node trust the registry" -ForegroundColor Cyan
+    (Get-Content (Join-Path $repoRoot 'infra/azurelocal/registry-trust.yaml') -Raw).
+    Replace('${NAMESPACE}', $ExtensionNamespace).Replace('${REGISTRY}', $ServiceClusterIp).Replace('${CA_SECRET}', "$ExtensionName-tls") |
+        kubectl apply --context $KubeContext -f - | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Applying infra/azurelocal/registry-trust.yaml failed.' }
+    kubectl rollout status daemonset/oms-registry-trust --namespace $ExtensionNamespace --context $KubeContext --timeout=10m
+    if ($LASTEXITCODE -ne 0) {
+        $logs = kubectl logs --namespace $ExtensionNamespace --context $KubeContext --selector app.kubernetes.io/name=oms-registry-trust --container configure --prefix --tail=5 2>&1
+        throw "The nodes don't trust the connected registry yet after 10 minutes. Their log:`n$($logs -join "`n")"
+    }
+}
 Write-Host "`n================ Connected registry ready ================" -ForegroundColor Green
 Write-Host "Cloud registry   : $registryLoginServer (push here)"
 Write-Host "In-cluster pulls : $ServiceClusterIp (secret '$PullSecretName', CA ConfigMap '$ApplicationNamespace/$CaConfigMapName')"

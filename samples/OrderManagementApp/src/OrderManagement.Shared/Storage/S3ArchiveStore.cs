@@ -20,9 +20,11 @@ public sealed class S3ArchiveStore : IArchiveStore, IDisposable
     private readonly AmazonS3Client _client;
     private readonly string _bucket;
     private readonly string _endpoint;
+    private readonly ArchiveSigner _signer;
 
-    public S3ArchiveStore(IOptions<ArchiveOptions> options)
+    public S3ArchiveStore(IOptions<ArchiveOptions> options, ArchiveSigner signer)
     {
+        _signer = signer;
         var settings = options.Value;
         _bucket = settings.ContainerName!;
         _endpoint = settings.Endpoint!.ToString().TrimEnd('/');
@@ -74,18 +76,23 @@ public sealed class S3ArchiveStore : IArchiveStore, IDisposable
     public async Task<string> ArchiveAsync(Order order, CancellationToken cancellationToken)
     {
         var key = $"{order.PlacedAt:yyyy/MM/dd}/{order.OrderId}.json";
+        var json = order.ToJson();
+        var signature = _signer.Sign(json);
 
         // Overwrites: a redelivered message must not fail on the object it already wrote.
         var request = new PutObjectRequest
         {
             BucketName = _bucket,
             Key = key,
-            ContentBody = order.ToJson(),
+            ContentBody = json,
             ContentType = "application/json",
             UseChunkEncoding = false
         };
         request.Metadata.Add("messageType", Order.OrderPlacedType);
         request.Metadata.Add("lineCount", order.Lines.Count.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        request.Metadata.Add(ArchiveMetadata.SignatureAlgorithm, signature.Algorithm);
+        request.Metadata.Add(ArchiveMetadata.SigningKeyId, signature.KeyId);
+        request.Metadata.Add(ArchiveMetadata.Signature, signature.Value);
         await _client.PutObjectAsync(request, cancellationToken).ConfigureAwait(false);
 
         return $"{_endpoint}/{_bucket}/{key}";

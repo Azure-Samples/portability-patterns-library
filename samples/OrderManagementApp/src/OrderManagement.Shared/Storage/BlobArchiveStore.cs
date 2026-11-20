@@ -16,9 +16,11 @@ namespace OrderManagement.Shared.Storage;
 public sealed class BlobArchiveStore : IArchiveStore
 {
     private readonly BlobContainerClient _container;
+    private readonly ArchiveSigner _signer;
 
-    public BlobArchiveStore(IOptions<ArchiveOptions> options, WorkloadIdentity identity)
+    public BlobArchiveStore(IOptions<ArchiveOptions> options, WorkloadIdentity identity, ArchiveSigner signer)
     {
+        _signer = signer;
         var settings = options.Value;
         var clientOptions = new BlobClientOptions();
         clientOptions.Retry.Mode = RetryMode.Exponential;
@@ -37,17 +39,22 @@ public sealed class BlobArchiveStore : IArchiveStore
     {
         // Date-partitioned layout keeps listings cheap as the archive grows.
         var blob = _container.GetBlobClient($"{order.PlacedAt:yyyy/MM/dd}/{order.OrderId}.json");
+        var json = order.ToJson();
+        var signature = _signer.Sign(json);
 
         // Overwrites: a redelivered message must not fail on the blob it already wrote.
         await blob.UploadAsync(
-            BinaryData.FromString(order.ToJson()),
+            BinaryData.FromString(json),
             new BlobUploadOptions
             {
                 HttpHeaders = new BlobHttpHeaders { ContentType = "application/json" },
                 Metadata = new Dictionary<string, string>
                 {
                     ["messageType"] = Order.OrderPlacedType,
-                    ["lineCount"] = order.Lines.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    ["lineCount"] = order.Lines.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    [ArchiveMetadata.SignatureAlgorithm] = signature.Algorithm,
+                    [ArchiveMetadata.SigningKeyId] = signature.KeyId,
+                    [ArchiveMetadata.Signature] = signature.Value
                 }
             },
             cancellationToken).ConfigureAwait(false);

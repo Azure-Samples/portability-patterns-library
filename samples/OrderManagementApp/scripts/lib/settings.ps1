@@ -10,15 +10,16 @@ function Read-OmsSettings([string]$Target, [string]$Path) {
     $all[$Target]
 }
 
-# 'Common' values go only to scripts that declare the parameter; the step's own section goes as is,
-# so a misspelt name fails loudly instead of being ignored.
-function Get-OmsStepArguments([hashtable]$Settings, [string]$Step, [string]$ScriptPath) {
-    $declared = (Get-Command $ScriptPath).Parameters.Keys
+# 'Common' values, and those of any -Shared section, go only to scripts that declare the parameter,
+# by name or alias; the step's own section goes as is, so a misspelt name fails loudly instead of
+# being ignored.
+function Get-OmsStepArguments([hashtable]$Settings, [string]$Step, [string]$ScriptPath, [string[]]$Shared = @()) {
+    $declared = foreach ($parameter in (Get-Command $ScriptPath).Parameters.Values) { $parameter.Name; $parameter.Aliases }
     $arguments = @{}
-    foreach ($section in 'Common', $Step) {
+    foreach ($section in @('Common') + @($Shared | Where-Object { $_ }) + $Step) {
         if (-not $Settings.ContainsKey($section)) { continue }
         foreach ($name in $Settings[$section].Keys) {
-            if ($section -eq 'Common' -and $name -notin $declared) { continue }
+            if ($section -ne $Step -and $name -notin $declared) { continue }
             $arguments[$name] = $Settings[$section][$name]
         }
     }

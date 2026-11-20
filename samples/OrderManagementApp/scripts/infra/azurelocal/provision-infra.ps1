@@ -80,7 +80,10 @@ param(
 
     # 4 vCPUs and 16 GB. List valid sizes with: az aksarc vmsize list --custom-location <custom-location-id>
     [string]$NodeVmSize = 'Standard_D4s_v3',
-    [string]$KubernetesVersion = '1.33.5',
+    # Empty: a new cluster gets the newest generally available version the instance offers, and an
+    # existing one keeps its version. Set it to pin a version or to upgrade. List versions with:
+    # az aksarc get-versions --custom-location <custom-location-id>
+    [string]$KubernetesVersion,
 
     [string]$AdminGroupName = 'azurelocal-aks-admins',
 
@@ -98,21 +101,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
+. (Join-Path $repoRoot 'scripts/lib/common.ps1')
+. (Join-Path $repoRoot 'scripts/lib/azure.ps1')
 Push-Location $repoRoot
-
-# $ErrorActionPreference does not apply to native commands, so every external call is checked.
-# Returns what the command printed.
-function Invoke-Checked {
-    param(
-        [Parameter(Mandatory = $true)][string]$What,
-        [Parameter(Mandatory = $true)][scriptblock]$Command
-    )
-
-    & $Command
-    if ($LASTEXITCODE -ne 0) {
-        throw "$What failed with exit code $LASTEXITCODE."
-    }
-}
 
 $parametersFile = $null
 try {
@@ -162,6 +153,17 @@ try {
             }
         }
     }
+
+    $customLocationId = Invoke-OmsAzShow @('resource', 'show', '--resource-group', $AzureLocalResourceGroup, '--name', $CustomLocationName,
+        '--resource-type', 'Microsoft.ExtendedLocation/customLocations', '--query', 'id', '--output', 'tsv')
+    if (-not $customLocationId) { throw "Custom location '$CustomLocationName' not found in '$AzureLocalResourceGroup'." }
+    $kubernetes = Resolve-OmsKubernetesVersion -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup -ClusterName $ClusterName `
+        -CustomLocationId $customLocationId -KubernetesVersion $KubernetesVersion
+    if (-not $kubernetes.Offered) {
+        throw "The Azure Local instance doesn't offer Kubernetes $($kubernetes.Version). It offers: $($kubernetes.Ready -join ', '). Change KubernetesVersion in the Cluster settings, or leave it empty."
+    }
+    $KubernetesVersion = $kubernetes.Version
+    Write-Host "==> Kubernetes $KubernetesVersion ($($kubernetes.Reason))" -ForegroundColor Cyan
 
     # The template finds the admin group by its uniqueName. A group created outside Bicep has none,
     # so it is given one once; uniqueName can't be changed afterwards.
@@ -271,7 +273,7 @@ try {
     Write-Host "Load balancer    : $LoadBalancerAddresses"
     Write-Host "Credentials      : $kubeconfigFile, context $KubeContext (admin certificate, works offline)"
 
-    Write-Host "`nNext steps:" -ForegroundColor Yellow
+    Write-Host "`nNext steps, if you run the steps one by one (up.ps1 and setup-platform.ps1 go on by themselves):" -ForegroundColor Yellow
     Write-Host "  1. ./scripts/infra/azurelocal/import-images.ps1 -Mode Mirror -Registry $registryLoginServer"
     Write-Host "  2. ./scripts/infra/azurelocal/connected-registry.ps1 -RegistryName $RegistryName -ResourceGroup $ResourceGroup -ClusterName $ClusterName -KubeContext $KubeContext -ServiceClusterIp <address>"
     Write-Host "  3. The remaining steps: ./scripts/setup-platform.ps1 -Target AzureLocal -Skip Cluster, Images, Registry"

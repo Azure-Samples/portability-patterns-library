@@ -39,6 +39,11 @@ param clusterName string = 'bcd-aks'
 @maxLength(50)
 param registryName string = 'omsacr${uniqueString(subscription().id, resourceGroupName)}'
 
+@description('Globally unique Key Vault name, 3-24 characters. It holds the order archive\'s signing key.')
+@minLength(3)
+@maxLength(24)
+param keyVaultName string = 'kv-oms-${uniqueString(subscription().id, resourceGroupName)}'
+
 @description('Prefix of the user-assigned managed identities: one per service and one for the database setup job.')
 param identityPrefix string = 'id-oms'
 
@@ -94,6 +99,12 @@ principals. Required because local accounts are disabled: without at least one e
 reach the API server. `provision-infra.ps1` passes the signed-in user by default.
 ''')
 param clusterAdminObjectIds array = []
+
+@description('''
+Object IDs that may set Key Vault secrets besides the cluster administrators. `provision-infra.ps1`
+passes whoever runs it, user or service principal, since it creates the order archive's signing key.
+''')
+param keyVaultSecretsOfficerObjectIds array = []
 
 @description('''
 Disable AKS local (certificate) accounts and authenticate to the API server with Entra ID plus
@@ -183,6 +194,7 @@ module platform 'platform-resources.bicep' = {
     location: location
     clusterName: clusterName
     registryName: registryName
+    keyVaultName: keyVaultName
     identityPrefix: identityPrefix
     workloadNames: workloadNames
     databaseAdminServiceAccountName: databaseAdminServiceAccountName
@@ -194,6 +206,7 @@ module platform 'platform-resources.bicep' = {
     kubernetesVersion: kubernetesVersion
     registrySku: registrySku
     clusterAdminObjectIds: clusterAdminObjectIds
+    keyVaultSecretsOfficerObjectIds: keyVaultSecretsOfficerObjectIds
     useEntraAuthentication: useEntraAuthentication
     tags: tags
     nodeOsUpgradeDay: nodeOsUpgradeDay
@@ -217,6 +230,9 @@ output registryLoginServer string = platform.outputs.registryLoginServer
 
 output registryName string = platform.outputs.registryName
 output clusterName string = platform.outputs.clusterName
+
+@description('Key Vault holding the order archive\'s signing key.')
+output keyVaultName string = platform.outputs.keyVaultName
 
 @description('OIDC issuer URL of the cluster, which the federated identity credential trusts.')
 output oidcIssuerUrl string = platform.outputs.oidcIssuerUrl

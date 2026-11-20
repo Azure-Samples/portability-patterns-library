@@ -62,8 +62,8 @@
     "Keycloak": {
       "AdServer": "<domain-controller-fqdn>",
       "AdDomain": "<ad-domain>",
-      "AdBindUpn": "svc-keycloak@<ad-domain>",
-      "AdCaCertificatePath": "<path-to-directory-ca.crt>",
+      "AdBindUpn": "",
+      "AdCaCertificatePath": "",
       "AllowInClusterIssuer": true
     },
     "Observability": {

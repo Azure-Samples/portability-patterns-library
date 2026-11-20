@@ -112,20 +112,25 @@ needs:
   | `oms-inventory-admins` | `Inventory.Manage` and `Orders.Read` |
   | `oms-operators` | `Operations.Monitor`: the site's Grafana (dashboards, logs, traces) |
   | `oms-identity-admins` | Administration of the app's Keycloak realm, `oms`, and nothing else |
-- A bind account for Keycloak, `svc-keycloak`, that can only read the users and groups in the OU.
+- A bind account for Keycloak, `svc-keycloak`, that Keycloak reads the OU's users and groups with.
+  Like any domain account it can read the directory, but it can sign in only at the domain
+  controllers.
 - LDAPS on the domain controller, which needs a server certificate from a certificate authority.
 
 [ad-setup.ps1](../scripts/infra/azurelocal/ad-setup.ps1) creates all of this and hands the bind
-account and the CA certificate to the cluster. Run it from the management machine as a
-domain administrator, once the cluster exists:
+account and the CA certificate to the cluster. `up.ps1` runs it for you, as the ActiveDirectory step,
+right after it creates the cluster: it asks for a domain administrator's credentials and reaches the
+domain controller, `Keycloak.AdServer`, over PowerShell remoting from the management machine. Once
+the cluster holds the bind account's password, later runs skip the step. To change the directory
+later, run it yourself:
 
 ```powershell
 ./scripts/infra/azurelocal/ad-setup.ps1 -ComputerName <domain controller> -DomainName <domain> `
     -KubeContext <cluster context>
 ```
 
-If your directory already has these, put the bind account in `Keycloak.AdBindUpn` and the CA's
-certificate file in `Keycloak.AdCaCertificatePath` ([settings](./azure-local-settings.md#active-directory));
-the first `up.ps1` run asks for the bind password and keeps it in the cluster. To change the bind
-password, run `ad-setup.ps1 -ResetBindPassword`, then `keycloak.ps1`. To use an OU other than `OMS`,
-pass `keycloak.ps1 -AdOuName`.
+If your directory already has these, run `up.ps1 -Skip ActiveDirectory`, and put the bind account in
+`Keycloak.AdBindUpn` and the CA's certificate file in `Keycloak.AdCaCertificatePath`
+([settings](./azure-local-settings.md#active-directory)): the first run asks for the bind password
+and keeps it in the cluster. To change the bind password, run `ad-setup.ps1 -ResetBindPassword`, then
+`keycloak.ps1`. To use an OU other than `OMS`, set `Keycloak.AdOuName`.

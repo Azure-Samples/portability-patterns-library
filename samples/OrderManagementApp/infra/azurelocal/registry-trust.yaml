@@ -1,0 +1,82 @@
+# When the nodes run containerd 2, scripts/infra/azurelocal/connected-registry.ps1 turns off the
+# connected registry extension's node configuration, which only handles containerd 1.x, and applies
+# this instead, with the ${...} values filled in. Once on each node, it writes the registry's CA and
+# hosts.toml to /etc/containerd/certs.d, points containerd at that directory (the node image leaves
+# config_path empty) and restarts containerd. Running containers keep running.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: oms-registry-trust
+  namespace: ${NAMESPACE}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: oms-registry-trust
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: oms-registry-trust
+    spec:
+      nodeSelector:
+        kubernetes.io/os: linux
+      # systemctl restarts containerd only from the node's own process namespace.
+      hostPID: true
+      priorityClassName: system-node-critical
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 5
+      initContainers:
+        - name: configure
+          image: mcr.microsoft.com/azurelinux/base/core:3.0@sha256:3d16d8799f71a78f5bddb3b7cda4a57df1f40ecfa58bac89933010596aa86880
+          securityContext:
+            privileged: true
+          command: ["sh", "-c", 'cp /ca/ca.crt /host/run/oms-registry-ca.crt && exec chroot /host sh -eu -c "$CONFIGURE"']
+          env:
+            - name: REGISTRY
+              value: "${REGISTRY}"
+            # Runs on the node, with its own containerd and systemctl.
+            - name: CONFIGURE
+              value: |
+                dir=/etc/containerd/certs.d/$REGISTRY
+                mkdir -p "$dir"
+                cp /run/oms-registry-ca.crt "$dir/ca.crt"
+                printf 'server = "https://%s"\ncapabilities = ["pull", "resolve"]\nca = "%s/ca.crt"\n' "$REGISTRY" "$dir" > "$dir/hosts.toml"
+
+                conf=/etc/containerd/config.toml
+                section="^[[:space:]]*\[plugins\.'io\.containerd\.cri\.v1\.images'\.registry\]"
+                if sed -n "/$section/,/^[[:space:]]*\[/p" "$conf" | grep -q "config_path = ''"; then
+                  # Also drops the containerd 1.x tables the extension appends, which containerd 2 rejects.
+                  awk '/^[[:space:]]*\[plugins\."io\.containerd\.grpc\.v1\.cri"(\.registry)?\]/ { skip = 1; next } /^[[:space:]]*\[/ { skip = 0 } !skip' "$conf" |
+                    sed "/$section/,/^[[:space:]]*\[/ s#config_path = ''#config_path = '/etc/containerd/certs.d'#" > "$conf.new"
+                  containerd -c "$conf.new" config dump > /dev/null || { echo "containerd rejects the change, so $conf is left as is"; exit 1; }
+                  cp "$conf" "$conf.oms-backup"
+                  mv "$conf.new" "$conf"
+                  systemctl restart containerd
+                  echo "containerd now reads $dir"
+                fi
+          volumeMounts:
+            - name: host
+              mountPath: /host
+            - name: ca
+              mountPath: /ca
+              readOnly: true
+      containers:
+        - name: idle
+          image: mcr.microsoft.com/azurelinux/base/core:3.0@sha256:3d16d8799f71a78f5bddb3b7cda4a57df1f40ecfa58bac89933010596aa86880
+          command: ["sleep", "infinity"]
+          resources:
+            requests:
+              cpu: 1m
+              memory: 8Mi
+            limits:
+              memory: 16Mi
+      volumes:
+        - name: host
+          hostPath:
+            path: /
+        # The registry's CA only, from the Secret the extension keeps its certificate in.
+        - name: ca
+          secret:
+            secretName: ${CA_SECRET}
+            items:
+              - key: ca.crt
+                path: ca.crt

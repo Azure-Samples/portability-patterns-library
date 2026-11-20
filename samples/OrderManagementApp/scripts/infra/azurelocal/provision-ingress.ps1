@@ -71,14 +71,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
+. (Join-Path $repoRoot 'scripts/lib/common.ps1')
 . (Join-Path $repoRoot 'scripts/lib/cluster.ps1')
 Push-Location $repoRoot
-
-# Returns what the command printed.
-function Invoke-Checked([string]$What, [scriptblock]$Command) {
-    & $Command
-    if ($LASTEXITCODE -ne 0) { throw "$What failed with exit code $LASTEXITCODE." }
-}
 
 try {
     if (-not $PullRegistry) {

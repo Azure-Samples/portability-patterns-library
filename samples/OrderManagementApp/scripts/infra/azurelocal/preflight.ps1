@@ -11,7 +11,8 @@
       Azure        signed in, the subscription, resource providers, the Azure Local instance's
                    custom location and Arc resource bridge, the virtual switch
       Network      addresses for the control plane, node pool and load balancer fit together
-      Directory    the domain controller resolves through the site DNS and answers on LDAPS
+      Directory    the domain controller resolves through the site DNS and answers on LDAPS; for
+                   the ActiveDirectory step, this machine reaches it over PowerShell remoting
       Cluster      if it already exists: reachable, nodes ready, the connected registry's storage
                    class and ClusterIP, the AD Secrets Keycloak needs, a storage class for the
                    observability volumes
@@ -154,6 +155,15 @@ if ($signedIn) {
             $bridge = Invoke-OmsAzShow (@('resource', 'show', '--ids', $customLocation.properties.hostResourceId, '--output', 'json') + $sub) | ConvertFrom-Json
             if ($bridge.properties.status -eq 'Running') { Add-Result Azure 'Arc resource bridge' PASS $bridge.name }
             else { Add-Result Azure 'Arc resource bridge' FAIL "'$($customLocation.properties.hostResourceId)' is '$($bridge.properties.status)'; the instance must be connected to deploy" }
+
+            if ('Cluster' -notin $Skip -and -not $missingShared) {
+                Invoke-AzureCheck 'Kubernetes version' {
+                    $kubernetes = Resolve-OmsKubernetesVersion -SubscriptionId $s.SubscriptionId -ResourceGroup $s.ResourceGroup `
+                        -ClusterName $s.ClusterName -CustomLocationId $customLocation.id -KubernetesVersion $s.KubernetesVersion
+                    if ($kubernetes.Offered) { Add-Result Azure 'Kubernetes version' PASS "$($kubernetes.Version) ($($kubernetes.Reason))" }
+                    else { Add-Result Azure 'Kubernetes version' FAIL "the instance doesn't offer $($kubernetes.Version); it offers $($kubernetes.Ready -join ', '). Change KubernetesVersion in the Cluster settings, or leave it empty" }
+                }
+            }
         }
     }
 
@@ -183,8 +193,9 @@ if ($signedIn) {
     }
 
     # The KeyVault step grants the extension's identity, and you, access to the vault's secrets,
-    # which takes the right to create role assignments; Contributor doesn't have it. Roles held
-    # through a group count; a PIM-eligible role counts only once activated.
+    # which takes the right to create role assignments; Contributor doesn't have it. The app can't be
+    # deployed without the signing key that step syncs. Roles held through a group count; a
+    # PIM-eligible role counts only once activated.
     if ('KeyVault' -notin $Skip) {
         Invoke-AzureCheck 'Can create role assignments' {
             $assignee = if ($account.user.type -eq 'servicePrincipal') { $account.user.name } else { Invoke-OmsAzShow @('ad', 'signed-in-user', 'show', '--query', 'id', '--output', 'tsv') }
@@ -195,7 +206,7 @@ if ($signedIn) {
                     Where-Object { $_.roleDefinitionName -in 'Owner', 'User Access Administrator', 'Role Based Access Control Administrator' -and
                         ($_.scope -in $scopes -or $_.scope -like '/providers/Microsoft.Management/managementGroups/*') }) | Select-Object -First 1
             if ($canAssign) { Add-Result Azure 'Can create role assignments' PASS "$($canAssign.roleDefinitionName) on $($canAssign.scope)" }
-            else { Add-Result Azure 'Can create role assignments' FAIL "needs Owner, User Access Administrator or Role Based Access Control Administrator on the subscription or resource group '$($s.ResourceGroup)', for the KeyVault step (or skip it: -Skip KeyVault)" }
+            else { Add-Result Azure 'Can create role assignments' FAIL "needs Owner, User Access Administrator or Role Based Access Control Administrator on the subscription or resource group '$($s.ResourceGroup)', for the KeyVault step, which syncs the order archive's signing key the app needs. Or have someone who holds one run scripts/infra/azurelocal/key-vault.ps1" }
         }
     }
 }
@@ -275,10 +286,47 @@ else {
     $ldaps = Test-TcpPort $ldapsTarget 636
     if ($ldaps) { Add-Result Directory 'LDAPS (636)' PASS }
     else { Add-Result Directory 'LDAPS (636)' WARN "no answer from this machine; Keycloak in the cluster needs it" }
+
+    # The ActiveDirectory step runs ad-setup.ps1 on this machine, which reaches the controller by
+    # name over PowerShell remoting (WinRM), so through this machine's own resolver.
+    if ('ActiveDirectory' -notin $Skip) {
+        $domain = if ($s.AdDomain -and $s.AdDomain -notlike '<*') { $s.AdDomain } else { ($s.AdServer -split '\.', 2)[1] }
+        $local = try { [Net.Dns]::GetHostAddresses($s.AdServer) | Where-Object AddressFamily -eq 'InterNetwork' | Select-Object -First 1 } catch { $null }
+        if (-not $local) {
+            $fix = if ($resolved -and $dns -and $domain) {
+                "This machine doesn't use the site's DNS ($dns resolves it). Point this machine's DNS at $dns, or, in an elevated PowerShell, send only the site's domain there: Add-DnsClientNrptRule -Namespace '.$domain' -NameServers $dns"
+            }
+            else { "Use a management machine that resolves the site's domain" }
+            Add-Result Directory 'PowerShell remoting (5985)' FAIL "this machine doesn't resolve $($s.AdServer), which the ActiveDirectory step connects to. $fix. Or prepare the directory yourself and -Skip ActiveDirectory"
+        }
+        elseif (Test-TcpPort $local.IPAddressToString 5985) {
+            Add-Result Directory 'PowerShell remoting (5985)' PASS "$($s.AdServer) -> $($local.IPAddressToString)"
+
+            # Outside the site's domain, ad-setup.ps1 signs in with Kerberos, so this machine must
+            # find the domain's KDC through DNS and reach it.
+            $computer = if ($IsWindows) { Get-CimInstance -ClassName Win32_ComputerSystem }
+            if (-not ($computer -and $computer.PartOfDomain -and $computer.Domain -eq $domain)) {
+                $kdc = $null
+                if (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue) {
+                    $kdc = Resolve-DnsName -Name "_kerberos._tcp.$domain" -Type SRV -DnsOnly -QuickTimeout -ErrorAction SilentlyContinue |
+                        Where-Object NameTarget | Select-Object -First 1 -ExpandProperty NameTarget
+                }
+                if (-not $kdc) {
+                    Add-Result Directory 'Kerberos (88)' FAIL "this machine isn't in '$domain', so the ActiveDirectory step signs in with Kerberos, but it can't find the domain's KDC (_kerberos._tcp.$domain); use the site's DNS"
+                }
+                elseif (Test-TcpPort $kdc 88) { Add-Result Directory 'Kerberos (88)' PASS "this machine isn't in '$domain'; the ActiveDirectory step signs in with Kerberos through $kdc" }
+                else { Add-Result Directory 'Kerberos (88)' FAIL "no answer from the domain's KDC $kdc on port 88, which the ActiveDirectory step signs in through from outside the domain" }
+            }
+        }
+        else { Add-Result Directory 'PowerShell remoting (5985)' FAIL "no answer from $($s.AdServer) ($($local.IPAddressToString)); the ActiveDirectory step connects to it over PowerShell remoting" }
+    }
 }
 
 # Keycloak takes the directory's CA from this file the first time, so a wrong path only shows there.
-if ($s.AdCaCertificatePath -and $s.AdCaCertificatePath -notlike '<*') {
+if ('ActiveDirectory' -notin $Skip) {
+    Add-Result Directory 'Directory CA certificate' PASS 'the ActiveDirectory step hands it to the cluster'
+}
+elseif ($s.AdCaCertificatePath -and $s.AdCaCertificatePath -notlike '<*') {
     if ((Test-Path $s.AdCaCertificatePath) -and ((Get-Content $s.AdCaCertificatePath -Raw) -match '-----BEGIN CERTIFICATE-----')) {
         Add-Result Directory 'Directory CA certificate' PASS $s.AdCaCertificatePath
     }
@@ -353,7 +401,9 @@ else {
                     Add-Result Cluster "Secret identity/$secret" PASS
                 }
                 else {
-                    $how = if ($secret -eq 'oms-ad-bind') { "the Keycloak step asks for the bind account's password" } else { 'the Keycloak step reads AdCaCertificatePath' }
+                    $how = if ('ActiveDirectory' -notin $Skip) { 'the ActiveDirectory step creates it' }
+                    elseif ($secret -eq 'oms-ad-bind') { "the Keycloak step asks for the bind account's password" }
+                    else { 'the Keycloak step reads AdCaCertificatePath' }
                     Add-Result Cluster "Secret identity/$secret" PASS "not there yet; $how"
                 }
             }

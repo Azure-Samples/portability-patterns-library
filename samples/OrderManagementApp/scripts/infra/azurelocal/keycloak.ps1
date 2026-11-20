@@ -126,6 +126,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
+. (Join-Path $repoRoot 'scripts/lib/common.ps1')
 . (Join-Path $repoRoot 'scripts/lib/cluster.ps1')
 
 # Names fixed by the files in infra/azurelocal/keycloak.
@@ -151,27 +152,8 @@ $images = @(
 )
 Push-Location $repoRoot
 
-function Invoke-Checked {
-    param(
-        [Parameter(Mandatory = $true)][string]$What,
-        [Parameter(Mandatory = $true)][scriptblock]$Command
-    )
-
-    & $Command
-    if ($LASTEXITCODE -ne 0) {
-        throw "$What failed with exit code $LASTEXITCODE."
-    }
-}
-
 function Get-SecretValue([string]$Name, [string]$Key) {
     Get-OmsSecretValue -KubeContext $KubeContext -Namespace $Namespace -Name $Name -Key $Key
-}
-
-function New-RandomSecret {
-    $bytes = [byte[]]::new(24)
-    [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
-    # Base64url, so the value survives being pasted into a URL or a header without escaping.
-    return [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
 }
 
 # Renders infra/azurelocal/keycloak and the database file for -Availability through a kustomize

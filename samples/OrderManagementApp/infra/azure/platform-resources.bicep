@@ -9,6 +9,9 @@ param clusterName string
 @description('Globally unique container registry name.')
 param registryName string
 
+@description('Globally unique Key Vault name.')
+param keyVaultName string
+
 @description('Prefix of the user-assigned managed identities: one per service, and one for the database setup job.')
 param identityPrefix string
 
@@ -41,6 +44,9 @@ param registrySku string
 
 @description('Entra ID object IDs granted cluster administrator access: users, groups or service principals. Prefer a group.')
 param clusterAdminObjectIds array
+
+@description('Object IDs that may set Key Vault secrets besides the cluster administrators, such as the pipeline that runs provision-infra.ps1.')
+param keyVaultSecretsOfficerObjectIds array = []
 
 @description('Disable local accounts and authenticate with Entra ID plus Azure RBAC.')
 param useEntraAuthentication bool
@@ -369,6 +375,17 @@ resource cluster 'Microsoft.ContainerService/managedClusters@2025-04-01' = {
         enabled: true
       }
     }
+    // Key Vault CSI driver: mounts Key Vault secrets into the pods that ask for them, read as the
+    // pod's own workload identity, and picks up new versions every two minutes.
+    addonProfiles: {
+      azureKeyvaultSecretsProvider: {
+        enabled: true
+        config: {
+          enableSecretRotation: 'true'
+          rotationPollInterval: '2m'
+        }
+      }
+    }
     // Security patches for the nodes' OS arrive as new node images, which AKS applies by itself in
     // the weekly window below. Kubernetes version upgrades stay manual.
     autoUpgradeProfile: {
@@ -463,6 +480,55 @@ resource telemetryPublishers 'Microsoft.Authorization/roleAssignments@2022-04-01
     principalType: 'ServicePrincipal'
   }
 }]
+
+// Key Vault for secrets the app reads, today the order archive's signing key. Azure RBAC only, no
+// access policies. Purge protection is off so `azd down` and a new `azd up` can reuse the name;
+// turn it on in production, where a deleted vault must stay recoverable.
+resource keyVault 'Microsoft.KeyVault/vaults@2024-11-01' = {
+  name: keyVaultName
+  location: location
+  tags: tags
+  properties: {
+    tenantId: subscription().tenantId
+    sku: {
+      family: 'A'
+      name: 'standard'
+    }
+    enableRbacAuthorization: true
+    enableSoftDelete: true
+    softDeleteRetentionInDays: 7
+    publicNetworkAccess: 'Enabled'
+  }
+}
+
+var keyVaultSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'
+var keyVaultSecretsOfficerRoleId = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
+
+// The processor signs the orders it archives, so only its identity reads the vault's secrets.
+var processorIndex = indexOf(workloadNames, 'processor')
+resource processorSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (processorIndex >= 0) {
+  scope: keyVault
+  name: guid(keyVault.id, 'processor', keyVaultSecretsUserRoleId)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRoleId)
+    principalId: managedIdentities[max(processorIndex, 0)].properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// Administrators, and whoever runs provision-infra.ps1, set and rotate the secrets; that script
+// creates the signing key.
+@batchSize(1)
+resource secretsOfficerAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for adminObjectId in union(clusterAdminObjectIds, keyVaultSecretsOfficerObjectIds): {
+    scope: keyVault
+    name: guid(keyVault.id, adminObjectId, keyVaultSecretsOfficerRoleId)
+    properties: {
+      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsOfficerRoleId)
+      principalId: adminObjectId
+    }
+  }
+]
 
 resource alertActionGroup 'Microsoft.Insights/actionGroups@2023-01-01' = {
   name: '${clusterName}-alerts'
@@ -620,6 +686,7 @@ resource clusterAdminAssignments 'Microsoft.Authorization/roleAssignments@2022-0
 output registryLoginServer string = registry.properties.loginServer
 output registryName string = registry.name
 output clusterName string = cluster.name
+output keyVaultName string = keyVault.name
 output oidcIssuerUrl string = cluster.properties.oidcIssuerProfile.issuerURL
 output workloadIdentities array = [for (name, i) in workloadNames: {
   name: name
