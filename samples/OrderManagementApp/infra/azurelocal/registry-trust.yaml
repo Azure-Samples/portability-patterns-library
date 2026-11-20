@@ -1,41 +1,17 @@
-# Makes the nodes trust the connected registry's certificate when they run containerd 2. Applied by
-# scripts/infra/azurelocal/connected-registry.ps1, with the ${...} values filled in, only when the
-# cluster's nodes run containerd 2; with containerd 1.x the registry's Arc extension does this itself.
-#
-# The extension (1.5.1) puts the registry's CA and a hosts.toml in /etc/containerd/certs.d/<address>/,
-# but points containerd at that directory in containerd 1.x's configuration only. On containerd 2 it
-# leaves [plugins.'io.containerd.cri.v1.images'.registry] config_path empty, so every pull from the
-# registry fails with "x509: certificate signed by unknown authority". And it appends containerd 1.x's
-# [plugins."io.containerd.grpc.v1.cri"] table, a duplicate of containerd 2's own, so containerd fails
-# to start the next time it restarts. On these clusters the script turns the extension's node
-# configuration off (trustDistribution.enabled=false) and this does the same in containerd 2's terms.
-#
-# Every minute, on each node, it:
-#   1. writes the registry's CA and hosts.toml to /etc/containerd/certs.d/<address>/, as the extension
-#      does; containerd reads them at every pull, so this needs no restart;
-#   2. removes the duplicate table an earlier run of the extension appended, and sets config_path to
-#      /etc/containerd/certs.d when it's empty; anything else is left as is;
-#   3. installs a changed configuration only if the node's own containerd accepts it
-#      (containerd config dump), keeping the previous file;
-#   4. restarts containerd when its configuration changed after it started, so it reads the
-#      directory. Running containers keep running. If containerd doesn't come back, the previous
-#      file is put back, provided containerd accepts it.
-# A pod is ready once its node's running containerd reads the directory and has the registry's CA.
+# When the nodes run containerd 2, scripts/infra/azurelocal/connected-registry.ps1 turns off the
+# connected registry extension's node configuration, which only handles containerd 1.x, and applies
+# this instead, with the ${...} values filled in. Once on each node, it writes the registry's CA and
+# hosts.toml to /etc/containerd/certs.d, points containerd at that directory (the node image leaves
+# config_path empty) and restarts containerd. Running containers keep running.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: oms-registry-trust
   namespace: ${NAMESPACE}
-  labels:
-    app.kubernetes.io/name: oms-registry-trust
 spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: oms-registry-trust
-  updateStrategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxUnavailable: 1
   template:
     metadata:
       labels:
@@ -43,125 +19,56 @@ spec:
     spec:
       nodeSelector:
         kubernetes.io/os: linux
+      # systemctl restarts containerd only from the node's own process namespace.
       hostPID: true
       priorityClassName: system-node-critical
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 5
-      containers:
+      initContainers:
         - name: configure
-          # From Microsoft's registry, by digest: the connected registry is what this makes trusted.
           image: mcr.microsoft.com/azurelinux/base/core:3.0@sha256:3d16d8799f71a78f5bddb3b7cda4a57df1f40ecfa58bac89933010596aa86880
           securityContext:
             privileged: true
-          command: ["sh", "-c"]
-          args:
-            - |
-              rm -f /host/run/oms-registry-trust.ready
-              while :; do
-                if [ -s /ca/ca.crt ]; then cat /ca/ca.crt > /host/run/oms-registry-trust-ca.crt; fi
-                chroot /host sh -c "$OMS_CONFIGURE" || rm -f /host/run/oms-registry-trust.ready
-                sleep 60
-              done
+          command: ["sh", "-c", 'cp /ca/ca.crt /host/run/oms-registry-ca.crt && exec chroot /host sh -eu -c "$CONFIGURE"']
           env:
-            - name: OMS_REGISTRY
+            - name: REGISTRY
               value: "${REGISTRY}"
-            # Runs on the node itself (chroot), with its own containerd, systemctl and text tools.
-            - name: OMS_CONFIGURE
+            # Runs on the node, with its own containerd and systemctl.
+            - name: CONFIGURE
               value: |
-                set -u
-                registry=$OMS_REGISTRY
-                want=/etc/containerd/certs.d
-                conf=/etc/containerd/config.toml
-                ready=/run/oms-registry-trust.ready
-                log() { echo "$(date -u +%FT%TZ) $*"; }
-                notready() { rm -f "$ready"; log "$*"; exit 1; }
-                same() { [ -f "$1" ] && [ -f "$2" ] && cmp -s "$1" "$2"; }
-
-                # 1. The registry's CA and hosts.toml, which containerd reads at every pull.
-                dir=$want/$registry
+                dir=/etc/containerd/certs.d/$REGISTRY
                 mkdir -p "$dir"
-                [ -s /run/oms-registry-trust-ca.crt ] || notready "the registry's CA isn't mounted yet"
-                if ! same /run/oms-registry-trust-ca.crt "$dir/ca.crt"; then
-                  cp /run/oms-registry-trust-ca.crt "$dir/ca.crt.new" && mv "$dir/ca.crt.new" "$dir/ca.crt" && log "wrote $dir/ca.crt"
-                fi
-                printf 'server = "https://%s"\ncapabilities = ["pull", "resolve"]\nca = "%s/ca.crt"\n' "$registry" "$dir" > "$dir/hosts.toml.new"
-                if same "$dir/hosts.toml.new" "$dir/hosts.toml"; then rm -f "$dir/hosts.toml.new"
-                else mv "$dir/hosts.toml.new" "$dir/hosts.toml" && log "wrote $dir/hosts.toml"; fi
+                cp /run/oms-registry-ca.crt "$dir/ca.crt"
+                printf 'server = "https://%s"\ncapabilities = ["pull", "resolve"]\nca = "%s/ca.crt"\n' "$REGISTRY" "$dir" > "$dir/hosts.toml"
 
-                # 2. containerd 2's configuration: no duplicate of its CRI table, config_path set.
-                images="^[[:space:]]*\[plugins\.'io\.containerd\.cri\.v1\.images'\.registry\][[:space:]]*\$"
-                grep -q "$images" "$conf" || notready "$conf has no [plugins.'io.containerd.cri.v1.images'.registry] table, so it isn't containerd 2's configuration; left as is"
-                new=$conf.oms-new
-                cp -a "$conf" "$new"
-                if grep -q "^[[:space:]]*\[plugins\.'io\.containerd\.grpc\.v1\.cri'\][[:space:]]*\$" "$conf"; then
-                  awk '/^[[:space:]]*\[plugins\."io\.containerd\.grpc\.v1\.cri"(\.registry)?\][[:space:]]*$/ { skip=1; next } /^[[:space:]]*\[/ { skip=0 } !skip { print }' "$conf" > "$new.body"
-                else
-                  cat "$conf" > "$new.body"
-                fi
-                sed "/$images/,/^[[:space:]]*\[/ s#^\([[:space:]]*config_path[[:space:]]*=[[:space:]]*\)\(''\|\"\"\)[[:space:]]*\$#\1'$want'#" "$new.body" > "$new"
-                rm -f "$new.body"
-
-                # 3. Install it only if this node's containerd accepts it.
-                changed=false
-                if cmp -s "$new" "$conf"; then
-                  rm -f "$new"
-                else
-                  if ! containerd -c "$new" config dump >/dev/null 2>"$new.err"; then
-                    err=$(head -c 300 "$new.err"); rm -f "$new" "$new.err"
-                    notready "containerd rejects the changed configuration, so $conf is left as is: $err"
-                  fi
-                  rm -f "$new.err"
-                  cp -a "$conf" "$conf.oms-previous"
-                  mv "$new" "$conf"
-                  changed=true
-                  log "updated $conf (previous one kept as $conf.oms-previous)"
-                fi
-                path=$(containerd -c "$conf" config dump 2>/dev/null | sed -n "/$images/,/^[[:space:]]*\[/ s/^[[:space:]]*config_path[[:space:]]*=[[:space:]]*//p" | head -n 1)
-                case "$path" in
-                  *"$want"*) ;;
-                  *) notready "$conf sets config_path to $path, not $want; left as is" ;;
-                esac
-
-                # 4. Restart containerd if it started before its configuration last changed.
-                systemctl is-active --quiet containerd || notready "containerd isn't running"
-                started=$(date -d "$(systemctl show containerd -p ActiveEnterTimestamp --value)" +%s)
-                if $changed || [ "$(stat -c %Y "$conf")" -gt "$started" ]; then
-                  log "restarting containerd so it reads $want; running containers keep running"
+                conf=/etc/containerd/config.toml
+                section="^[[:space:]]*\[plugins\.'io\.containerd\.cri\.v1\.images'\.registry\]"
+                if sed -n "/$section/,/^[[:space:]]*\[/p" "$conf" | grep -q "config_path = ''"; then
+                  # Also drops the containerd 1.x tables the extension appends, which containerd 2 rejects.
+                  awk '/^[[:space:]]*\[plugins\."io\.containerd\.grpc\.v1\.cri"(\.registry)?\]/ { skip = 1; next } /^[[:space:]]*\[/ { skip = 0 } !skip' "$conf" |
+                    sed "/$section/,/^[[:space:]]*\[/ s#config_path = ''#config_path = '/etc/containerd/certs.d'#" > "$conf.new"
+                  containerd -c "$conf.new" config dump > /dev/null || { echo "containerd rejects the change, so $conf is left as is"; exit 1; }
+                  cp "$conf" "$conf.oms-backup"
+                  mv "$conf.new" "$conf"
                   systemctl restart containerd
-                  i=0
-                  until systemctl is-active --quiet containerd && crictl info >/dev/null 2>&1; do
-                    i=$((i + 1))
-                    if [ "$i" -ge 30 ]; then
-                      if [ -f "$conf.oms-previous" ] && containerd -c "$conf.oms-previous" config dump >/dev/null 2>&1; then
-                        cp -a "$conf.oms-previous" "$conf"
-                        systemctl reset-failed containerd
-                        systemctl restart containerd
-                        notready "containerd didn't come back with the new configuration, so the previous one was put back"
-                      fi
-                      notready "containerd didn't come back after the restart"
-                    fi
-                    sleep 2
-                  done
-                  log "containerd restarted"
+                  echo "containerd now reads $dir"
                 fi
-                [ -f "$ready" ] || log "ready: containerd reads $want, with the CA for $registry"
-                touch "$ready"
-          readinessProbe:
-            exec:
-              command: ["test", "-f", "/host/run/oms-registry-trust.ready"]
-            periodSeconds: 10
-          resources:
-            requests:
-              cpu: 10m
-              memory: 16Mi
-            limits:
-              memory: 64Mi
           volumeMounts:
             - name: host
               mountPath: /host
             - name: ca
               mountPath: /ca
               readOnly: true
+      containers:
+        - name: idle
+          image: mcr.microsoft.com/azurelinux/base/core:3.0@sha256:3d16d8799f71a78f5bddb3b7cda4a57df1f40ecfa58bac89933010596aa86880
+          command: ["sleep", "infinity"]
+          resources:
+            requests:
+              cpu: 1m
+              memory: 8Mi
+            limits:
+              memory: 16Mi
       volumes:
         - name: host
           hostPath:

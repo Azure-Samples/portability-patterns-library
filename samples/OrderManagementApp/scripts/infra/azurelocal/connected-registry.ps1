@@ -340,7 +340,7 @@ if (-not $extensionTrustDistribution) {
     if ($LASTEXITCODE -ne 0) { throw 'Applying infra/azurelocal/registry-trust.yaml failed.' }
     kubectl rollout status daemonset/oms-registry-trust --namespace $ExtensionNamespace --context $KubeContext --timeout=10m
     if ($LASTEXITCODE -ne 0) {
-        $logs = kubectl logs --namespace $ExtensionNamespace --context $KubeContext --selector app.kubernetes.io/name=oms-registry-trust --prefix --tail=5 2>&1
+        $logs = kubectl logs --namespace $ExtensionNamespace --context $KubeContext --selector app.kubernetes.io/name=oms-registry-trust --container configure --prefix --tail=5 2>&1
         throw "The nodes don't trust the connected registry yet after 10 minutes. Their log:`n$($logs -join "`n")"
     }
 }
