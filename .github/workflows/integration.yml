@@ -31,8 +31,8 @@ env:
   SAMPLE: samples/OrderManagementApp
 
 jobs:
-  integration-tests:
-    name: Integration tests
+  database-tests:
+    name: Database tests (SQL Server, PostgreSQL)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -46,11 +46,11 @@ jobs:
 
       # The database setup against SQL Server and PostgreSQL in containers. With CI=true, as here,
       # they fail rather than skip when there is no container engine.
-      - name: Integration tests
+      - name: Database setup and stock against SQL Server and PostgreSQL
         run: dotnet test OrderManagement.sln --configuration Release --filter "FullyQualifiedName~OrderManagement.Tests.Integration"
 
   end-to-end:
-    name: App end to end with docker compose
+    name: App end to end (docker compose)
     runs-on: ubuntu-latest
     defaults:
       run:
