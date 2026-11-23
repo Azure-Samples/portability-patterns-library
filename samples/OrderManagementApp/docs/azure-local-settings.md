@@ -9,7 +9,7 @@ every `<...>` placeholder. Leave the other values as they are. Git ignores `sett
 | Setting | What to put |
 |---|---|
 | `Common.SubscriptionId` | The subscription your Azure Local instance is registered in: `az account show --query id -o tsv` |
-| `Common.ResourceGroup` | A new resource group for the cluster, its registry and the Key Vault that holds the order archive's signing key, for example `bcd-azurelocal` |
+| `Common.ResourceGroup` | A new resource group for the cluster, its registry and the Key Vault (for secrets that already live in Azure), for example `bcd-azurelocal` |
 | `Common.ClusterName` | A name for the AKS cluster, for example `bcd-aksarc` |
 | `Common.KubeContext` | The kubectl context the scripts create for it; usually the cluster's name |
 | `Common.RegistryName` | A new, globally unique name for the container registry the scripts create: 5–50 lowercase letters and digits |
@@ -34,10 +34,6 @@ so two workers hold everything while the third is down. With `standard`, set `Cl
 `Standard_A4_v2` (8 GB). List your instance's sizes with
 `az aksarc vmsize list --custom-location <custom location ID>`.
 
-A new cluster gets the newest Kubernetes version your instance offers, and setup leaves an existing
-cluster's version as it is. To pin a version, or to upgrade, set `Cluster.KubernetesVersion` to one
-your instance offers: `az aksarc get-versions --custom-location <custom location ID>`.
-
 ## Network
 
 Ask your network team for these, on the same subnet as the Azure Local nodes. All addresses must be
@@ -58,13 +54,13 @@ free, and the three ranges must not overlap.
 
 | Setting | What to put |
 |---|---|
-| `Keycloak.AdServer` | Your domain controller's full name, for example `dc01.contoso.local`. It must match the name on its LDAPS certificate. The ActiveDirectory step reaches it over PowerShell remoting (5985), so the management machine must resolve this name. |
+| `Keycloak.AdServer` | Your domain controller's full name, for example `dc01.contoso.local`. It must match the name on its LDAPS certificate. |
 | `Keycloak.AdDomain` | Your Active Directory domain, for example `contoso.local` |
 | `Keycloak.AdBindUpn` | Only if you prepared the directory yourself (`up.ps1 -Skip ActiveDirectory`): the read-only account Keycloak reads the directory with, for example `svc-keycloak@contoso.local`. The first run asks for its password and keeps it in the cluster; it never goes in this file. |
 | `Keycloak.AdCaCertificatePath` | Only with `-Skip ActiveDirectory`: the certificate (PEM) of the CA that issued your domain controller's LDAPS certificate. It's public; on a domain-joined machine export it with `certutil -ca.cert ca.cer` and convert it with `certutil -encode ca.cer ca.crt`. |
 
 Otherwise leave the last two empty: the ActiveDirectory step creates the account and hands the CA to
-the cluster ([Connect your Active Directory](./authentication.md#connect-your-active-directory)).
+the cluster.
 
 ## Check before you deploy
 

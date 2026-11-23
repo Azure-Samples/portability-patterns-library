@@ -118,11 +118,9 @@ needs:
 - LDAPS on the domain controller, which needs a server certificate from a certificate authority.
 
 [ad-setup.ps1](../scripts/infra/azurelocal/ad-setup.ps1) creates all of this and hands the bind
-account and the CA certificate to the cluster. `up.ps1` runs it for you, as the ActiveDirectory step,
-right after it creates the cluster: it asks for a domain administrator's credentials and reaches the
-domain controller, `Keycloak.AdServer`, over PowerShell remoting from the management machine. Once
-the cluster holds the bind account's password, later runs skip the step. To change the directory
-later, run it yourself:
+account and the CA certificate to the cluster. `up.ps1` runs it right after it creates the cluster,
+and asks for a domain administrator's credentials. To change the directory later, run it yourself
+from the management machine as a domain administrator:
 
 ```powershell
 ./scripts/infra/azurelocal/ad-setup.ps1 -ComputerName <domain controller> -DomainName <domain> `
