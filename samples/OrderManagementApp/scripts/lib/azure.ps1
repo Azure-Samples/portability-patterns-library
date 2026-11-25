@@ -114,29 +114,24 @@ function Get-OmsCallerPrincipalType {
     if ($type -eq 'user') { 'User' } else { 'ServicePrincipal' }
 }
 
-# Gives the account the Azure CLI is signed in as Key Vault Secrets Officer on a vault someone else
-# deployed, for example azd, which may sign in as another account, so the scripts can set the
-# secrets they create. Only warns when it can't: the account may have the role through a group, and
+# Gives an account Key Vault Secrets Officer on a vault someone else deployed, for example azd, so
+# the scripts can set the secrets they create. az returns the existing assignment if there is one.
+# Only warns when it can't: the account may have the role through a group, and
 # Initialize-OmsArchiveSigningKey says what's missing if it hasn't.
 function Grant-OmsKeyVaultSecretsOfficer {
-    param([Parameter(Mandatory = $true)][string]$KeyVaultName)
+    param(
+        [Parameter(Mandatory = $true)][string]$KeyVaultName,
+        [Parameter(Mandatory = $true)][string]$ObjectId
+    )
 
-    $role = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
     $vaultId = az keyvault show --name $KeyVaultName --query id --output tsv
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($vaultId)) { throw "Reading Key Vault '$KeyVaultName' failed." }
-    $vaultId = $vaultId.Trim()
-    $objectId = Get-OmsCallerObjectId
 
-    # No parentheses in --query: on Windows, az is a batch file and cmd.exe would read them.
-    $assigned = @(az role assignment list --scope $vaultId --assignee-object-id $objectId --role $role --include-inherited `
-            --fill-principal-name false --query '[].id' --output tsv)
-    if ($LASTEXITCODE -eq 0 -and $assigned.Count -gt 0) { return }
-
-    Write-Host "==> Giving $objectId Key Vault Secrets Officer on '$KeyVaultName'" -ForegroundColor Cyan
-    $output = az role assignment create --scope $vaultId --assignee-object-id $objectId `
-        --assignee-principal-type (Get-OmsCallerPrincipalType) --role $role --output none 2>&1
+    Write-Host "==> Giving $ObjectId Key Vault Secrets Officer on '$KeyVaultName'" -ForegroundColor Cyan
+    $output = az role assignment create --scope $vaultId.Trim() --assignee-object-id $ObjectId `
+        --assignee-principal-type (Get-OmsCallerPrincipalType) --role 'Key Vault Secrets Officer' --output none 2>&1
     if ($LASTEXITCODE -ne 0) {
         $errors = @($output | Where-Object { $_ -is [Management.Automation.ErrorRecord] } | ForEach-Object { "$_" }) -join ' '
-        Write-Warning "Giving $objectId Key Vault Secrets Officer on '$KeyVaultName' failed: $errors"
+        Write-Warning "Giving $ObjectId Key Vault Secrets Officer on '$KeyVaultName' failed: $errors"
     }
 }

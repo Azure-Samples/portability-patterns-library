@@ -269,8 +269,8 @@ try {
                         $_.DnsNameList.Unicode -contains $dcName
                     } | Sort-Object NotAfter -Descending | Select-Object -First 1
             }
-            # The certificate LDAPS serves, which is what Keycloak validates; with several in the
-            # store, the directory picks one itself. Nothing comes back while LDAPS isn't serving.
+            # The certificate LDAPS serves, which is what Keycloak validates; the directory may serve
+            # one from another store. Nothing comes back while LDAPS isn't serving a valid one.
             $served = {
                 $tcp = [System.Net.Sockets.TcpClient]::new()
                 $ssl = $null
@@ -294,13 +294,12 @@ try {
             if ($dcCert) {
                 Write-Host "    LDAPS already serves a certificate from '$($dcCert.Issuer)'"
             }
+            elseif ($dcCert = & $find) {
+                Write-Host "    the controller already has a certificate from '$($dcCert.Issuer)'"
+            }
             else {
-                $dcCert = & $find
-                if ($dcCert) {
-                    Write-Host "    the controller has a certificate from '$($dcCert.Issuer)' that LDAPS doesn't serve yet"
-                }
                 # A CA this controller already runs is reused rather than stacking a second one.
-                elseif (-not (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\CertSvc\Configuration' -Name Active -ErrorAction SilentlyContinue).Active) {
+                if (-not (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\CertSvc\Configuration' -Name Active -ErrorAction SilentlyContinue).Active) {
                     # The name Windows suggests when you install a CA by hand.
                     if (-not $caName) {
                         Import-Module ActiveDirectory
@@ -325,30 +324,20 @@ try {
 
                 # Auto-enrolment is on a timer, so it's nudged rather than waited for.
                 $deadline = (Get-Date).AddMinutes(5)
-                while (-not $dcCert -and (Get-Date) -lt $deadline) {
+                while (-not ($dcCert = & $find) -and (Get-Date) -lt $deadline) {
                     certutil -pulse | Out-Null
                     Start-Sleep -Seconds 15
-                    $dcCert = & $find
                 }
                 if (-not $dcCert) { throw "The controller never enrolled a server authentication certificate for $dcName." }
 
                 # The controller serves other systems, so the directory is not restarted: the rootDSE
-                # 'renewServerCertificate' operation tells LDAP to load the certificate in place.
+                # 'renewServerCertificate' operation tells LDAP to load the new certificate in place.
                 # The bind is explicit because a remote session has no credentials to pass on.
                 $rootDse = [System.DirectoryServices.DirectoryEntry]::new('LDAP://localhost/RootDSE',
                     $directoryCredential.UserName, $directoryCredential.GetNetworkCredential().Password)
                 $rootDse.Properties['renewServerCertificate'].Value = 1
                 $rootDse.CommitChanges()
                 $rootDse.Dispose()
-
-                $deadline = (Get-Date).AddMinutes(1)
-                while (-not ($loaded = & $served) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 5 }
-                if ($loaded) {
-                    $dcCert = $loaded
-                }
-                else {
-                    Write-Warning "LDAPS on $dcName didn't serve a valid certificate within a minute, so Keycloak gets the root of the certificate from '$($dcCert.Issuer)'. If sign-in fails with a certificate error, check the certificate LDAPS serves."
-                }
             }
 
             $chain = [Security.Cryptography.X509Certificates.X509Chain]::new()
@@ -453,15 +442,6 @@ try {
 
             # Passwords this run didn't set stay as the Secret has them. The values go to kubectl on
             # stdin, never on a command line. The sample users' credentials are for sign-in tests.
-            # Keycloak is not domain joined, so it never receives the root certificate the way a
-            # member machine would; it has to be handed over explicitly for LDAPS to validate. It's
-            # written first: setup-platform.ps1 counts the directory as prepared once the bind
-            # password is there too, so a run interrupted in between runs again.
-            if ($caCertPem) {
-                Set-OmsSecret -KubeContext $KubeContext -Namespace $SecretNamespace -Name $CaSecretName -Data @{ 'ca.crt' = $caCertPem }
-                Write-Host "    secret/$CaSecretName in namespace $SecretNamespace" -ForegroundColor DarkGray
-            }
-
             $data = Get-OmsSecretData -KubeContext $KubeContext -Namespace $SecretNamespace -Name $SecretName
             if ($data['bind-upn'] -and $data['bind-upn'] -ne $created.BindUpn) { $data.Remove('bind-password') }
             $data['bind-dn'] = $created.BindDn
@@ -483,6 +463,13 @@ keycloak.ps1 ask for the current one.
             }
             elseif ($created.BindPasswordSet) {
                 Write-Host '    run keycloak.ps1 to apply the new bind password to Keycloak' -ForegroundColor Yellow
+            }
+
+            # Keycloak is not domain joined, so it never receives the root certificate the way a
+            # member machine would; it has to be handed over explicitly for LDAPS to validate.
+            if ($caCertPem) {
+                Set-OmsSecret -KubeContext $KubeContext -Namespace $SecretNamespace -Name $CaSecretName -Data @{ 'ca.crt' = $caCertPem }
+                Write-Host "    secret/$CaSecretName in namespace $SecretNamespace" -ForegroundColor DarkGray
             }
         }
     }

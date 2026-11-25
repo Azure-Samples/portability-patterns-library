@@ -41,10 +41,10 @@ function Get-OmsSecretValue {
 }
 
 # Whether the ActiveDirectory step has already run against this cluster: it holds the bind account's
-# password and, unless that step was told not to set up certificates, the directory's CA. ad-setup.ps1
-# writes the CA's Secret first, so a run interrupted between the two is run again. A Secret that
-# can't be read throws, as for Get-OmsSecretData: an unreachable cluster isn't one that needs the
-# directory prepared, and that step changes the directory before it writes the Secrets.
+# password and, unless that step was told not to set up certificates, the directory's CA, so a run
+# interrupted between writing the two is run again. A Secret that can't be read throws, as for
+# Get-OmsSecretData: an unreachable cluster isn't one that needs the directory prepared, and that
+# step changes the directory before it writes the Secrets.
 function Test-OmsDirectoryPrepared {
     param(
         [Parameter(Mandatory = $true)][string]$KubeContext,

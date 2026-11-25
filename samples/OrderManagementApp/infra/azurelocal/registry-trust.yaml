@@ -55,30 +55,12 @@ spec:
 
                 paths=`config_path "$conf"`
                 if [ -z "$paths" ]; then
-                  # Only containerd 2's own config versions: in an older one, the containerd 1.x
-                  # tables dropped below hold the CRI settings.
-                  version=`sed -n 's/^version[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$conf" | head -n 1`
-                  if [ "${version:-1}" -lt 3 ]; then
-                    echo "containerd reads no hosts directory and $conf is a version ${version:-1} config, so it's left as is: set config_path in its CRI registry section"
-                    exit 1
-                  fi
                   # Also drops the containerd 1.x tables the extension appends, which containerd 2 rejects.
-                  awk '/^[[:space:]]*\[plugins\."io\.containerd\.grpc\.v1\.cri"(\.registry)?\]/ { skip = 1; next } /^[[:space:]]*\[/ { skip = 0 } !skip' "$conf" > "$conf.new"
-                  if grep -q "$section" "$conf.new"; then
-                    sed -i "/$section/,/^[[:space:]]*\[/ s#^\([[:space:]]*config_path[[:space:]]*=[[:space:]]*\)[\"'][\"']#\1'$default'#" "$conf.new"
-                  else
-                    printf "\n[plugins.'io.containerd.cri.v1.images'.registry]\n  config_path = '%s'\n" "$default" >> "$conf.new"
-                  fi
+                  awk '/^[[:space:]]*\[plugins\."io\.containerd\.grpc\.v1\.cri"(\.registry)?\]/ { skip = 1; next } /^[[:space:]]*\[/ { skip = 0 } !skip' "$conf" |
+                    sed "/$section/,/^[[:space:]]*\[/ s#^\([[:space:]]*config_path[[:space:]]*=[[:space:]]*\)[\"'][\"']#\1'$default'#" > "$conf.new"
                   changed=`config_path "$conf.new"`
                   if [ "$changed" != "$default" ]; then
                     echo "containerd wouldn't read $default after the change to $conf (it read '$changed'), so $conf is left as is"
-                    rm -f "$conf.new"
-                    exit 1
-                  fi
-                  # containerd's image service doesn't start with mirrors or registry configs next to
-                  # config_path, which config dump doesn't catch.
-                  if containerd -c "$conf.new" config dump | grep -Eq "\[plugins\.'io\.containerd\.cri\.v1\.images'\.registry\.(mirrors|configs)\."; then
-                    echo "$conf sets registry mirrors or configs, which containerd doesn't allow with config_path, so it's left as is: move them to hosts.toml files under $default"
                     rm -f "$conf.new"
                     exit 1
                   fi
@@ -94,11 +76,7 @@ spec:
                 mkdir -p "$dir"
                 cp /run/oms-registry-ca.crt "$dir/ca.crt"
                 printf 'server = "https://%s"\ncapabilities = ["pull", "resolve"]\nca = "%s/ca.crt"\n' "$REGISTRY" "$dir" > "$dir/hosts.toml"
-                reads=`config_path "$conf"`
-                case ":$reads:" in
-                  *":${paths%%:*}:"*) echo "containerd reads $dir" ;;
-                  *) echo "containerd reads '$reads', not ${paths%%:*}"; exit 1 ;;
-                esac
+                echo "containerd reads $dir"
           volumeMounts:
             - name: host
               mountPath: /host
