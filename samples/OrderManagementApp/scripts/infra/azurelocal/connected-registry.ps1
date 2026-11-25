@@ -141,6 +141,12 @@ $runtimes = Invoke-Checked 'reading the nodes' {
     kubectl get nodes --context $KubeContext --output jsonpath='{range .items[*]}{.metadata.name}={.status.nodeInfo.containerRuntimeVersion}{"\n"}{end}'
 }
 $containerd2Nodes = @($runtimes | Where-Object { $_ -match '=containerd://(\d+)\.' -and [int]$Matches[1] -ge 2 })
+$containerd1Nodes = @($runtimes | Where-Object { $_ -match '=containerd://1\.' })
+# Each way handles only its own containerd, and the extension's setting applies to every node. With
+# both, during an upgrade for example, some nodes would get no registry trust, so nothing changes.
+if ($containerd2Nodes -and $containerd1Nodes) {
+    throw "The nodes run both containerd 1.x ($(($containerd1Nodes -replace '=.*') -join ', ')) and containerd 2 ($(($containerd2Nodes -replace '=.*') -join ', ')). Finish the node upgrade so every node runs the same major version, then run this again."
+}
 $extensionTrustDistribution = $containerd2Nodes.Count -eq 0
 if (-not $extensionTrustDistribution) {
     Write-Host "    the nodes run containerd 2; registry-trust.yaml makes them trust the registry, not the extension" -ForegroundColor DarkGray
@@ -323,8 +329,13 @@ if (-not $extensionTrustDistribution) {
     }
 
     Write-Host "==> Making containerd 2 on every node trust the registry" -ForegroundColor Cyan
+    # The CA the DaemonSet mounts; its fingerprint in the pod template reconfigures the nodes when it changes.
+    $trustCa = Get-OmsSecretValue -KubeContext $KubeContext -Namespace $ExtensionNamespace -Name "$ExtensionName-tls" -Key 'ca.crt'
+    if (-not $trustCa) { throw "No CA in Secret '$ExtensionNamespace/$ExtensionName-tls'. Check the extension's pods in '$ExtensionNamespace'." }
+    $trustCaFingerprint = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes(($trustCa -replace "`r", '').Trim()))).ToLowerInvariant()
     (Get-Content (Join-Path $repoRoot 'infra/azurelocal/registry-trust.yaml') -Raw).
-    Replace('${NAMESPACE}', $ExtensionNamespace).Replace('${REGISTRY}', $ServiceClusterIp).Replace('${CA_SECRET}', "$ExtensionName-tls") |
+    Replace('${NAMESPACE}', $ExtensionNamespace).Replace('${REGISTRY}', $ServiceClusterIp).Replace('${CA_SECRET}', "$ExtensionName-tls").
+    Replace('${CA_FINGERPRINT}', $trustCaFingerprint) |
         kubectl apply --context $KubeContext -f - | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Applying infra/azurelocal/registry-trust.yaml failed.' }
     kubectl rollout status daemonset/oms-registry-trust --namespace $ExtensionNamespace --context $KubeContext --timeout=10m

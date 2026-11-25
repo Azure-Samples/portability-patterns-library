@@ -131,10 +131,7 @@ try {
         }
     }
 
-    # This script creates the order archive's signing key, so whoever runs it, a user or a
-    # pipeline's service principal, may set Key Vault secrets.
     . (Join-Path $repoRoot 'scripts/lib/azure.ps1')
-    $callerObjectId = Get-OmsCallerObjectId
 
     # Arrays cannot be passed as key=value, so every parameter goes through a file.
     if ($SkipTemplate) {
@@ -154,6 +151,9 @@ try {
             az aks show --resource-group $ResourceGroup --name $ClusterName --query oidcIssuerProfile.issuerUrl --output tsv
         }
         if (-not $KeyVaultName) { throw 'With -SkipTemplate, pass -KeyVaultName: the keyVaultName output of infra/azure/platform.bicep.' }
+        # Whoever deployed the template, azd for example, gave its own account Secrets Officer; the
+        # Azure CLI may be signed in as another one.
+        Grant-OmsKeyVaultSecretsOfficer -KeyVaultName $KeyVaultName
         $processorClientId = Invoke-Checked "az identity show $IdentityPrefix-processor" {
             az identity show --resource-group $ResourceGroup --name "$IdentityPrefix-processor" --query clientId --output tsv
         }
@@ -162,6 +162,10 @@ try {
         . (Join-Path $repoRoot 'scripts/lib/network.ps1')
         Assert-OmsAddressRanges -VirtualNetworkAddressPrefix $VirtualNetworkAddressPrefix -PodCidr $PodCidr `
             -ServiceCidr $ServiceCidr -HubVirtualNetworkId $HubVirtualNetworkId
+
+        # This script creates the order archive's signing key, so whoever runs it, a user or a
+        # pipeline's service principal, may set Key Vault secrets.
+        $callerObjectId = Get-OmsCallerObjectId
 
         $templateParameters = @{
             location                        = $Location

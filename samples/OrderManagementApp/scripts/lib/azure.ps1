@@ -91,18 +91,52 @@ function Initialize-OmsArchiveSigningKey {
     finally { Remove-Item $keyFile -ErrorAction SilentlyContinue }
 }
 
-# Object ID of the account the Azure CLI is signed in as: a user, or a service principal such as a
-# pipeline's. Scripts give it the rights they then use themselves, for example Key Vault Secrets Officer.
+# Object ID of the account the Azure CLI is signed in as: a user, a service principal such as a
+# pipeline's, or a managed identity. Scripts give it the rights they then use themselves, for example
+# Key Vault Secrets Officer. It's the oid claim of the CLI's Azure Resource Manager token, so it needs
+# no directory lookup, which a restricted service principal may not be allowed, and works for a
+# managed identity, whose account name in the CLI isn't an ID.
 function Get-OmsCallerObjectId {
-    $account = az account show --output json | ConvertFrom-Json
+    $token = az account get-access-token --resource https://management.azure.com/ --query accessToken --output tsv
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($token)) { throw "Getting an Azure Resource Manager token failed. Run 'az login' first." }
+    $payload = $token.Trim().Split('.')[1].Replace('-', '+').Replace('_', '/')
+    $payload = $payload.PadRight($payload.Length + (4 - $payload.Length % 4) % 4, '=')
+    $oid = ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload)) | ConvertFrom-Json).oid
+    if (-not $oid) { throw "The Azure CLI's token has no object ID (oid) claim." }
+    $oid
+}
+
+# The principal type of the account the Azure CLI is signed in as, as role assignments take it:
+# User, or ServicePrincipal for a service principal or managed identity.
+function Get-OmsCallerPrincipalType {
+    $type = az account show --query user.type --output tsv
     if ($LASTEXITCODE -ne 0) { throw "Reading the Azure CLI's account failed. Run 'az login' first." }
-    $id = if ($account.user.type -eq 'user') {
-        az ad signed-in-user show --query id --output tsv
+    if ($type -eq 'user') { 'User' } else { 'ServicePrincipal' }
+}
+
+# Gives the account the Azure CLI is signed in as Key Vault Secrets Officer on a vault someone else
+# deployed, for example azd, which may sign in as another account, so the scripts can set the
+# secrets they create. Only warns when it can't: the account may have the role through a group, and
+# Initialize-OmsArchiveSigningKey says what's missing if it hasn't.
+function Grant-OmsKeyVaultSecretsOfficer {
+    param([Parameter(Mandatory = $true)][string]$KeyVaultName)
+
+    $role = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
+    $vaultId = az keyvault show --name $KeyVaultName --query id --output tsv
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($vaultId)) { throw "Reading Key Vault '$KeyVaultName' failed." }
+    $vaultId = $vaultId.Trim()
+    $objectId = Get-OmsCallerObjectId
+
+    # No parentheses in --query: on Windows, az is a batch file and cmd.exe would read them.
+    $assigned = @(az role assignment list --scope $vaultId --assignee-object-id $objectId --role $role --include-inherited `
+            --fill-principal-name false --query '[].id' --output tsv)
+    if ($LASTEXITCODE -eq 0 -and $assigned.Count -gt 0) { return }
+
+    Write-Host "==> Giving $objectId Key Vault Secrets Officer on '$KeyVaultName'" -ForegroundColor Cyan
+    $output = az role assignment create --scope $vaultId --assignee-object-id $objectId `
+        --assignee-principal-type (Get-OmsCallerPrincipalType) --role $role --output none 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $errors = @($output | Where-Object { $_ -is [Management.Automation.ErrorRecord] } | ForEach-Object { "$_" }) -join ' '
+        Write-Warning "Giving $objectId Key Vault Secrets Officer on '$KeyVaultName' failed: $errors"
     }
-    else {
-        # A service principal or managed identity; user.name is its application (client) ID.
-        az ad sp show --id $account.user.name --query id --output tsv
-    }
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($id)) { throw "Could not resolve the object ID of '$($account.user.name)'." }
-    $id.Trim()
 }

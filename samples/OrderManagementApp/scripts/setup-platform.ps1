@@ -39,9 +39,10 @@
 
     Azure Local needs a read-only bind account in the site's Active Directory for Keycloak. The
     ActiveDirectory step creates it, with the app's OU and groups, and asks for a domain
-    administrator; once the cluster holds the bind account's password, later runs skip it. If your
-    directory is already prepared, -Skip ActiveDirectory and set Keycloak.AdBindUpn and
-    Keycloak.AdCaCertificatePath instead: the Keycloak step then asks for the account's password.
+    administrator; once the cluster holds the bind account's password and the directory's CA, later
+    runs skip it. If your directory is already prepared, -Skip ActiveDirectory and set
+    Keycloak.AdBindUpn and Keycloak.AdCaCertificatePath instead: the Keycloak step then asks for the
+    account's password.
 
     On Azure Local, run it from a management machine that can sign in to Azure and reach the site
     network: some steps use both.
@@ -114,13 +115,17 @@ try {
         }
         $script = Join-Path $PSScriptRoot $steps[$step]
         $arguments = Get-OmsStepArguments $settings $step $script $shared[$step]
-        # The directory is prepared once. When the cluster already holds the bind account's password,
-        # there is nothing to do and no reason to ask for a domain administrator again; run
-        # ad-setup.ps1 itself to change the directory later.
+        # The directory is prepared once. When the cluster already holds the bind account's password
+        # and the directory's CA, there is nothing to do and no reason to ask for a domain
+        # administrator again; run ad-setup.ps1 itself to change the directory later. A cluster that
+        # can't be read stops the run: the step would change the directory first.
         if ($step -eq 'ActiveDirectory') {
-            $bindPassword = try { Get-OmsSecretValue -KubeContext $arguments['KubeContext'] -Namespace identity -Name oms-ad-bind -Key bind-password } catch { $null }
-            if ($bindPassword) {
-                Write-Host "==> [$Target] $step already done: the cluster holds Secret identity/oms-ad-bind" -ForegroundColor DarkGray
+            $context = if ($arguments['KubeContext']) { $arguments['KubeContext'] } else { Get-OmsParameterDefault $script 'KubeContext' }
+            if ($WhatIfPreference) {
+                Write-Host "==> [$Target] $step runs only if the cluster doesn't hold Secrets identity/oms-ad-bind and identity/oms-ad-ca yet" -ForegroundColor DarkGray
+            }
+            elseif (Test-OmsDirectoryPrepared -KubeContext $context -WithoutCertificate:([bool]$arguments['SkipCertificateAuthority'])) {
+                Write-Host "==> [$Target] $step already done: the cluster holds Secrets identity/oms-ad-bind and identity/oms-ad-ca" -ForegroundColor DarkGray
                 continue
             }
         }

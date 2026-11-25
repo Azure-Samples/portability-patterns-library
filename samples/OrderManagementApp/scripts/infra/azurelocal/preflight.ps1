@@ -39,6 +39,7 @@ $ErrorActionPreference = 'Stop'
 $results = [System.Collections.Generic.List[object]]::new()
 . (Join-Path $PSScriptRoot '../../lib/settings.ps1')
 . (Join-Path $PSScriptRoot '../../lib/azure.ps1')
+. (Join-Path $PSScriptRoot '../../lib/secrets.ps1')
 
 function Add-Result([string]$Area, [string]$Check, [ValidateSet('PASS', 'WARN', 'FAIL')][string]$Status, [string]$Detail = '') {
     $results.Add([pscustomobject]@{ Area = $Area; Check = $Check; Status = $Status; Detail = $Detail })
@@ -263,6 +264,19 @@ else { Add-Result Network 'Registry ClusterIP' PASS $s.ServiceClusterIp }
 
 # --- Directory ----------------------------------------------------------------------------------
 $dns = @($s.DnsServers)[0]
+# setup-platform.ps1 skips the ActiveDirectory step when the cluster already holds what it writes,
+# so the checks for reaching the controller from this machine are left out then too. A cluster that
+# doesn't exist yet or can't be read counts as not prepared, so they run.
+$directoryPrepared = $false
+if ('ActiveDirectory' -notin $Skip -and $s.KubeContext -and (Get-Command kubectl -ErrorAction SilentlyContinue)) {
+    $knownContexts = @(kubectl config get-contexts --output name 2>$null)
+    if ($s.KubeContext -in $knownContexts) {
+        $directoryPrepared = try {
+            Test-OmsDirectoryPrepared -KubeContext $s.KubeContext -WithoutCertificate:([bool]$site['ActiveDirectory'].SkipCertificateAuthority)
+        }
+        catch { $false }
+    }
+}
 if (-not $s.AdServer -or $s.AdServer -like '<*') {
     Write-Host "`nDirectory" -ForegroundColor Cyan
     Add-Result Directory 'Domain controller' FAIL 'set AdServer in the Keycloak settings to the DC FQDN'
@@ -289,7 +303,10 @@ else {
 
     # The ActiveDirectory step runs ad-setup.ps1 on this machine, which reaches the controller by
     # name over PowerShell remoting (WinRM), so through this machine's own resolver.
-    if ('ActiveDirectory' -notin $Skip) {
+    if ($directoryPrepared) {
+        Add-Result Directory 'Prepared' PASS 'the cluster holds Secrets identity/oms-ad-bind and identity/oms-ad-ca, so setup skips the ActiveDirectory step'
+    }
+    elseif ('ActiveDirectory' -notin $Skip) {
         $domain = if ($s.AdDomain -and $s.AdDomain -notlike '<*') { $s.AdDomain } else { ($s.AdServer -split '\.', 2)[1] }
         $local = try { [Net.Dns]::GetHostAddresses($s.AdServer) | Where-Object AddressFamily -eq 'InterNetwork' | Select-Object -First 1 } catch { $null }
         if (-not $local) {
@@ -303,19 +320,21 @@ else {
             Add-Result Directory 'PowerShell remoting (5985)' PASS "$($s.AdServer) -> $($local.IPAddressToString)"
 
             # Outside the site's domain, ad-setup.ps1 signs in with Kerberos, so this machine must
-            # find the domain's KDC through DNS and reach it.
+            # find a KDC of the domain through DNS and reach it. Windows tries them in priority order.
             $computer = if ($IsWindows) { Get-CimInstance -ClassName Win32_ComputerSystem }
             if (-not ($computer -and $computer.PartOfDomain -and $computer.Domain -eq $domain)) {
-                $kdc = $null
+                $kdcs = @()
                 if (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue) {
-                    $kdc = Resolve-DnsName -Name "_kerberos._tcp.$domain" -Type SRV -DnsOnly -QuickTimeout -ErrorAction SilentlyContinue |
-                        Where-Object NameTarget | Select-Object -First 1 -ExpandProperty NameTarget
+                    $kdcs = @(Resolve-DnsName -Name "_kerberos._tcp.$domain" -Type SRV -DnsOnly -QuickTimeout -ErrorAction SilentlyContinue |
+                            Where-Object NameTarget | Sort-Object Priority, @{ Expression = 'Weight'; Descending = $true } |
+                            Select-Object -ExpandProperty NameTarget -Unique)
                 }
-                if (-not $kdc) {
+                $kdc = $kdcs | Where-Object { Test-TcpPort $_ 88 } | Select-Object -First 1
+                if (-not $kdcs) {
                     Add-Result Directory 'Kerberos (88)' FAIL "this machine isn't in '$domain', so the ActiveDirectory step signs in with Kerberos, but it can't find the domain's KDC (_kerberos._tcp.$domain); use the site's DNS"
                 }
-                elseif (Test-TcpPort $kdc 88) { Add-Result Directory 'Kerberos (88)' PASS "this machine isn't in '$domain'; the ActiveDirectory step signs in with Kerberos through $kdc" }
-                else { Add-Result Directory 'Kerberos (88)' FAIL "no answer from the domain's KDC $kdc on port 88, which the ActiveDirectory step signs in through from outside the domain" }
+                elseif ($kdc) { Add-Result Directory 'Kerberos (88)' PASS "this machine isn't in '$domain'; the ActiveDirectory step signs in with Kerberos through $kdc" }
+                else { Add-Result Directory 'Kerberos (88)' FAIL "no answer on port 88 from any of the domain's KDCs ($($kdcs -join ', ')), which the ActiveDirectory step signs in through from outside the domain" }
             }
         }
         else { Add-Result Directory 'PowerShell remoting (5985)' FAIL "no answer from $($s.AdServer) ($($local.IPAddressToString)); the ActiveDirectory step connects to it over PowerShell remoting" }

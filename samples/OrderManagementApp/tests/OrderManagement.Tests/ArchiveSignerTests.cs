@@ -27,6 +27,18 @@ public sealed class ArchiveSignerTests : IDisposable
         Assert.False(ArchiveSigner.Verify(Content.Replace("200", "201", StringComparison.Ordinal), signature, key));
     }
 
+    [Theory]
+    [InlineData("!")]
+    [InlineData("AAAA")]
+    [InlineData("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")]
+    public void Rejects_a_malformed_signature_rather_than_throwing(string value)
+    {
+        File.WriteAllText(_keyPath, "first-key-0123456789abcdefghijklmnop");
+        var signature = Signer(new ManualTime()).Sign(Content) with { Value = value };
+
+        Assert.False(ArchiveSigner.Verify(Content, signature, Encoding.UTF8.GetBytes("first-key-0123456789abcdefghijklmnop")));
+    }
+
     [Fact]
     public void Uses_a_rotated_key_once_the_refresh_interval_passes()
     {

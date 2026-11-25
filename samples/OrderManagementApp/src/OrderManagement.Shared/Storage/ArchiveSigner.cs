@@ -32,13 +32,22 @@ public sealed class ArchiveSigner(IOptions<ArchiveSigningOptions> options, TimeP
         return new ArchiveSignature(Algorithm, key.Id, Convert.ToBase64String(mac));
     }
 
-    /// <summary>Whether <paramref name="signature"/> is <paramref name="content"/>'s, under <paramref name="key"/>.</summary>
-    public static bool Verify(string content, ArchiveSignature signature, byte[] key) =>
-        signature.Algorithm == Algorithm &&
-        signature.KeyId == KeyIdOf(key) &&
-        CryptographicOperations.FixedTimeEquals(
-            HMACSHA256.HashData(key, Encoding.UTF8.GetBytes(content)),
-            Convert.FromBase64String(signature.Value));
+    /// <summary>
+    /// Whether <paramref name="signature"/> is <paramref name="content"/>'s, under <paramref name="key"/>.
+    /// A malformed signature, which metadata read back from storage can hold, is a wrong one.
+    /// </summary>
+    public static bool Verify(string content, ArchiveSignature signature, byte[] key)
+    {
+        if (signature.Algorithm != Algorithm || signature.KeyId != KeyIdOf(key) || signature.Value is null)
+        {
+            return false;
+        }
+
+        Span<byte> provided = stackalloc byte[HMACSHA256.HashSizeInBytes];
+        return Convert.TryFromBase64String(signature.Value, provided, out var written) &&
+            written == HMACSHA256.HashSizeInBytes &&
+            CryptographicOperations.FixedTimeEquals(HMACSHA256.HashData(key, Encoding.UTF8.GetBytes(content)), provided);
+    }
 
     /// <summary>
     /// Reads the key: the file's text without surrounding whitespace, as UTF-8. Key Vault and
