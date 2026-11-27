@@ -13,7 +13,7 @@
   <!-- A patched version of a transitive dependency with known vulnerabilities: Microsoft.Data.SqlClient
        and Microsoft.Identity.Web pull an older one. Remove once they require a patched version. -->
   <ItemGroup>
-    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.15" />
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="11.0.0" />
   </ItemGroup>
 
 </Project>
