@@ -22,7 +22,7 @@ Azure Local with [disconnected operations](https://learn.microsoft.com/azure/azu
 ## What the sample needed to change
 
 1. **Secrets read from Kubernetes Secrets.** On Azure Local the services read their credentials from Kubernetes Secrets. On Azure they need none, because every service signs in with workload identity.
-2. **Secrets to copy listed per namespace.** The sample includes a `SecretProviderClass` and a `SecretSync` for one example secret, a partner API key. Nothing is synced by default.
+2. **Secrets to copy listed per namespace.** The sample includes a `SecretProviderClass` and a `SecretSync` for one secret, the key its order processor signs archived orders with.
 3. **Key Vault access given to the extension, not the app.** A managed identity with the Key Vault Secrets User role is federated with the extension's service account.
 4. **Credentials that only matter on site generated on site.** Database passwords and object store keys are created in the cluster and changed with a rotation script, which needs no link to Azure.
 
@@ -60,4 +60,4 @@ Secrets without a plugin, such as S3 keys or partner API keys, need their own ro
 
 ## Sample
 
-The [Order Management sample](../../samples/OrderManagementApp/README.md) on Azure Local sets up Key Vault and the Secret Store extension for secrets that already live in Azure, and shows how to sync one. Nothing is synced by default. The sample's own passwords and keys are generated on site and changed with a rotation script. On Azure the sample needs no secrets, because every service signs in with workload identity. [Key Vault with the Secret Store extension](./alternatives/secret-store-extension.md#how-the-order-management-sample-does-it) links the code for each change above.
+The [Order Management sample](../../samples/OrderManagementApp/README.md) on Azure Local sets up Key Vault and the Secret Store extension for secrets that already live in Azure, and syncs one: the key its order processor signs archived orders with. The sample's own passwords and keys are generated on site and changed with a rotation script. On Azure that signing key is the sample's only secret; every service signs in with workload identity. [Key Vault with the Secret Store extension](./alternatives/secret-store-extension.md#how-the-order-management-sample-does-it) links the code for each change above.

@@ -1,0 +1,118 @@
+# When the nodes run containerd 2, scripts/infra/azurelocal/connected-registry.ps1 turns off the
+# connected registry extension's node configuration, which only handles containerd 1.x, and applies
+# this instead, with the ${...} values filled in. Once on each node, it writes the registry's CA and
+# hosts.toml into the hosts directory containerd reads (config_path). When containerd reads none,
+# as on the node image, it points containerd at /etc/containerd/certs.d and restarts it. Running
+# containers keep running. A node where containerd doesn't end up reading the files fails, so the
+# rollout does too, rather than looking ready while pulls fail.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: oms-registry-trust
+  namespace: ${NAMESPACE}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: oms-registry-trust
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: oms-registry-trust
+      annotations:
+        # The CA's fingerprint: a new CA, for example after the extension is reinstalled, changes the
+        # pod template, so the nodes are configured again. The same CA leaves the pods alone.
+        oms/registry-ca-sha256: "${CA_FINGERPRINT}"
+    spec:
+      nodeSelector:
+        kubernetes.io/os: linux
+      # systemctl restarts containerd only from the node's own process namespace.
+      hostPID: true
+      priorityClassName: system-node-critical
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 5
+      initContainers:
+        - name: configure
+          image: mcr.microsoft.com/azurelinux/base/core:3.0@sha256:3d16d8799f71a78f5bddb3b7cda4a57df1f40ecfa58bac89933010596aa86880
+          securityContext:
+            privileged: true
+          command: ["sh", "-c", 'cp /ca/ca.crt /host/run/oms-registry-ca.crt && exec chroot /host sh -eu -c "$CONFIGURE"']
+          env:
+            - name: REGISTRY
+              value: "${REGISTRY}"
+            # Runs on the node, with its own containerd and systemctl. Kubernetes expands $(NAME) and
+            # $$ in env values, so this uses neither.
+            - name: CONFIGURE
+              value: |
+                conf=/etc/containerd/config.toml
+                default=/etc/containerd/certs.d
+                # containerd 2's registry section, in either TOML quote style.
+                section="^[[:space:]]*\[plugins\.[\"']io\.containerd\.cri\.v1\.images[\"']\.registry\]"
+                # The hosts directories a config makes containerd read, as containerd itself reads it.
+                config_path() {
+                  containerd -c "$1" config dump | sed -n "/$section/,/^[[:space:]]*\[/p" |
+                    sed -n "s/^[[:space:]]*config_path[[:space:]]*=[[:space:]]*[\"']\([^\"']*\)[\"'].*/\1/p" | head -n 1
+                }
+
+                paths=`config_path "$conf"`
+                if [ -z "$paths" ]; then
+                  # Also drops the containerd 1.x tables the extension appends, which containerd 2 rejects.
+                  awk '/^[[:space:]]*\[plugins\."io\.containerd\.grpc\.v1\.cri"(\.registry)?\]/ { skip = 1; next } /^[[:space:]]*\[/ { skip = 0 } !skip' "$conf" |
+                    sed "/$section/,/^[[:space:]]*\[/ s#^\([[:space:]]*config_path[[:space:]]*=[[:space:]]*\)[\"'][\"']#\1'$default'#" > "$conf.new"
+                  changed=`config_path "$conf.new"`
+                  if [ "$changed" != "$default" ]; then
+                    echo "containerd wouldn't read $default after the change to $conf (it read '$changed'), so $conf is left as is"
+                    rm -f "$conf.new"
+                    exit 1
+                  fi
+                  cp "$conf" "$conf.oms-backup"
+                  mv "$conf.new" "$conf"
+                  systemctl restart containerd
+                  paths=$default
+                fi
+
+                # containerd reads hosts.toml on every pull, so files in a directory it already reads
+                # need no restart.
+                dir="${paths%%:*}/$REGISTRY"
+                mkdir -p "$dir"
+                cp /run/oms-registry-ca.crt "$dir/ca.crt"
+                printf 'server = "https://%s"\ncapabilities = ["pull", "resolve"]\nca = "%s/ca.crt"\n' "$REGISTRY" "$dir" > "$dir/hosts.toml"
+                echo "containerd reads $dir"
+          volumeMounts:
+            - name: host
+              mountPath: /host
+            - name: ca
+              mountPath: /ca
+              readOnly: true
+      containers:
+        # Only keeps the pod running. The pod shares the node's process namespace for the init
+        # container, so this one gets no privileges at all.
+        - name: idle
+          image: mcr.microsoft.com/azurelinux/base/core:3.0@sha256:3d16d8799f71a78f5bddb3b7cda4a57df1f40ecfa58bac89933010596aa86880
+          command: ["sleep", "infinity"]
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 1m
+              memory: 8Mi
+            limits:
+              memory: 16Mi
+      volumes:
+        - name: host
+          hostPath:
+            path: /
+        # The registry's CA only, from the Secret the extension keeps its certificate in.
+        - name: ca
+          secret:
+            secretName: ${CA_SECRET}
+            items:
+              - key: ca.crt
+                path: ca.crt

@@ -15,8 +15,10 @@
     On Azure Local, run it from a management machine that can sign in to Azure and reach the site
     network.
 
-    Before the first run on Azure Local, the site's Active Directory needs the app's groups and a
-    bind account for Keycloak; see "Connect your Active Directory" in docs/authentication.md.
+    On Azure Local, once the cluster exists it asks for a domain administrator of the site's Active
+    Directory, to add the app's OU, groups and Keycloak's bind account (the ActiveDirectory step).
+    If your directory is already prepared, -Skip ActiveDirectory; see "Connect your Active
+    Directory" in docs/authentication.md.
 
 .EXAMPLE
     ./scripts/up.ps1 -Target AzureLocal
@@ -31,7 +33,7 @@ param(
     [ValidateSet('Azure', 'AzureLocal')]
     [string]$Target,
     # Platform steps to leave out, as for setup-platform.ps1.
-    [ValidateSet('Cluster', 'Images', 'Registry', 'KeyVault', 'Operators', 'ObjectStore', 'Keycloak', 'Ingress', 'Identity', 'Observability')]
+    [ValidateSet('Cluster', 'ActiveDirectory', 'Images', 'Registry', 'KeyVault', 'Operators', 'ObjectStore', 'Keycloak', 'Ingress', 'Identity', 'Observability')]
     [string[]]$Skip = @(),
     [string]$SettingsPath,
     [switch]$SkipPreflight

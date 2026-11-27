@@ -56,8 +56,11 @@ free, and the three ranges must not overlap.
 |---|---|
 | `Keycloak.AdServer` | Your domain controller's full name, for example `dc01.contoso.local`. It must match the name on its LDAPS certificate. |
 | `Keycloak.AdDomain` | Your Active Directory domain, for example `contoso.local` |
-| `Keycloak.AdBindUpn` | The read-only account Keycloak reads the directory with, for example `svc-keycloak@contoso.local`. The first run asks for its password and keeps it in the cluster; it never goes in this file. |
-| `Keycloak.AdCaCertificatePath` | The certificate (PEM) of the CA that issued your domain controller's LDAPS certificate. It's public; on a domain-joined machine export it with `certutil -ca.cert ca.cer` and convert it with `certutil -encode ca.cer ca.crt`. |
+| `Keycloak.AdBindUpn` | Only if you prepared the directory yourself (`up.ps1 -Skip ActiveDirectory`): the read-only account Keycloak reads the directory with, for example `svc-keycloak@contoso.local`. The first run asks for its password and keeps it in the cluster; it never goes in this file. |
+| `Keycloak.AdCaCertificatePath` | Only with `-Skip ActiveDirectory`: the certificate (PEM) of the CA that issued your domain controller's LDAPS certificate. It's public; on a domain-joined machine export it with `certutil -ca.cert ca.cer` and convert it with `certutil -encode ca.cer ca.crt`. |
+
+Otherwise leave the last two empty: the ActiveDirectory step creates the account and hands the CA to
+the cluster.
 
 ## Check before you deploy
 

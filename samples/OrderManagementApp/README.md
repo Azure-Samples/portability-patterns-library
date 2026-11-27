@@ -86,12 +86,14 @@ All commands run from this folder, `samples/OrderManagementApp`.
   workers of 4 vCPUs and 16 GB each (8 GB with `Availability` `standard`), plus about 120 GB of
   storage (80 GB with `standard`).
 - A management machine on the site network, not an Azure Local node, with the same tools as for
-  Azure except azd. Microsoft recommends managing AKS on Azure Local from such a
+  Azure except azd. It must use the site's DNS, so it resolves the Active Directory domain.
+  Microsoft recommends managing AKS on Azure Local from such a
   [client machine](https://learn.microsoft.com/azure/aks-hybrid-edge/local/aks-create-clusters-cli#install-the-azure-cli-extension)
   rather than from the nodes.
 - Free addresses on the site network for the AKS cluster: its control plane, a pool for the nodes and a
   small range for the load balancer.
-- The site's Active Directory, with the app's groups and a bind account for Keycloak. See
+- The site's Active Directory, and a domain administrator: `up.ps1` asks for one to add the app's
+  groups and a bind account for Keycloak, over PowerShell remoting from the management machine. See
   [Connect your Active Directory](./docs/authentication.md#connect-your-active-directory).
 - Contributor and User Access Administrator on the subscription, and the right to create groups in
   Entra ID (or an existing group for the cluster's administrators).
@@ -138,8 +140,8 @@ corporate tenant does), set it before `azd up`:
 azd env set SERVICE_MANAGEMENT_REFERENCE <service tree ID>
 ```
 
-`azd up` creates AKS, a container registry and managed identities, installs Radius and an HTTPS
-ingress, registers the app in Entra ID, then builds and deploys the app; the Recipes create Service
+`azd up` creates AKS, a container registry, managed identities and a Key Vault, installs Radius and
+an HTTPS ingress, registers the app in Entra ID, then builds and deploys the app; the Recipes create Service
 Bus, Blob Storage, Azure SQL and PostgreSQL. It prints the app's address. Your account gets the app
 roles to place orders and restock, so you can sign in straight away.
 
@@ -177,8 +179,9 @@ says where to find each value. Then run:
 ```
 
 It checks the site, creates the AKS cluster and everything the app needs on it, and deploys the app.
-Open the address it prints and sign in with an AD account in one of the app's groups. The first
-time, on a machine outside the domain, trust the site CA with the command it printed.
+Open the address it prints and sign in with the account name, not `name@domain`, of an AD user in
+one of the app's groups, such as the sample user `oms-demo`. The first time, on a machine outside
+the domain, trust the site CA with the command it printed.
 
 To deploy a new version later, run `./scripts/deploy.ps1 -Target AzureLocal`.
 
@@ -219,18 +222,22 @@ For production, you would also need:
 
 **Locally:** `docker compose down`.
 
-**Azure:** `azd down`. It deletes the resource group, including what the Recipes created in it, and
-the app registrations.
+**Azure:** `azd down --purge`. It deletes the resource group, including what the Recipes created in
+it, and the app registrations; `--purge` deletes the Key Vault for good, so a later `azd up` can
+create it again.
 
 **Azure Local:** delete the resource group the scripts created (`ResourceGroup` in the settings,
-`bcd-azurelocal` by default), which holds the AKS cluster, the registry and the logical network:
+`bcd-azurelocal` by default), which holds the AKS cluster, the registry, the Key Vault and the
+logical network:
 
 ```powershell
 az group delete --name bcd-azurelocal
 ```
 
 The AKS cluster's Entra admin group and the objects `ad-setup.ps1` added to Active Directory stay;
-remove them by hand if you no longer need them.
+remove them by hand if you no longer need them. To deploy again, use another `ResourceGroup`, since
+a deleted Key Vault keeps its name for 90 days, and set `ActiveDirectory.ResetBindPassword` to
+`true` for that run, so Keycloak's bind account gets a password the new cluster has.
 
 ## Understand how it works
 

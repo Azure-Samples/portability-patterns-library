@@ -71,18 +71,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-
-function Invoke-Checked {
-    param(
-        [Parameter(Mandatory = $true)][string]$What,
-        [Parameter(Mandatory = $true)][scriptblock]$Command
-    )
-
-    & $Command
-    if ($LASTEXITCODE -ne 0) {
-        throw "$What failed with exit code $LASTEXITCODE."
-    }
-}
+. (Join-Path $PSScriptRoot '../../lib/common.ps1')
 
 if (-not $ImageList) {
     $ImageList = Join-Path $PSScriptRoot '../../../infra/azurelocal/images.txt'

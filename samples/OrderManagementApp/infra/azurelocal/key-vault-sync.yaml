@@ -1,44 +1,12 @@
-# The service account the Key Vault Secret Store extension reads the vault as, in the namespace the
-# secrets go to. Applied by scripts/infra/azurelocal/key-vault.ps1 with the ${...} values filled in;
-# infra/azurelocal/key-vault.bicep federates the vault's reader identity with it.
+# How the Key Vault Secret Store extension brings the sample's Key Vault secrets to the site. Applied
+# by scripts/infra/azurelocal/key-vault.ps1 with the ${...} values filled in;
+# infra/azurelocal/key-vault.bicep federates the vault's reader identity with the service account.
 #
-# Nothing in the sample is synced by default: its database passwords and object store keys are
-# generated on site. To bring a secret that already lives in Key Vault to the site, add it to the
-# vault and apply a SecretProviderClass and a SecretSync next to this account, for example:
-#
-#   apiVersion: secrets-store.csi.x-k8s.io/v1
-#   kind: SecretProviderClass
-#   metadata:
-#     name: partner-api
-#     namespace: <namespace>
-#   spec:
-#     provider: azure
-#     parameters:
-#       clientID: "<syncClientId output of key-vault.bicep>"
-#       keyvaultName: <vault>
-#       tenantID: "<tenant>"
-#       objects: |
-#         array:
-#           - |
-#             objectName: partner-api-key
-#             objectType: secret
-#   ---
-#   apiVersion: secret-sync.x-k8s.io/v1alpha1
-#   kind: SecretSync
-#   metadata:
-#     name: partner-api
-#     namespace: <namespace>
-#   spec:
-#     serviceAccountName: secret-sync
-#     secretProviderClassName: partner-api
-#     secretObject:
-#       type: Opaque
-#       data:
-#         - sourcePath: partner-api-key
-#           targetKey: api-key
-#
-# The extension checks the vault for new versions while the site is connected (hourly by default);
-# with the link down, the last copy keeps working.
+# The extension reads secret archive-signing-key from the vault as that service account and writes
+# it to Kubernetes Secret archive-signing (key `key`). The Recipe Pack mounts that Secret into the
+# order processor only, which signs every archived order with it. The extension checks the vault for
+# a new version while the site is connected (hourly by default); with the link down, the last copy
+# keeps working. To bring another secret, add it to `objects` and `data`, or add a pair like this.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -47,3 +15,34 @@ metadata:
   annotations:
     azure.workload.identity/client-id: "${CLIENT_ID}"
     azure.workload.identity/tenant-id: "${TENANT_ID}"
+---
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: archive-signing
+  namespace: ${NAMESPACE}
+spec:
+  provider: azure
+  parameters:
+    clientID: "${CLIENT_ID}"
+    keyvaultName: ${KEYVAULT_NAME}
+    tenantID: "${TENANT_ID}"
+    objects: |
+      array:
+        - |
+          objectName: archive-signing-key
+          objectType: secret
+---
+apiVersion: secret-sync.x-k8s.io/v1alpha1
+kind: SecretSync
+metadata:
+  name: archive-signing
+  namespace: ${NAMESPACE}
+spec:
+  serviceAccountName: ${SERVICE_ACCOUNT}
+  secretProviderClassName: archive-signing
+  secretObject:
+    type: Opaque
+    data:
+      - sourcePath: archive-signing-key
+        targetKey: key

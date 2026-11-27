@@ -40,6 +40,21 @@ function Get-OmsSecretValue {
     (Get-OmsSecretData -KubeContext $KubeContext -Namespace $Namespace -Name $Name)[$Key]
 }
 
+# Whether the ActiveDirectory step has already run against this cluster: it holds the bind account's
+# password and, unless that step was told not to set up certificates, the directory's CA, so a run
+# interrupted between writing the two is run again. A Secret that can't be read throws, as for
+# Get-OmsSecretData: an unreachable cluster isn't one that needs the directory prepared, and that
+# step changes the directory before it writes the Secrets.
+function Test-OmsDirectoryPrepared {
+    param(
+        [Parameter(Mandatory = $true)][string]$KubeContext,
+        [switch]$WithoutCertificate
+    )
+
+    if (-not (Get-OmsSecretValue -KubeContext $KubeContext -Namespace identity -Name oms-ad-bind -Key bind-password)) { return $false }
+    $WithoutCertificate -or [bool](Get-OmsSecretValue -KubeContext $KubeContext -Namespace identity -Name oms-ad-ca -Key ca.crt)
+}
+
 # Creates or replaces a Secret, Opaque unless -Type says otherwise. The values go to kubectl on
 # stdin, never on a command line.
 function Set-OmsSecret {

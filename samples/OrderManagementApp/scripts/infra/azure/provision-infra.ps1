@@ -39,6 +39,10 @@ param(
     [ValidatePattern('^[a-z0-9]{5,50}$')]
     [string]$RegistryName,
 
+    # Key Vault holding the order archive's signing key. Empty lets the template name it
+    # (kv-oms-<unique>); with -SkipTemplate, the name of the one already deployed.
+    [string]$KeyVaultName = '',
+
     # Region and VM size are related: the sizes a subscription may use differ per region. This
     # pairing is verified to pass AKS preflight; re-run with -WhatIf after changing either.
     [string]$Location = 'eastus2',
@@ -97,48 +101,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
+. (Join-Path $repoRoot 'scripts/lib/common.ps1')
 Push-Location $repoRoot
-
-# $ErrorActionPreference does not apply to native commands, so every external call is checked.
-# Returns what the command printed.
-function Invoke-Checked {
-    param(
-        [Parameter(Mandatory = $true)][string]$What,
-        [Parameter(Mandatory = $true)][scriptblock]$Command
-    )
-
-    & $Command
-    if ($LASTEXITCODE -ne 0) {
-        throw "$What failed with exit code $LASTEXITCODE."
-    }
-}
-
-<#
-    Writes an ARM-format parameter file. Required because `--parameters key=value` only handles
-    scalars: arrays and booleans passed that way are rejected or coerced to strings.
-#>
-function New-ParameterFile {
-    param([Parameter(Mandatory = $true)][hashtable]$Values)
-
-    $parameters = @{}
-    foreach ($key in $Values.Keys) {
-        $parameters[$key] = @{ value = $Values[$key] }
-    }
-
-    $document = @{
-        '$schema'      = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'
-        contentVersion = '1.0.0.0'
-        parameters     = $parameters
-    }
-
-    $file = New-TemporaryFile
-    $path = "$($file.FullName).json"
-    Move-Item $file $path
-    # Windows PowerShell's 'utf8' encoding emits a BOM, which the JSON parsers behind the az and
-    # rad CLIs both reject.
-    [System.IO.File]::WriteAllText($path, ($document | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
-    return $path
-}
 
 try {
     $template = 'infra/azure/platform.bicep'
@@ -167,6 +131,11 @@ try {
         }
     }
 
+    # This script creates the order archive's signing key, so whoever runs it, a user or a
+    # pipeline's service principal, may set Key Vault secrets.
+    . (Join-Path $repoRoot 'scripts/lib/azure.ps1')
+    $callerObjectId = Get-OmsCallerObjectId
+
     # Arrays cannot be passed as key=value, so every parameter goes through a file.
     if ($SkipTemplate) {
         # The template was deployed by someone else, for example azd. Read what the rest of this
@@ -184,13 +153,19 @@ try {
         $oidcIssuer = Invoke-Checked "az aks show $ClusterName" {
             az aks show --resource-group $ResourceGroup --name $ClusterName --query oidcIssuerProfile.issuerUrl --output tsv
         }
+        if (-not $KeyVaultName) { throw 'With -SkipTemplate, pass -KeyVaultName: the keyVaultName output of infra/azure/platform.bicep.' }
+        # Whoever deployed the template, azd for example, may not be the account the Azure CLI uses.
+        Grant-OmsKeyVaultSecretsOfficer -KeyVaultName $KeyVaultName -ObjectId $callerObjectId
+        $processorClientId = Invoke-Checked "az identity show $IdentityPrefix-processor" {
+            az identity show --resource-group $ResourceGroup --name "$IdentityPrefix-processor" --query clientId --output tsv
+        }
     }
     else {
         . (Join-Path $repoRoot 'scripts/lib/network.ps1')
         Assert-OmsAddressRanges -VirtualNetworkAddressPrefix $VirtualNetworkAddressPrefix -PodCidr $PodCidr `
             -ServiceCidr $ServiceCidr -HubVirtualNetworkId $HubVirtualNetworkId
 
-        $parameterFile = New-ParameterFile @{
+        $templateParameters = @{
             location                        = $Location
             resourceGroupName               = $ResourceGroup
             clusterName                     = $ClusterName
@@ -205,6 +180,7 @@ try {
             nodeVmSize                      = $NodeVmSize
             registrySku                     = $RegistrySku
             clusterAdminObjectIds           = @($ClusterAdminObjectIds)
+            keyVaultSecretsOfficerObjectIds = @($callerObjectId)
             useEntraAuthentication          = $UseEntraAuthentication
             usePrivateEndpoints             = $UsePrivateEndpoints
             hubVirtualNetworkId             = $HubVirtualNetworkId
@@ -213,6 +189,8 @@ try {
             serviceCidr                     = $ServiceCidr
             dnsServiceIP                    = $DnsServiceIP
         }
+        if ($KeyVaultName) { $templateParameters.keyVaultName = $KeyVaultName }
+        $parameterFile = New-ParameterFile $templateParameters
 
         if ($WhatIf) {
             Write-Host "==> Previewing changes (what-if). Nothing is created." -ForegroundColor Cyan
@@ -244,6 +222,8 @@ try {
         $databaseAdminClientId = $outputs.databaseAdminClientId.value
         $radiusClientId = $outputs.radiusIdentityClientId.value
         $oidcIssuer = $outputs.oidcIssuerUrl.value
+        $KeyVaultName = $outputs.keyVaultName.value
+        $processorClientId = ($outputs.workloadIdentities.value | Where-Object name -eq 'processor').clientId
     }
     $tenantId = Invoke-Checked 'az account show' { az account show --query tenantId --output tsv }
 
@@ -284,6 +264,33 @@ metadata:
     azure.workload.identity/use: "true"
 "@ | kubectl apply --context $KubeContext -f - | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Creating namespace '$AppNamespace' and its database setup service account failed." }
+
+    # The order processor signs what it archives with a key kept in Key Vault. The CSI driver mounts
+    # it into the processor's pods only, read as the processor's own identity, at
+    # /var/run/secrets/archive-signing/key; the Recipe Pack adds the volume.
+    Initialize-OmsArchiveSigningKey -KeyVaultName $KeyVaultName
+    Write-Host "==> SecretProviderClass 'archive-signing' for the processor" -ForegroundColor Cyan
+    @"
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: archive-signing
+  namespace: $AppNamespace
+spec:
+  provider: azure
+  parameters:
+    usePodIdentity: "false"
+    clientID: "$processorClientId"
+    keyvaultName: $KeyVaultName
+    tenantId: "$tenantId"
+    objects: |
+      array:
+        - |
+          objectName: archive-signing-key
+          objectAlias: key
+          objectType: secret
+"@ | kubectl apply --context $KubeContext -f - | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Creating SecretProviderClass 'archive-signing' in '$AppNamespace' failed." }
 
     if (-not $SkipRadiusInstall) {
         # The Radius CLI needs an identity with no Entra groups, or the Kubernetes aggregated API

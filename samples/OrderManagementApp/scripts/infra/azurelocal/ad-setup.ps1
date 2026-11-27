@@ -11,14 +11,14 @@
     with no connectivity to anything outside.
 
     The script targets that existing domain controller and adds only what the sample needs:
-      * AD Certificate Services, if no certificate authority is installed yet, so the controller
-        enrols a server certificate and LDAPS works on 636. An existing CA is reused.
+      * LDAPS on 636: a controller that already has a certificate for its name keeps it. One without
+        gets AD Certificate Services, unless it already runs a CA, and enrols a certificate.
       * The OMS OU, the oms-app-readers / oms-app-writers / oms-inventory-admins groups, the
         oms-operators group (who may use the site's Grafana; the sample inventory administrator is
         in it), the oms-identity-admins group (administrators of the app's Keycloak realm; it starts empty), the
         Keycloak bind account, a sample user who places orders and a sample inventory administrator.
-      * Limits on the bind account: it can sign in only at the domain controllers, can't be
-        delegated, and is denied listing every container outside the OMS OU.
+      * Limits on the bind account: it can sign in only at the domain controllers and can't be
+        delegated.
       * Two Kubernetes Secrets in the cluster: the bind and sample-user credentials, and the CA
         root certificate for Keycloak to trust LDAPS.
 
@@ -33,6 +33,10 @@
                      a controller with no network path from your machine.
     If you'd rather not run it, make the same objects with the Active Directory PowerShell module
     instead; docs/authentication.md lists them under "Connect your Active Directory".
+
+    setup-platform.ps1 (and so up.ps1) runs it as the ActiveDirectory step, right after it creates
+    the cluster, with the domain controller from the Keycloak settings: AdServer, AdDomain and
+    AdOuName. Run it yourself to change the directory later.
 
     The script is safe to re-run. Accounts that already exist keep their passwords, so Keycloak's
     directory sign-in keeps working; pass -ResetBindPassword to give the bind account a new one, then
@@ -78,9 +82,10 @@
 [CmdletBinding(DefaultParameterSetName = 'Remoting')]
 param(
     [Parameter(Mandatory = $true, ParameterSetName = 'Direct')][string]$VmName,
-    [Parameter(Mandatory = $true, ParameterSetName = 'Remoting')][string]$ComputerName,
-    [Parameter(Mandatory = $true)][string]$DomainName,
-    [string]$OuName = 'OMS',
+    # The aliases are the Keycloak settings' names, which setup-platform.ps1 passes.
+    [Parameter(Mandatory = $true, ParameterSetName = 'Remoting')][Alias('AdServer')][string]$ComputerName,
+    [Parameter(Mandatory = $true)][Alias('AdDomain')][string]$DomainName,
+    [Alias('AdOuName')][string]$OuName = 'OMS',
 
     [pscredential]$DomainAdminCredential,
 
@@ -142,78 +147,30 @@ function Invoke-Guest {
     )
 
     $connection = if ($ComputerName) { @{ ComputerName = $ComputerName } } else { @{ VMName = $VmName } }
+    # A machine outside the site's domain: its default sign-in falls back to NTLM, which remoting
+    # allows only to TrustedHosts. Kerberos authenticates both ends, so it needs no TrustedHosts,
+    # only the domain controller's name and the domain's KDC (port 88) reachable from here.
+    if ($ComputerName -and -not $script:inSiteDomain) { $connection.Authentication = 'Kerberos' }
     Invoke-Command @connection -Credential $Credential -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
 }
 
-# Keycloak signs in to the domain controllers over LDAP and reads the users and groups in the app's
-# OU. The bind account is limited to exactly that.
+# An LDAP bind is a sign-in at the controller that answers it, so the bind account may sign in at the
+# controllers and nowhere else. Controllers allow interactive and Remote Desktop sign-in to
+# administrators only, which leaves the network sign-in LDAP uses. Nothing acts on the account's
+# behalf, so delegation is off. Keycloak reads only the app's OU with it.
 function Set-BindAccountRestriction {
     param([Parameter(Mandatory = $true)][pscredential]$Credential)
 
-    Write-Host "==> Limiting '$BindAccountName' to reading the '$OuName' OU" -ForegroundColor Cyan
-    $result = Invoke-Guest -Credential $Credential -ArgumentList $BindAccountName, $OuName -ScriptBlock {
-        param($bindName, $ouName)
+    Write-Host "==> Limiting '$BindAccountName' to signing in at the domain controllers" -ForegroundColor Cyan
+    $controllers = Invoke-Guest -Credential $Credential -ArgumentList $BindAccountName -ScriptBlock {
+        param($bindName)
         $ErrorActionPreference = 'Stop'
         Import-Module ActiveDirectory
-
-        $domain = Get-ADDomain
-        $ouDn = "OU=$ouName,$($domain.DistinguishedName)"
-        $bind = Get-ADUser -Identity $bindName
-
-        # An LDAP bind is a sign-in at the controller that answers it, so the account may sign in at
-        # the controllers and nowhere else. Controllers allow interactive and Remote Desktop sign-in
-        # to administrators only, which leaves the network sign-in LDAP uses. Nothing acts on the
-        # account's behalf, so delegation is off.
-        $controllers = @(Get-ADDomainController -Filter * | ForEach-Object { $_.Name })
-        Set-ADUser -Identity $bind -LogonWorkstations ($controllers -join ',') -AccountNotDelegated $true
-
-        # Every account can list most of the domain, through permissions AD puts on each container.
-        # A deny for this account on every container outside the OU takes precedence and hides
-        # everything else from its searches. That includes empty OUs and containers, or anything
-        # added to them later would be listable. The domain root stays listable, or the OU could
-        # not be found. Group Policy objects are skipped: Group Policy Management flags a GPO whose
-        # permissions differ from its SYSVOL folder.
-        $candidates = @{}
-        $policies = @{}
-        Get-ADObject -Filter * -SearchBase $domain.DistinguishedName -SearchScope Subtree -ResultPageSize 1000 |
-            ForEach-Object {
-                if ($_.ObjectClass -eq 'groupPolicyContainer') { $policies[$_.DistinguishedName] = $true }
-                if ($_.ObjectClass -in 'organizationalUnit', 'container') { $candidates[$_.DistinguishedName] = $true }
-                if ($_.DistinguishedName -match '^(?:\\.|[^,\\])+,(.+)$') { $candidates[$Matches[1]] = $true }
-            }
-        $containers = @($candidates.Keys | Where-Object {
-                $_.EndsWith(",$($domain.DistinguishedName)", [StringComparison]::OrdinalIgnoreCase) -and
-                -not $policies.ContainsKey($_) -and
-                $_ -ne $ouDn -and -not $_.EndsWith(",$ouDn", [StringComparison]::OrdinalIgnoreCase)
-            })
-
-        $rights = [System.DirectoryServices.ActiveDirectoryRights]'ListChildren, ListObject'
-        $added = 0
-        foreach ($dn in $containers) {
-            # Through psbase: PowerShell's ADSI adapter otherwise reads these names as LDAP attributes.
-            $entry = [System.DirectoryServices.DirectoryEntry]::new("LDAP://$($dn.Replace('/', '\/'))")
-            try {
-                $entry.psbase.Options.SecurityMasks = [System.DirectoryServices.SecurityMasks]::Dacl
-                $security = $entry.psbase.ObjectSecurity
-                $present = $security.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier]) |
-                    Where-Object {
-                        $_.AccessControlType -eq 'Deny' -and $_.IdentityReference -eq $bind.SID -and
-                        ($_.ActiveDirectoryRights -band $rights) -eq $rights
-                    }
-                if (-not $present) {
-                    $security.AddAccessRule([System.DirectoryServices.ActiveDirectoryAccessRule]::new($bind.SID, $rights, 'Deny'))
-                    $entry.psbase.ObjectSecurity = $security
-                    $entry.psbase.CommitChanges()
-                    $added++
-                }
-            }
-            catch { throw "Could not restrict '$bindName' on '$dn': $($_.Exception.Message)" }
-            finally { $entry.psbase.Dispose() }
-        }
-
-        [pscustomobject]@{ Controllers = $controllers -join ', '; Containers = $containers.Count; Added = $added }
+        $names = @(Get-ADDomainController -Filter * | ForEach-Object { $_.Name })
+        Set-ADUser -Identity $bindName -LogonWorkstations ($names -join ',') -AccountNotDelegated $true
+        $names -join ', '
     }
-    Write-Host "    sign-in only at $($result.Controllers); listing denied on $($result.Containers) containers ($($result.Added) new)" -ForegroundColor DarkGray
+    Write-Host "    sign-in only at $controllers; not delegated" -ForegroundColor DarkGray
 }
 
 
@@ -238,30 +195,50 @@ try {
         }
     }
 
-    if (-not $DomainAdminCredential) {
-        $DomainAdminCredential = Get-Credential -UserName "Administrator@$DomainName" `
-            -Message "Domain administrator of '$DomainName' on '$target'"
-    }
-    $domainCredential = $DomainAdminCredential
+    $computer = if ($IsWindows) { Get-CimInstance -ClassName Win32_ComputerSystem }
+    $script:inSiteDomain = $computer -and $computer.PartOfDomain -and $computer.Domain -eq $DomainName
+    $how = if (-not $ComputerName) { 'over PowerShell Direct' }
+    elseif ($script:inSiteDomain) { 'over PowerShell remoting' }
+    else { "over PowerShell remoting with Kerberos (this machine isn't in '$DomainName')" }
 
-    Write-Host "==> Connecting to '$target' $(if ($ComputerName) { 'over PowerShell remoting' } else { 'over PowerShell Direct' })" -ForegroundColor Cyan
     # NTLM falls back to the local SAM when the domain prefix does not resolve, so a credential
     # being accepted says nothing about the machine's role; the controller's own answer is
-    # authoritative.
-    try {
-        $controller = Invoke-Guest -Credential $domainCredential -ScriptBlock {
-            $ErrorActionPreference = 'Stop'
-            $role = [int](Get-CimInstance -ClassName Win32_ComputerSystem).DomainRole
-            $dnsRoot = $null
-            if ($role -ge 4) {
-                Import-Module ActiveDirectory
-                $dnsRoot = (Get-ADDomain).DNSRoot
-            }
-            [pscustomobject]@{ DomainRole = $role; DnsRoot = $dnsRoot }
+    # authoritative. A typed password that's empty or rejected is asked for again, up to 3 times.
+    $prompted = -not $DomainAdminCredential
+    for ($attempt = 1; ; $attempt++) {
+        if ($prompted) {
+            $DomainAdminCredential = Get-Credential -UserName "Administrator@$DomainName" `
+                -Message "Domain administrator of '$DomainName' on '$target'"
+            if (-not $DomainAdminCredential) { throw 'No domain administrator given.' }
         }
-    }
-    catch {
-        throw "Could not run commands on '$target' as '$($domainCredential.UserName)': $($_.Exception.Message)"
+        $domainCredential = $DomainAdminCredential
+        if ($domainCredential.Password.Length -eq 0) {
+            if ($prompted -and $attempt -lt 3) { Write-Host '    The password is empty; enter it again.' -ForegroundColor Yellow; continue }
+            throw "The password for '$($domainCredential.UserName)' is empty."
+        }
+
+        Write-Host "==> Connecting to '$target' $how" -ForegroundColor Cyan
+        try {
+            $controller = Invoke-Guest -Credential $domainCredential -ScriptBlock {
+                $ErrorActionPreference = 'Stop'
+                $role = [int](Get-CimInstance -ClassName Win32_ComputerSystem).DomainRole
+                $dnsRoot = $null
+                if ($role -ge 4) {
+                    Import-Module ActiveDirectory
+                    $dnsRoot = (Get-ADDomain).DNSRoot
+                }
+                [pscustomobject]@{ DomainRole = $role; DnsRoot = $dnsRoot }
+            }
+            break
+        }
+        catch {
+            $message = "Could not run commands on '$target' as '$($domainCredential.UserName)': $($_.Exception.Message)"
+            if ($prompted -and $attempt -lt 3) { Write-Host "    $message`n    Check the user name and password, and enter them again." -ForegroundColor Yellow; continue }
+            $hint = if ($ComputerName -and -not $script:inSiteDomain) {
+                " Kerberos from outside the domain needs the controller's full DNS name (not an IP address), the user as user@$DomainName, and the domain's KDC (port 88) reachable from here."
+            }
+            throw "$message$hint"
+        }
     }
     if ($controller.DomainRole -lt 4) {
         throw "'$target' is not a domain controller (DomainRole $($controller.DomainRole))."
@@ -270,79 +247,111 @@ try {
         throw "'$target' is a domain controller of '$($controller.DnsRoot)', not '$DomainName'."
     }
 
-    # A domain controller only opens LDAPS once it holds a certificate with the Server
-    # Authentication EKU. An Enterprise CA publishes the DC templates into AD, and the controller
-    # auto-enrols against them, so standing one up is what turns port 636 from a socket that
-    # accepts and drops into a working TLS endpoint.
+    # LDAPS needs a server authentication certificate for the controller's own name. A controller
+    # that already has one, usually from the organisation's PKI, keeps it. Only one without gets an
+    # enterprise CA, which publishes the domain controller templates into AD, so the controller
+    # enrols a certificate and port 636 becomes a working TLS endpoint. Keycloak is given the root of
+    # the certificate's chain, whichever CA issued it.
     $caCertPem = $null
     if (-not $SkipCertificateAuthority) {
-        Write-Host "==> Ensuring an enterprise certificate authority" -ForegroundColor Cyan
+        Write-Host "==> Ensuring LDAPS on the controller" -ForegroundColor Cyan
         $caCertPem = Invoke-Guest -Credential $domainCredential -ArgumentList $CaCommonName, $domainCredential -ScriptBlock {
             param($caName, $directoryCredential)
             $ErrorActionPreference = 'Stop'
 
-            # A controller already serving other systems may have its own CA. Reuse it rather than
-            # stacking a second one, and look its root up by the name it was actually given.
-            $activeCa = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\CertSvc\Configuration' -Name Active -ErrorAction SilentlyContinue).Active
-            if ($activeCa) {
-                $caName = $activeCa
+            # Other server certificates a controller may hold, for example for ADFS, don't count.
+            $dcName = ([System.Net.Dns]::GetHostEntry($env:COMPUTERNAME)).HostName
+            $find = {
+                Get-ChildItem Cert:\LocalMachine\My -ErrorAction SilentlyContinue |
+                    Where-Object {
+                        $_.HasPrivateKey -and $_.NotAfter -gt (Get-Date) -and
+                        $_.EnhancedKeyUsageList.ObjectId -contains '1.3.6.1.5.5.7.3.1' -and
+                        $_.DnsNameList.Unicode -contains $dcName
+                    } | Sort-Object NotAfter -Descending | Select-Object -First 1
+            }
+            # The certificate LDAPS serves, which is what Keycloak validates; the directory may serve
+            # one from another store. Nothing comes back while LDAPS isn't serving a valid one.
+            $served = {
+                $tcp = [System.Net.Sockets.TcpClient]::new()
+                $ssl = $null
+                try {
+                    if (-not $tcp.ConnectAsync($dcName, 636).Wait(5000)) { return }
+                    $tcp.ReceiveTimeout = 10000
+                    $tcp.SendTimeout = 10000
+                    $ssl = [System.Net.Security.SslStream]::new($tcp.GetStream(), $false, ({ $true } -as [System.Net.Security.RemoteCertificateValidationCallback]))
+                    $ssl.AuthenticateAsClient($dcName)
+                    $cert = [Security.Cryptography.X509Certificates.X509Certificate2]::new($ssl.RemoteCertificate)
+                    if ($cert.NotAfter -gt (Get-Date) -and $cert.DnsNameList.Unicode -contains $dcName) { $cert }
+                }
+                catch { Write-Verbose "No certificate from LDAPS on ${dcName}: $($_.Exception.Message)" }
+                finally {
+                    if ($ssl) { $ssl.Dispose() }
+                    $tcp.Dispose()
+                }
+            }
+
+            $dcCert = & $served
+            if ($dcCert) {
+                Write-Host "    LDAPS already serves a certificate from '$($dcCert.Issuer)'"
+            }
+            elseif ($dcCert = & $find) {
+                Write-Host "    the controller already has a certificate from '$($dcCert.Issuer)'"
             }
             else {
-                # The name Windows suggests when you install a CA by hand.
-                if (-not $caName) {
-                    Import-Module ActiveDirectory
-                    $caName = "$((Get-ADDomain).NetBIOSName)-$env:COMPUTERNAME-CA"
-                }
-                Install-WindowsFeature -Name ADCS-Cert-Authority -IncludeManagementTools | Out-Null
-
-                Import-Module ADCSDeployment
-                try {
-                    Install-AdcsCertificationAuthority -CAType EnterpriseRootCA -CACommonName $caName `
-                        -KeyLength 2048 -HashAlgorithmName SHA256 `
-                        -ValidityPeriod Years -ValidityPeriodUnits 10 -Force | Out-Null
-                }
-                catch [Microsoft.CertificateServices.Deployment.Common.CA.CertificationAuthoritySetupException] {
-                    # Already configured; a re-run should not start over.
-                }
-            }
-
-            # Auto-enrolment is on a timer, so nudge it rather than waiting for the next cycle.
-            certutil -pulse | Out-Null
-
-            # LDAPS uses a certificate issued to the controller's own name. Other server certificates
-            # a controller may already hold, for example for ADFS, don't count.
-            $dcName = ([System.Net.Dns]::GetHostEntry($env:COMPUTERNAME)).HostName
-            $deadline = (Get-Date).AddMinutes(5)
-            while ((Get-Date) -lt $deadline) {
-                $dcCert = Get-ChildItem Cert:\LocalMachine\My -ErrorAction SilentlyContinue |
-                    Where-Object {
-                        $_.EnhancedKeyUsageList.ObjectId -contains '1.3.6.1.5.5.7.3.1' -and
-                        ($_.DnsNameList.Unicode -contains $dcName) -and $_.NotAfter -gt (Get-Date)
+                # A CA this controller already runs is reused rather than stacking a second one.
+                if (-not (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\CertSvc\Configuration' -Name Active -ErrorAction SilentlyContinue).Active) {
+                    # The name Windows suggests when you install a CA by hand.
+                    if (-not $caName) {
+                        Import-Module ActiveDirectory
+                        $caName = "$((Get-ADDomain).NetBIOSName)-$env:COMPUTERNAME-CA"
                     }
-                if ($dcCert) { break }
-                Start-Sleep -Seconds 15
-                certutil -pulse | Out-Null
+                    Write-Host "    installing enterprise certificate authority '$caName'"
+                    Install-WindowsFeature -Name ADCS-Cert-Authority -IncludeManagementTools | Out-Null
+                    Import-Module ADCSDeployment
+                    try {
+                        Install-AdcsCertificationAuthority -CAType EnterpriseRootCA -CACommonName $caName `
+                            -KeyLength 2048 -HashAlgorithmName SHA256 `
+                            -ValidityPeriod Years -ValidityPeriodUnits 10 -Force | Out-Null
+                    }
+                    catch [Microsoft.CertificateServices.Deployment.Common.CA.CertificationAuthoritySetupException] {
+                        # Fine if a CA got configured after all; otherwise, say why it wasn't, for
+                        # example a key left by a CA removed earlier.
+                        if (-not (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\CertSvc\Configuration' -Name Active -ErrorAction SilentlyContinue).Active) {
+                            throw "Setting up the certificate authority '$caName' failed: $($_.Exception.Message)"
+                        }
+                    }
+                }
+
+                # Auto-enrolment is on a timer, so it's nudged rather than waited for.
+                $deadline = (Get-Date).AddMinutes(5)
+                while (-not ($dcCert = & $find) -and (Get-Date) -lt $deadline) {
+                    certutil -pulse | Out-Null
+                    Start-Sleep -Seconds 15
+                }
+                if (-not $dcCert) { throw "The controller never enrolled a server authentication certificate for $dcName." }
+
+                # The controller serves other systems, so the directory is not restarted: the rootDSE
+                # 'renewServerCertificate' operation tells LDAP to load the new certificate in place.
+                # The bind is explicit because a remote session has no credentials to pass on.
+                $rootDse = [System.DirectoryServices.DirectoryEntry]::new('LDAP://localhost/RootDSE',
+                    $directoryCredential.UserName, $directoryCredential.GetNetworkCredential().Password)
+                $rootDse.Properties['renewServerCertificate'].Value = 1
+                $rootDse.CommitChanges()
+                $rootDse.Dispose()
             }
-            if (-not $dcCert) { throw "The controller never enrolled a server authentication certificate for $dcName." }
 
-            # The controller serves other systems, so the directory is not restarted: the rootDSE
-            # 'renewServerCertificate' operation tells LDAP to reload its certificate in place. The
-            # bind is explicit because a remote session has no credentials to pass on.
-            $rootDse = [System.DirectoryServices.DirectoryEntry]::new('LDAP://localhost/RootDSE',
-                $directoryCredential.UserName, $directoryCredential.GetNetworkCredential().Password)
-            $rootDse.Properties['renewServerCertificate'].Value = 1
-            $rootDse.CommitChanges()
-            $rootDse.Dispose()
-
-            $root = Get-ChildItem Cert:\LocalMachine\Root |
-                Where-Object { $_.Subject -like "CN=$caName*" } | Select-Object -First 1
-            if (-not $root) { throw "The root certificate for '$caName' is not in the local store." }
-
+            $chain = [Security.Cryptography.X509Certificates.X509Chain]::new()
+            $chain.ChainPolicy.RevocationMode = 'NoCheck'
+            [void]$chain.Build($dcCert)
+            $root = $chain.ChainElements[$chain.ChainElements.Count - 1].Certificate
+            if ($root.Subject -ne $root.Issuer) {
+                throw "The controller's certificate from '$($dcCert.Issuer)' doesn't chain to a root certificate the controller has. Prepare the directory yourself (-Skip ActiveDirectory) and set Keycloak.AdCaCertificatePath to the root CA's certificate."
+            }
             $b64 = [Convert]::ToBase64String($root.RawData, 'InsertLineBreaks')
             "-----BEGIN CERTIFICATE-----`n$b64`n-----END CERTIFICATE-----"
         }
 
-        Write-Host '    certificate authority ready; LDAPS available on 636' -ForegroundColor DarkGray
+        Write-Host '    LDAPS available on 636' -ForegroundColor DarkGray
     }
 
     # Passwords are only set on accounts this run creates, and on the bind account with
@@ -472,15 +481,17 @@ keycloak.ps1 ask for the current one.
     Write-Host "Search base   : $($created.BaseDn)"
     Write-Host "App OU        : $($created.OuDn)"
     Write-Host "Bind account  : $($created.BindUpn)"
-    Write-Host "Sample user   : $($created.DemoUpn) (places orders)"
-    Write-Host "Inventory admin: $($created.InventoryAdminUpn) (restocks products)"
+    # Keycloak's user name is the account name (sAMAccountName); the sample accounts have no email
+    # address, so their name@domain form doesn't sign in.
+    Write-Host "Sample user   : $DemoUserName (places orders); sign in with this name, not $($created.DemoUpn)"
+    Write-Host "Inventory admin: $InventoryAdminUserName (restocks products)"
     Write-Host "Realm admins  : oms-identity-admins (add the people who administer Keycloak's 'oms' realm)"
     if ($caCertPem) { Write-Host "LDAP          : ldaps://$($created.DcFqdn):636" }
     else { Write-Host "LDAP          : ldap://$($created.DcFqdn):389 (no TLS)" -ForegroundColor Yellow }
     Write-Host ''
     Write-Host 'The generated passwords were written to the cluster, never to this console.' -ForegroundColor DarkGray
-    Write-Host "Read one back (base64) with:" -ForegroundColor DarkGray
-    Write-Host "  kubectl --context $KubeContext -n $SecretNamespace get secret $SecretName -o jsonpath='{.data.demo-password}'"
+    Write-Host "Copy the sample user's to the clipboard (inventory-admin-password for the inventory admin's) with:" -ForegroundColor DarkGray
+    Write-Host "  [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((kubectl --context $KubeContext -n $SecretNamespace get secret $SecretName -o jsonpath='{.data.demo-password}'))) | Set-Clipboard"
     Write-Host 'Next, stand up Keycloak (cluster nodes already resolve the domain through this controller):' -ForegroundColor Yellow
     Write-Host "  ./scripts/infra/azurelocal/keycloak.ps1 -AdServer $($created.DcFqdn) -AdDomain $($created.DnsRoot) -SpaOrigin https://<app address> -KubeContext $KubeContext -AllowInClusterIssuer ..."
 }

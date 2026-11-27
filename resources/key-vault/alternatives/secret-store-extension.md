@@ -30,13 +30,13 @@ The older Azure Key Vault Secrets Provider extension for Arc retires on 9 Octobe
 
 ## How the Order Management sample does it
 
-On Azure every service signs in with workload identity, backed by managed identities, so there are no secrets to manage. On Azure Local, connected to Azure, the sample sets up the vault and the extension for secrets that already live in Azure; its own credentials are generated on site:
+On Azure every service signs in with workload identity, backed by managed identities; the one secret, the key the order processor signs archived orders with, is mounted from Key Vault by the [Key Vault Secrets Provider](https://learn.microsoft.com/azure/aks/csi-secrets-store-driver). On Azure Local, connected to Azure, the sample sets up the vault and the extension for secrets that already live in Azure; its own credentials are generated on site:
 
 | Step | In the sample |
 |---|---|
 | Workload identity on the cluster | [platform-resources.bicep](../../../samples/OrderManagementApp/infra/azurelocal/platform-resources.bicep) turns on the OIDC issuer and workload identity when the cluster is created, and installs the Certificate Management extension, the cluster's one cert-manager, which the Secret Store extension requires |
 | Vault, identity and extension | [key-vault.bicep](../../../samples/OrderManagementApp/infra/azurelocal/key-vault.bicep), deployed by [key-vault.ps1](../../../samples/OrderManagementApp/scripts/infra/azurelocal/key-vault.ps1): Key Vault with RBAC and purge protection, a managed identity with Key Vault Secrets User federated with the `secret-sync` service account, and the extension (hourly poll) |
-| Syncing a secret from Azure | [key-vault-sync.yaml](../../../samples/OrderManagementApp/infra/azurelocal/key-vault-sync.yaml) creates the `secret-sync` service account and shows the `SecretProviderClass` and `SecretSync` for a partner API key. Nothing is synced by default. |
+| Syncing a secret from Azure | [key-vault-sync.yaml](../../../samples/OrderManagementApp/infra/azurelocal/key-vault-sync.yaml) creates the `secret-sync` service account, and the `SecretProviderClass` and `SecretSync` that copy the order processor's signing key, Key Vault secret `archive-signing-key`, to Kubernetes Secret `archive-signing`. The Recipe Pack mounts it into the processor only. |
 | Credentials born on site | Database passwords and object store keys are generated in the cluster by the setup and deploy scripts, and changed with [rotate-credentials.ps1](../../../samples/OrderManagementApp/scripts/infra/azurelocal/rotate-credentials.ps1), which needs no link to Azure |
 | Keycloak and the new issuer | Workload identity gives the cluster's tokens a public issuer URL. [realm.json](../../../samples/OrderManagementApp/infra/azurelocal/keycloak/realm.json) sets Keycloak's `issuerDiscoveryUrl` to `https://kubernetes.default.svc`, so Keycloak reads the signing keys from the API server, not from Azure. Check that the `jwks_uri` in `kubectl get --raw /.well-known/openid-configuration` is on site. |
 

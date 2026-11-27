@@ -133,6 +133,14 @@ per-service database passwords. {resource} is the container resource name.
 ''')
 param containerEnvFromSecrets array = []
 
+@description('''
+Key Vault secrets mounted as files into one service each, by container resource name:
+`{ processor: { 'archive-signing': 'archive-signing' } }` mounts Kubernetes Secret archive-signing at
+/var/run/secrets/archive-signing in the processor only. The Key Vault Secret Store extension writes
+that Secret from Key Vault while the site is connected; the last copy keeps working offline.
+''')
+param keyVaultFiles object = {}
+
 @description('OpenTelemetry Collector endpoint given to every container as OTEL_EXPORTER_OTLP_ENDPOINT, with Telemetry__Exporter set to Otlp. Empty sets it to None: no telemetry.')
 param otlpEndpoint string = ''
 
@@ -259,6 +267,9 @@ var containerPlatformParameters = union(
     containerVolumeMounts: concat(identityProviderMounts, siteCaMounts)
     containerEnv: concat(identityProviderEnv, telemetryEnv, siteCaEnv, objectStorageEnv)
     containerEnvFromSecrets: containerEnvFromSecrets
+    resourceFiles: toObject(items(keyVaultFiles), service => service.key, service => toObject(items(service.value), file => file.key, file => {
+      secret: { secretName: file.value }
+    }))
   }
 )
 

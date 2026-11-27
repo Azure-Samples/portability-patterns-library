@@ -54,6 +54,16 @@ param connectionSecretNames object = {}
 param connectionPodLabels object = {}
 
 @description('''
+Files the platform delivers, such as a secret, by container resource name: for each resource, a map of
+names to the Kubernetes volume source that holds the files, such as a Key Vault CSI volume
+(`{ csi: { driver: 'secrets-store.csi.k8s.io', readOnly: true, volumeAttributes: { secretProviderClass: 'archive-signing' } } }`)
+or a Secret (`{ secret: { secretName: 'archive-signing' } }`). Each is mounted read-only at
+/var/run/secrets/<name> in that resource's containers only, so the application reads the same file
+whichever platform delivered it.
+''')
+param resourceFiles object = {}
+
+@description('''
 cert-manager ClusterIssuer that gives every container declaring a port named `https` a certificate
 for its Service's DNS names, so callers in the cluster reach it over TLS and can verify it. The
 certificate and key are mounted at /etc/service-tls, and TLS_CERT_FILE and TLS_KEY_FILE point to
@@ -140,8 +150,14 @@ var platformPodSecurityContext = platformOptions.?podSecurityContext ?? podSecur
 var platformContainerSecurityContext = platformOptions.?containerSecurityContext ?? containerSecurityContext
 
 // Extra volumes, mounts and environment from the Recipe Pack, added to every pod and container.
-var platformVolumes = platformPodVolumes
-var platformVolumeMounts = containerVolumeMounts
+// LOCAL ADDITION: plus the files the platform delivers to this resource only.
+var resourceFileItems = items(resourceFiles[?normalizedName] ?? resourceFiles[?resourceName] ?? {})
+var platformVolumes = concat(platformPodVolumes, map(resourceFileItems, file => union(file.value, { name: 'platform-file-${toLower(file.key)}' })))
+var platformVolumeMounts = concat(containerVolumeMounts, map(resourceFileItems, file => {
+  name: 'platform-file-${toLower(file.key)}'
+  mountPath: '/var/run/secrets/${toLower(file.key)}'
+  readOnly: true
+}))
 var platformEnvVars = map(containerEnv, envVar => contains(envVar, 'value')
   ? union(envVar, { value: replace(string(envVar.value), '{resource}', normalizedName) })
   : envVar)

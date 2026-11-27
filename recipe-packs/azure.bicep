@@ -98,6 +98,14 @@ param serviceCertificateIssuer string = ''
 @description('Existing Secret in the application namespace with that issuer\'s CA certificate under `ca.crt`. Every container trusts it as well as the public CAs.')
 param serviceCaSecretName string = ''
 
+@description('''
+Key Vault secrets mounted as files into one service each, by container resource name:
+`{ processor: { 'archive-signing': 'archive-signing' } }` mounts what SecretProviderClass
+archive-signing names at /var/run/secrets/archive-signing in the processor only, through the Key
+Vault CSI driver, as that service's own identity.
+''')
+param keyVaultFiles object = {}
+
 // In-cluster CA: .NET and OpenSSL trust every certificate in the SSL_CERT_DIR directories, so callers
 // verify the app's own services; the system directory stays listed, so Azure's public endpoints verify too.
 var useServiceCa = !empty(serviceCaSecretName)
@@ -125,6 +133,13 @@ var containerIdentityParameters = {
   ], useServiceCa ? [
     { name: 'SSL_CERT_DIR', value: '/etc/ssl/certs:/etc/service-ca' }
   ] : [])
+  resourceFiles: toObject(items(keyVaultFiles), service => service.key, service => toObject(items(service.value), file => file.key, file => {
+    csi: {
+      driver: 'secrets-store.csi.k8s.io'
+      readOnly: true
+      volumeAttributes: { secretProviderClass: file.value }
+    }
+  }))
 }
 
 var routeIngressParameters = {

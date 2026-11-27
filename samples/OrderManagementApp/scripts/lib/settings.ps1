@@ -10,19 +10,35 @@ function Read-OmsSettings([string]$Target, [string]$Path) {
     $all[$Target]
 }
 
-# 'Common' values go only to scripts that declare the parameter; the step's own section goes as is,
-# so a misspelt name fails loudly instead of being ignored.
-function Get-OmsStepArguments([hashtable]$Settings, [string]$Step, [string]$ScriptPath) {
-    $declared = (Get-Command $ScriptPath).Parameters.Keys
+# 'Common' values, and those of any -Shared section, go only to scripts that declare the parameter,
+# by name or alias; the step's own section goes as is, so a misspelt name fails loudly instead of
+# being ignored. Names and aliases become the parameter's name, so a value given by alias in one
+# section and by name in another is one argument, and the later section's value wins.
+function Get-OmsStepArguments([hashtable]$Settings, [string]$Step, [string]$ScriptPath, [string[]]$Shared = @()) {
+    $canonical = @{}
+    foreach ($parameter in (Get-Command $ScriptPath).Parameters.Values) {
+        $canonical[$parameter.Name] = $parameter.Name
+        foreach ($alias in $parameter.Aliases) { $canonical[$alias] = $parameter.Name }
+    }
     $arguments = @{}
-    foreach ($section in 'Common', $Step) {
+    foreach ($section in @('Common') + @($Shared | Where-Object { $_ }) + $Step) {
         if (-not $Settings.ContainsKey($section)) { continue }
         foreach ($name in $Settings[$section].Keys) {
-            if ($section -eq 'Common' -and $name -notin $declared) { continue }
-            $arguments[$name] = $Settings[$section][$name]
+            $key = $canonical[$name]
+            if (-not $key) {
+                if ($section -ne $Step) { continue }
+                $key = $name
+            }
+            $arguments[$key] = $Settings[$section][$name]
         }
     }
     $arguments
+}
+
+# A script parameter's default value, when it's a constant, for example ad-setup.ps1's KubeContext.
+function Get-OmsParameterDefault([string]$ScriptPath, [string]$Name) {
+    $parameter = (Get-Command $ScriptPath).ScriptBlock.Ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq $Name }
+    if ($parameter -and $parameter.DefaultValue) { $parameter.DefaultValue.SafeGetValue() }
 }
 
 # Points az at the target's subscription ('Common' SubscriptionId) for one run, so every step works
